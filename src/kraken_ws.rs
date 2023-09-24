@@ -32,7 +32,7 @@ pub async fn fetch_kraken_data_ws(pair_to_assets: HashMap<String, (String, Strin
     let subscription_message = json!({
         "event": "subscribe",
         "subscription": {"name": "spread"},
-        "pair": pair_to_assets.keys().cloned().collect::<Vec<String>>();
+        "pair": pair_to_assets.keys().cloned().collect::<Vec<String>>(),
     });
     write.send(Message::Text(subscription_message.to_string())).await?;
 
