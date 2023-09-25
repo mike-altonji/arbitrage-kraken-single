@@ -1,12 +1,22 @@
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::connect_async;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use futures_util::StreamExt;
 use futures_util::sink::SinkExt;
 use std::sync::{Arc, Mutex};
+use reqwest;
 
 pub async fn asset_pairs_to_pull() -> Result<HashMap<String, (String, String)>, Box<dyn std::error::Error>> {
+    // Define the set of valid bases and quotes
+    let valid_assets = [
+        "ZUSD", "ZEUR", "XXBT", "XETH", "USDT", "ZGBP", "ZJPY", "ZAUD", "USDC", "XXRP", "BCH", "DOT",
+        "LINK", "XLTC", "ADA", "XTZ", "ZCAD", "ALGO", "ATOM", "CHF", "KSM", "AAVE", "BAT", "DAI",
+        "ENJ", "EOS", "FIL", "FLOW", "MANA", "MATIC", "OMG", "SOL", "ANT", "CRV", "EWT", "GRT",
+        "ICX", "KAVA", "KNC", "LPT", "LSK", "MINA", "NANO", "OCEAN", "PAXG", "QTUM", "REPV2", "SAND",
+        "SC", "SNX", "SUSHI", "TRX", "UNI", "UST", "WAVES", "XETC", "XMLN", "XXDG", "XXLM", "XXMR"
+    ].iter().cloned().collect::<HashSet<_>>();
+
     // Fetch the list of all asset pairs
     let asset_pairs_url = "https://api.kraken.com/0/public/AssetPairs";
     let resp = reqwest::get(asset_pairs_url).await?;
@@ -15,14 +25,18 @@ pub async fn asset_pairs_to_pull() -> Result<HashMap<String, (String, String)>, 
     let mut pair_to_assets = HashMap::new();
     if let Some(pairs) = data["result"].as_object() {
         for (_pair, details) in pairs {
-            let wsname: String = details["wsname"].as_str().unwrap_or("").to_string();
             let base = details["base"].as_str().unwrap_or("").to_string();
             let quote = details["quote"].as_str().unwrap_or("").to_string();
-            pair_to_assets.insert(wsname, (base, quote));
+            if valid_assets.contains(base.as_str()) && valid_assets.contains(quote.as_str()) {
+                let wsname: String = details["wsname"].as_str().unwrap_or("").to_string();
+                pair_to_assets.insert(wsname, (base, quote));
+            }
         }
     }
+
     Ok(pair_to_assets)
 }
+
 
 
 pub async fn fetch_kraken_data_ws(pair_to_assets: HashMap<String, (String, String)>, shared_asset_pairs: Arc<Mutex<HashMap<String, (f64, f64)>>>) -> Result<(), Box<dyn std::error::Error>> {

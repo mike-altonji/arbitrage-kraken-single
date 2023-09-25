@@ -19,7 +19,7 @@ pub async fn evaluate_arbitrage_opportunities(pair_to_assets: HashMap<String, (S
         if node.is_some() {
             println!("!!! ARBITRAGE OPPORTUNITY AT NODE {:?}. # Nodes: {}, Time: {:?}", node.unwrap(), n, duration);
         } else {
-            println!("# Nodes: {}, Time: {:?}", n, duration);
+            println!("# Nodes: {}, # Edges: {}, Time: {:?}", n, asset_pairs.len(), duration);
         }
     }
 }
