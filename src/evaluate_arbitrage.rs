@@ -1,25 +1,37 @@
+use std::env;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+// use std::time::Instant;
 use tokio::time::Duration;
 use crate::graph_algorithms::floyd_warshall_fast;
 
 const INF: f64 = std::f64::INFINITY;
 const FEE: f64 = 0.0026;
 
-pub async fn evaluate_arbitrage_opportunities(pair_to_assets: HashMap<String, (String, String)>, shared_asset_pairs: Arc<Mutex<HashMap<String, (f64, f64)>>>) {
-    tokio::time::sleep(Duration::from_secs(3)).await;  // Give shared_asset_pairs time to populate
+pub async fn evaluate_arbitrage_opportunities(
+    pair_to_assets: HashMap<String, (String, String)>,
+    shared_asset_pairs: Arc<Mutex<HashMap<String, (f64, f64)>>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let bot_token = env::var("TELEGRAM_BOT_TOKEN").expect("TELEGRAM_BOT_TOKEN must be set");
+    let chat_id = env::var("TELEGRAM_CHAT_ID").expect("TELEGRAM_CHAT_ID must be set");
+
+    // Give shared_asset_pairs time to populate
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let message = format!("🚀 Launching websocket-based, Rust arbitrage trader.");
+    let url = format!("https://api.telegram.org/bot{}/sendMessage?chat_id={}&text={}", bot_token, chat_id, message);
+    let _response = reqwest::Client::new().post(&url).send().await?;
+
     loop {
-        let start_time = Instant::now();
+        // let start_time = Instant::now();
         let asset_pairs = shared_asset_pairs.lock().unwrap().clone();
         let (n, mut dist) = prepare_graph(&asset_pairs, &pair_to_assets);
         floyd_warshall_fast(&mut dist);
         let node = detect_negative_cycles(&dist, n);
-        let duration = start_time.elapsed();
-        if node.is_some() {
-            println!("!!! ARBITRAGE OPPORTUNITY AT NODE {:?}. # Nodes: {}, Time: {:?}", node.unwrap(), n, duration);
-        } else {
-            println!("# Nodes: {}, # Edges: {}, Time: {:?}", n, asset_pairs.len(), duration);
+        // let duration = start_time.elapsed();
+        if let Some(node_index) = node {
+            let message = format!("Arbitrage opportunity at node {}", node_index);
+            let url = format!("https://api.telegram.org/bot{}/sendMessage?chat_id={}&text={}", bot_token, chat_id, message);
+            let _response = reqwest::Client::new().post(&url).send().await?;
         }
     }
 }
