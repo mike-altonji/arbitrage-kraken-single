@@ -9,6 +9,17 @@ mod graph_algorithms;
 #[tokio::main]
 async fn main() {
     dotenv().ok();
+    // Set up logging to write to `application.log`.
+    let log_config = log4rs::append::file::FileAppender::builder()
+        .build("application.log")
+        .unwrap();
+    
+    let log_config = log4rs::config::Config::builder()
+        .appender(log4rs::config::Appender::builder().build("default", Box::new(log_config)))
+        .build(log4rs::config::Root::builder().appender("default").build(log::LevelFilter::Info))
+        .unwrap();
+
+    log4rs::init_config(log_config).unwrap();
 
     let pair_to_assets = kraken_ws::asset_pairs_to_pull().await.expect("Failed to get asset pairs");
     let shared_asset_pairs = Arc::new(Mutex::new(HashMap::new()));

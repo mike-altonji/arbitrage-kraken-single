@@ -14,3 +14,5 @@ tokio-tungstenite = {version = "0.14", features = ["native-tls"]}
 url = "2.2"
 futures-util = "0.3"
 dotenv = "0.15.0"
+log = "0.4"
+log4rs = "1.0"

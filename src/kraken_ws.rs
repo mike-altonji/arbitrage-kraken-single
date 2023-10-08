@@ -49,6 +49,7 @@ pub async fn fetch_kraken_data_ws(pair_to_assets: HashMap<String, (String, Strin
         "pair": pair_to_assets.keys().cloned().collect::<Vec<String>>(),
     });
     write.send(Message::Text(subscription_message.to_string())).await?;
+    log::info!("Subscribed to asset pairs: {:?}", pair_to_assets.keys().collect::<Vec<&String>>());
 
     while let Some(msg) = read.next().await {
         match msg {
@@ -62,6 +63,14 @@ pub async fn fetch_kraken_data_ws(pair_to_assets: HashMap<String, (String, Strin
                             let ask = inner_array.get(1).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
                             let mut locked_pairs = shared_asset_pairs.lock().unwrap();
                             locked_pairs.insert(pair.to_string(), (bid, ask));
+                            // Log lag to insert pair
+                            if let Some(Ok(timestamp)) = inner_array.get(2).and_then(|s| s.as_str()).map(|s| s.parse::<f64>()) {
+                                let now = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs_f64();
+                                log::info!("Processing delay for pair {}: {:.6} seconds", pair, now - timestamp);
+                            }                            
                         }
                     }
                 }
