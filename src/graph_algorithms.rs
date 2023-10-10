@@ -1,3 +1,11 @@
+const INF: f64 = std::f64::INFINITY;
+
+pub struct Edge {
+    pub src: usize,
+    pub dest: usize,
+    pub weight: f64,
+}
+
 pub fn floyd_warshall_fast(dist: &mut [Vec<f64>]) {
     let n = dist.len();
     for i in 0..n {
@@ -18,4 +26,25 @@ pub fn floyd_warshall_fast(dist: &mut [Vec<f64>]) {
             }
         }
     }
+}
+
+pub fn bellman_ford_negative_cycle(n: usize, edges: &[Edge], source: usize) -> Option<usize> {
+    let mut dist = vec![INF; n];
+    dist[source] = 0.0;
+
+    for _ in 0..n - 1 {
+        for edge in edges {
+            if dist[edge.src] + edge.weight < dist[edge.dest] {
+                dist[edge.dest] = dist[edge.src] + edge.weight;
+            }
+        }
+    }
+
+    for edge in edges {
+        if dist[edge.src] + edge.weight < dist[edge.dest] {
+            return Some(edge.dest);
+        }
+    }
+
+    None
 }
