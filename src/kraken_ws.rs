@@ -31,6 +31,9 @@ pub async fn asset_pairs_to_pull() -> Result<HashMap<String, (String, String)>, 
                 let wsname: String = details["wsname"].as_str().unwrap_or("").to_string();
                 pair_to_assets.insert(wsname, (base, quote));
             }
+            // Uncomment if we want to run all asset pairs and edges
+            // let wsname: String = details["wsname"].as_str().unwrap_or("").to_string();
+            // pair_to_assets.insert(wsname, (base, quote));
         }
     }
 
