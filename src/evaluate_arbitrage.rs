@@ -24,11 +24,11 @@ pub async fn evaluate_arbitrage_opportunities(
         // let start_time = Instant::now();
         let asset_pairs = shared_asset_pairs.lock().unwrap().clone();
         let (n, edges) = prepare_graph(&asset_pairs, &pair_to_assets);
-        let node = bellman_ford_negative_cycle(n, &edges, 0); // This assumes source as 0, you can change if needed
         // let duration = start_time.elapsed();
         // println!("{:?}", duration);
-        if let Some(node_index) = node {
-            let message = format!("Arbitrage opportunity at node {}", node_index);
+        let path = bellman_ford_negative_cycle(n, &edges, 0); // This assumes source as 0, you can change if needed
+        if let Some(negative_cycle) = path {
+            let message = format!("Arbitrage opportunity at cycle: {:?}", negative_cycle);
             let url = format!("https://api.telegram.org/bot{}/sendMessage?chat_id={}&text={}", bot_token, chat_id, message);
             let _response = reqwest::Client::new().post(&url).send().await?;
         }
