@@ -61,8 +61,8 @@ pub async fn fetch_kraken_data_ws(pair_to_assets: HashMap<String, (String, Strin
                     if array.len() >= 4 {
                         let pair = array[3].as_str().unwrap_or_default();
                         if let Some(inner_array) = array[1].as_array() {
-                            let bid = inner_array.get(0).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-                            let ask = inner_array.get(1).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+                            let bid = inner_array.get(0).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap();
+                            let ask = inner_array.get(1).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap();
                             let mut locked_pairs = shared_asset_pairs.lock().unwrap();
                             locked_pairs.insert(pair.to_string(), (bid, ask));
                             // Log lag to insert pair
