@@ -62,3 +62,40 @@ pub fn bellman_ford_negative_cycle(n: usize, edges: &[Edge], source: usize) -> O
 
     None
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_floyd_warshall_fast() {
+        let mut dist = vec![
+            vec![0.0, 5.0, INF, 10.0],
+            vec![INF, 0.0, 3.0, INF],
+            vec![INF, INF, 0.0, 1.0],
+            vec![INF, INF, INF, 0.0]
+        ];
+        floyd_warshall_fast(&mut dist);
+        assert_eq!(dist, vec![
+            vec![0.0, 5.0, 8.0, 9.0],
+            vec![INF, 0.0, 3.0, 4.0],
+            vec![INF, INF, 0.0, 1.0],
+            vec![INF, INF, INF, 0.0]
+        ]);
+    }
+
+    #[test]
+    fn test_bellman_ford_negative_cycle() {
+        let edges = vec![
+            Edge { src: 0, dest: 1, weight: 1.0 },
+            Edge { src: 1, dest: 2, weight: 1.0 },
+            Edge { src: 2, dest: 3, weight: -4.0 },
+            Edge { src: 3, dest: 1, weight: 2.0 },
+            Edge { src: 1, dest: 4, weight: 1.0 },
+            Edge { src: 3, dest: 4, weight: 3.0 }
+        ];
+        let result = bellman_ford_negative_cycle(5, &edges, 1);
+        assert_eq!(result, Some(vec![2, 3, 1, 2]));
+    }
+}
