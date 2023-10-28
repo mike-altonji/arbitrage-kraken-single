@@ -1,3 +1,4 @@
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use dotenv::dotenv;
@@ -10,8 +11,11 @@ mod graph_algorithms;
 async fn main() {
     dotenv().ok();
     // Set up logging to write to `application.log`.
+    let now = SystemTime::now();
+    let since_the_epoch = now.duration_since(UNIX_EPOCH).expect("Time invalid");
+    let timestamp = since_the_epoch.as_secs();
     let log_config = log4rs::append::file::FileAppender::builder()
-        .build("application.log")
+        .build(format!("logs/arbitrage_log_{}.log", timestamp))
         .unwrap();
     
     let log_config = log4rs::config::Config::builder()
