@@ -41,7 +41,6 @@ pub async fn asset_pairs_to_pull() -> Result<HashMap<String, (String, String)>, 
 }
 
 
-
 pub async fn fetch_kraken_data_ws(pair_to_assets: HashMap<String, (String, String)>, shared_asset_pairs: Arc<Mutex<HashMap<String, (f64, f64)>>>) -> Result<(), Box<dyn std::error::Error>> {
     let url = url::Url::parse("wss://ws.kraken.com").unwrap();
     let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
@@ -73,7 +72,7 @@ pub async fn fetch_kraken_data_ws(pair_to_assets: HashMap<String, (String, Strin
                                     .unwrap_or_default()
                                     .as_secs_f64();
                                 log::info!("Processing delay for pair {}: {:.6} seconds", pair, now - timestamp);
-                            }                            
+                            }
                         }
                     }
                 }
