@@ -50,3 +50,25 @@ fn prepare_graph(asset_pairs: &HashMap<String, (f64, f64)>, pair_to_assets: &Has
     }
     (index, edges)
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_prepare_graph() {
+        let mut asset_pairs = HashMap::new();
+        asset_pairs.insert("pair1".to_string(), (1.0, 2.0));
+        asset_pairs.insert("pair2".to_string(), (3.0, 4.0));
+
+        let mut pair_to_assets = HashMap::new();
+        pair_to_assets.insert("pair1".to_string(), ("asset1".to_string(), "asset2".to_string()));
+        pair_to_assets.insert("pair2".to_string(), ("asset2".to_string(), "asset3".to_string()));
+
+        let (n, edges) = prepare_graph(&asset_pairs, &pair_to_assets);
+
+        assert_eq!(n, 3);
+        assert_eq!(edges.len(), 4);
+    }
+}
