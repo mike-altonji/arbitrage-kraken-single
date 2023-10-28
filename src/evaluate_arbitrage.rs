@@ -16,9 +16,8 @@ pub async fn evaluate_arbitrage_opportunities(
 
     // Give shared_asset_pairs time to populate
     tokio::time::sleep(Duration::from_secs(3)).await;
-    let message = format!("🚀 Launching websocket-based, Rust arbitrage trader.");
-    let url = format!("https://api.telegram.org/bot{}/sendMessage?chat_id={}&text={}", bot_token, chat_id, message);
-    let _response = reqwest::Client::new().post(&url).send().await?;
+    let message = "🚀 Launching websocket-based, Rust arbitrage trader.";
+    send_telegram_message(&bot_token, &chat_id, &message).await?;
 
     loop {
         // let start_time = Instant::now();
@@ -29,12 +28,16 @@ pub async fn evaluate_arbitrage_opportunities(
         let path = bellman_ford_negative_cycle(n, &edges, 0); // This assumes source as 0, you can change if needed
         if let Some(negative_cycle) = path {
             let message = format!("Arbitrage opportunity at cycle: {:?}", negative_cycle);
-            let url = format!("https://api.telegram.org/bot{}/sendMessage?chat_id={}&text={}", bot_token, chat_id, message);
-            let _response = reqwest::Client::new().post(&url).send().await?;
+            send_telegram_message(&bot_token, &chat_id, &message).await?;
         }
     }
 }
 
+async fn send_telegram_message(bot_token: &str, chat_id: &str, message: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let url = format!("https://api.telegram.org/bot{}/sendMessage?chat_id={}&text={}", bot_token, chat_id, message);
+    let _response = reqwest::Client::new().post(&url).send().await?;
+    Ok(())
+}
 
 fn prepare_graph(asset_pairs: &HashMap<String, (f64, f64)>, pair_to_assets: &HashMap<String, (String, String)>) -> (usize, Vec<Edge>) {
     let mut asset_to_index = HashMap::new();
@@ -50,7 +53,6 @@ fn prepare_graph(asset_pairs: &HashMap<String, (f64, f64)>, pair_to_assets: &Has
     }
     (index, edges)
 }
-
 
 #[cfg(test)]
 mod tests {
