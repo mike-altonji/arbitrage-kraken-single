@@ -85,3 +85,21 @@ pub async fn fetch_kraken_data_ws(pair_to_assets: HashMap<String, (String, Strin
     }
     Ok(())
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::runtime::Runtime;
+
+    #[test]
+    fn test_asset_pairs_to_pull() {
+        let result = Runtime::new().unwrap().block_on(asset_pairs_to_pull());
+        assert!(result.is_ok());
+        let pairs = result.unwrap();
+        assert!(pairs.contains_key("XBT/USD"));
+        assert!(pairs.contains_key("XBT/EUR"));
+        assert_eq!(pairs["XBT/USD"].0, "XXBT");
+        assert_eq!(pairs["XBT/USD"].1, "ZUSD");
+    }
+}
