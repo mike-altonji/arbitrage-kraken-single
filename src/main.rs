@@ -25,9 +25,11 @@ async fn main() {
 
     log4rs::init_config(log_config).unwrap();
 
+    // Pull asset pairs and initialize bids/asks
     let pair_to_assets = kraken::asset_pairs_to_pull().await.expect("Failed to get asset pairs");
     let shared_asset_pairs = Arc::new(Mutex::new(HashMap::new()));
 
+    // Keep bids/asks up to date
     let fetch_handle = {
         let pair_to_assets_clone = pair_to_assets.clone();
         let shared_asset_pairs_clone = shared_asset_pairs.clone();
@@ -36,6 +38,7 @@ async fn main() {
         })
     };
 
+    // Search for arbitrage opportunities
     let evaluate_handle = {
         let pair_to_assets_clone = pair_to_assets.clone();
         let shared_asset_pairs_clone = shared_asset_pairs.clone();
