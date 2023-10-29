@@ -22,10 +22,10 @@ pub async fn evaluate_arbitrage_opportunities(
     loop {
         // let start_time = Instant::now();
         let asset_pairs = shared_asset_pairs.lock().unwrap().clone();
-        let (n, edges) = prepare_graph(&asset_pairs, &pair_to_assets);
+        let (n, rates, _volumes) = prepare_graph(&asset_pairs, &pair_to_assets);
         // let duration = start_time.elapsed();
         // println!("{:?}", duration);
-        let path = bellman_ford_negative_cycle(n, &edges, 0); // This assumes source as 0, you can change if needed
+        let path = bellman_ford_negative_cycle(n, &rates, 0); // This assumes source as 0, you can change if needed
         if let Some(negative_cycle) = path {
             let message = format!("Arbitrage opportunity at cycle: {:?}", negative_cycle);
             send_telegram_message(&bot_token, &chat_id, &message).await?;
@@ -39,21 +39,27 @@ async fn send_telegram_message(bot_token: &str, chat_id: &str, message: &str) ->
     Ok(())
 }
 
-fn prepare_graph(asset_pairs: &HashMap<String, (f64, f64, f64, f64)>, pair_to_assets: &HashMap<String, (String, String)>) -> (usize, Vec<Edge>) {
+fn prepare_graph(
+    asset_pairs: &HashMap<String, (f64, f64, f64, f64)>, 
+    pair_to_assets: &HashMap<String, (String, String)>
+) -> (usize, Vec<Edge>, Vec<Edge>) {
     let mut asset_to_index = HashMap::new();
     let mut index = 0;
-    let mut edges = vec![];
-    for (pair, (bid, ask, _bid_volume, _ask_volume)) in asset_pairs {
+    let mut exchange_rates = vec![];
+    let mut available_volumes = vec![];
+    for (pair, (bid, ask, bid_volume, ask_volume)) in asset_pairs {
         if let Some((asset1, asset2)) = pair_to_assets.get(pair) {
             let index1 = *asset_to_index.entry(asset1.clone()).or_insert_with(|| { index += 1; index - 1 });
             let index2 = *asset_to_index.entry(asset2.clone()).or_insert_with(|| { index += 1; index - 1 });
-            let bid_weight = -((bid * (1.0 - FEE)).ln());
-            let ask_weight = -((1.0 / (ask * (1.0 + FEE))).ln());
-            edges.push(Edge { src: index1, dest: index2, weight: bid_weight });
-            edges.push(Edge { src: index2, dest: index1, weight: ask_weight });
+            let bid_rate = -((bid * (1.0 - FEE)).ln());
+            let ask_rate = -((1.0 / (ask * (1.0 + FEE))).ln());
+            exchange_rates.push(Edge { src: index1, dest: index2, weight: bid_rate });
+            exchange_rates.push(Edge { src: index2, dest: index1, weight: ask_rate });
+            available_volumes.push(Edge {src: index1, dest: index2, weight: bid_volume * bid});
+            available_volumes.push(Edge {src: index2, dest: index1, weight: *ask_volume});
         }
     }
-    (index, edges)
+    (index, exchange_rates, available_volumes)
 }
 
 #[cfg(test)]
@@ -70,7 +76,7 @@ mod tests {
         pair_to_assets.insert("pair1".to_string(), ("asset1".to_string(), "asset2".to_string()));
         pair_to_assets.insert("pair2".to_string(), ("asset2".to_string(), "asset3".to_string()));
 
-        let (n, edges) = prepare_graph(&asset_pairs, &pair_to_assets);
+        let (n, edges, _volumes) = prepare_graph(&asset_pairs, &pair_to_assets);
 
         assert_eq!(n, 3);
         assert_eq!(edges.len(), 4);
