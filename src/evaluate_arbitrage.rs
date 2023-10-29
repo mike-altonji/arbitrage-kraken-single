@@ -27,10 +27,33 @@ pub async fn evaluate_arbitrage_opportunities(
         // println!("{:?}", duration);
         let path = bellman_ford_negative_cycle(n, &rate_edges, 0); // This assumes source as 0, you can change if needed
         if let Some(negative_cycle) = path {
+            let _volume = limiting_volume(&negative_cycle, &rate_map, &volume_map);
             let message = format!("Arbitrage opportunity at cycle: {:?}", negative_cycle);
             send_telegram_message(&bot_token, &chat_id, &message).await?;
         }
     }
+}
+
+fn limiting_volume(path: &[usize], rates: &HashMap<(usize, usize), f64>, volumes: &HashMap<(usize, usize), f64>) -> f64 {
+    let mut min_volume = std::f64::MAX;
+
+    for i in 0..path.len() - 1 {
+        let asset1 = path[i];
+        let asset2 = path[i + 1];
+
+        // Find the volume for the current asset pair, in terms of the 1st asset
+        let rate = rates.get(&(asset1, asset2)).expect("Expected rate");
+        let volume2 =  volumes.get(&(asset1, asset2)).expect("Expected volume");
+        let volume1 = volume2 / rate;
+
+        // Update the minimum volume if necessary
+        if volume1 < min_volume {
+            min_volume = volume1;
+        }
+        min_volume *= rate;  // Regardless, convert to the next asset's terms
+    }
+
+    min_volume  // Return the volume in terms of the 1st asset in the path. TODO: must be USD, or whatever currency we own.
 }
 
 async fn send_telegram_message(bot_token: &str, chat_id: &str, message: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -68,6 +91,7 @@ fn prepare_graph(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn test_prepare_graph() {
@@ -83,5 +107,21 @@ mod tests {
 
         assert_eq!(n, 3);
         assert_eq!(edges.len(), 4);
+    }
+
+    #[test]
+    fn test_minimum_volume_for_each_asset() {
+        let path = vec![0, 1, 2, 0];
+        let mut rates = HashMap::new();
+        rates.insert((0, 1), 0.5);
+        rates.insert((1, 2), 2.0);
+        rates.insert((2, 0), 2.0);
+        let mut volumes = HashMap::new();
+        volumes.insert((0, 1), 3.0);
+        volumes.insert((1, 2), 1.0);
+        volumes.insert((2, 0), 4.0);
+
+        let min_volume = limiting_volume(&path, &rates, &volumes);
+        assert_eq!(min_volume, 2.0);  // Expected minimum volume is 1.0
     }
 }
