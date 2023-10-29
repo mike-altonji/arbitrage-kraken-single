@@ -44,18 +44,7 @@ pub fn bellman_ford_negative_cycle(n: usize, edges: &[Edge], source: usize) -> O
 
     for edge in edges {
         if dist[edge.src] + edge.weight < dist[edge.dest] {
-            // Negative cycle detected, let's backtrack to get the cycle path
-            let mut path = vec![edge.dest];
-            let mut current = edge.dest;
-            while path.len() <= n && (path.len() == 1 || current != edge.dest) {
-                if let Some(p) = pred[current] {
-                    path.push(p);
-                    current = p;
-                } else {
-                    break;
-                }
-            }
-            path.reverse();
+            let path = backtrack_negative_cycle_path(n, &pred, edge.dest);
             return Some(path);
         }
     }
@@ -63,6 +52,20 @@ pub fn bellman_ford_negative_cycle(n: usize, edges: &[Edge], source: usize) -> O
     None
 }
 
+fn backtrack_negative_cycle_path(n: usize, pred: &[Option<usize>], dest: usize) -> Vec<usize> {
+    let mut path = vec![dest];
+    let mut current = dest;
+    while path.len() <= n && (path.len() == 1 || current != dest) {
+        if let Some(p) = pred[current] {
+            path.push(p);
+            current = p;
+        } else {
+            break;
+        }
+    }
+    path.reverse();
+    path
+}
 
 #[cfg(test)]
 mod tests {
