@@ -6,28 +6,6 @@ pub struct Edge {
     pub weight: f64,
 }
 
-pub fn floyd_warshall_fast(dist: &mut [Vec<f64>]) {
-    let n = dist.len();
-    for i in 0..n {
-        for j in 0..n {
-            if i == j {
-                continue;
-            }
-            let (dist_j, dist_i) = if j < i {
-                let (lo, hi) = dist.split_at_mut(i);
-                (&mut lo[j][..n], &mut hi[0][..n])
-            } else {
-                let (lo, hi) = dist.split_at_mut(j);
-                (&mut hi[0][..n], &mut lo[i][..n])
-            };
-            let dist_ji = dist_j[i];
-            for k in 0..n {
-                dist_j[k] = f64::min(dist_j[k], dist_ji + dist_i[k]);
-            }
-        }
-    }
-}
-
 pub fn bellman_ford_negative_cycle(n: usize, edges: &[Edge], source: usize) -> Option<Vec<usize>> {
     let mut dist = vec![INF; n];
     let mut pred = vec![None; n];
@@ -44,18 +22,7 @@ pub fn bellman_ford_negative_cycle(n: usize, edges: &[Edge], source: usize) -> O
 
     for edge in edges {
         if dist[edge.src] + edge.weight < dist[edge.dest] {
-            // Negative cycle detected, let's backtrack to get the cycle path
-            let mut path = vec![edge.dest];
-            let mut current = edge.dest;
-            while path.len() <= n && (path.len() == 1 || current != edge.dest) {
-                if let Some(p) = pred[current] {
-                    path.push(p);
-                    current = p;
-                } else {
-                    break;
-                }
-            }
-            path.reverse();
+            let path = backtrack_negative_cycle_path(n, &pred, edge.dest);
             return Some(path);
         }
     }
@@ -63,27 +30,24 @@ pub fn bellman_ford_negative_cycle(n: usize, edges: &[Edge], source: usize) -> O
     None
 }
 
+fn backtrack_negative_cycle_path(n: usize, pred: &[Option<usize>], dest: usize) -> Vec<usize> {
+    let mut path = vec![dest];
+    let mut current = dest;
+    while path.len() <= n && (path.len() == 1 || current != dest) {
+        if let Some(p) = pred[current] {
+            path.push(p);
+            current = p;
+        } else {
+            break;
+        }
+    }
+    path.reverse();
+    path
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_floyd_warshall_fast() {
-        let mut dist = vec![
-            vec![0.0, 5.0, INF, 10.0],
-            vec![INF, 0.0, 3.0, INF],
-            vec![INF, INF, 0.0, 1.0],
-            vec![INF, INF, INF, 0.0]
-        ];
-        floyd_warshall_fast(&mut dist);
-        assert_eq!(dist, vec![
-            vec![0.0, 5.0, 8.0, 9.0],
-            vec![INF, 0.0, 3.0, 4.0],
-            vec![INF, INF, 0.0, 1.0],
-            vec![INF, INF, INF, 0.0]
-        ]);
-    }
 
     #[test]
     fn test_bellman_ford_negative_cycle() {
