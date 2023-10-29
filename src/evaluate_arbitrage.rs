@@ -9,7 +9,7 @@ const FEE: f64 = 0.0026;
 
 pub async fn evaluate_arbitrage_opportunities(
     pair_to_assets: HashMap<String, (String, String)>,
-    shared_asset_pairs: Arc<Mutex<HashMap<String, (f64, f64)>>>,
+    shared_asset_pairs: Arc<Mutex<HashMap<String, (f64, f64, f64, f64)>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let bot_token = env::var("TELEGRAM_BOT_TOKEN").expect("TELEGRAM_BOT_TOKEN must be set");
     let chat_id = env::var("TELEGRAM_CHAT_ID").expect("TELEGRAM_CHAT_ID must be set");
@@ -39,11 +39,11 @@ async fn send_telegram_message(bot_token: &str, chat_id: &str, message: &str) ->
     Ok(())
 }
 
-fn prepare_graph(asset_pairs: &HashMap<String, (f64, f64)>, pair_to_assets: &HashMap<String, (String, String)>) -> (usize, Vec<Edge>) {
+fn prepare_graph(asset_pairs: &HashMap<String, (f64, f64, f64, f64)>, pair_to_assets: &HashMap<String, (String, String)>) -> (usize, Vec<Edge>) {
     let mut asset_to_index = HashMap::new();
     let mut index = 0;
     let mut edges = vec![];
-    for (pair, (bid, ask)) in asset_pairs {
+    for (pair, (bid, ask, _bid_volume, _ask_volume)) in asset_pairs {
         if let Some((asset1, asset2)) = pair_to_assets.get(pair) {
             let index1 = *asset_to_index.entry(asset1.clone()).or_insert_with(|| { index += 1; index - 1 });
             let index2 = *asset_to_index.entry(asset2.clone()).or_insert_with(|| { index += 1; index - 1 });
@@ -61,8 +61,8 @@ mod tests {
     #[test]
     fn test_prepare_graph() {
         let mut asset_pairs = HashMap::new();
-        asset_pairs.insert("pair1".to_string(), (1.0, 2.0));
-        asset_pairs.insert("pair2".to_string(), (3.0, 4.0));
+        asset_pairs.insert("pair1".to_string(), (1.0, 2.0, 0.0, 0.0));
+        asset_pairs.insert("pair2".to_string(), (3.0, 4.0, 0.0, 0.0));
 
         let mut pair_to_assets = HashMap::new();
         pair_to_assets.insert("pair1".to_string(), ("asset1".to_string(), "asset2".to_string()));

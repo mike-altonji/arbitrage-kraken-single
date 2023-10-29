@@ -41,7 +41,7 @@ pub async fn asset_pairs_to_pull() -> Result<HashMap<String, (String, String)>, 
 }
 
 
-pub async fn fetch_kraken_data_ws(pair_to_assets: HashMap<String, (String, String)>, shared_asset_pairs: Arc<Mutex<HashMap<String, (f64, f64)>>>) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn fetch_kraken_data_ws(pair_to_assets: HashMap<String, (String, String)>, shared_asset_pairs: Arc<Mutex<HashMap<String, (f64, f64, f64, f64)>>>) -> Result<(), Box<dyn std::error::Error>> {
     let url = url::Url::parse("wss://ws.kraken.com").unwrap();
     let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
     let (mut write, mut read) = ws_stream.split();
@@ -63,8 +63,10 @@ pub async fn fetch_kraken_data_ws(pair_to_assets: HashMap<String, (String, Strin
                         if let Some(inner_array) = array[1].as_array() {
                             let bid = inner_array.get(0).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap();
                             let ask = inner_array.get(1).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap();
+                            let bid_volume = inner_array.get(3).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap();
+                            let ask_volume = inner_array.get(4).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap();
                             let mut locked_pairs = shared_asset_pairs.lock().unwrap();
-                            locked_pairs.insert(pair.to_string(), (bid, ask));
+                            locked_pairs.insert(pair.to_string(), (bid, ask, bid_volume, ask_volume));
                             // Log lag to insert pair
                             if let Some(Ok(timestamp)) = inner_array.get(2).and_then(|s| s.as_str()).map(|s| s.parse::<f64>()) {
                                 let now = std::time::SystemTime::now()
