@@ -47,8 +47,10 @@ fn prepare_graph(asset_pairs: &HashMap<String, (f64, f64, f64, f64)>, pair_to_as
         if let Some((asset1, asset2)) = pair_to_assets.get(pair) {
             let index1 = *asset_to_index.entry(asset1.clone()).or_insert_with(|| { index += 1; index - 1 });
             let index2 = *asset_to_index.entry(asset2.clone()).or_insert_with(|| { index += 1; index - 1 });
-            edges.push(Edge { src: index1, dest: index2, weight: bid * (1.0 - FEE) });
-            edges.push(Edge { src: index2, dest: index1, weight: 1.0 / (ask * (1.0 + FEE)) });
+            let bid_weight = -((bid * (1.0 - FEE)).ln());
+            let ask_weight = -((1.0 / (ask * (1.0 + FEE))).ln());
+            edges.push(Edge { src: index1, dest: index2, weight: bid_weight });
+            edges.push(Edge { src: index2, dest: index1, weight: ask_weight });
         }
     }
     (index, edges)
