@@ -27,8 +27,8 @@ pub async fn evaluate_arbitrage_opportunities(
         // println!("{:?}", duration);
         let path = bellman_ford_negative_cycle(n, &rate_edges, 0); // This assumes source as 0, you can change if needed
         if let Some(negative_cycle) = path {
-            let _volume = limiting_volume(&negative_cycle, &rate_map, &volume_map);
-            let message = format!("Arbitrage opportunity at cycle: {:?}", negative_cycle);
+            let volume = limiting_volume(&negative_cycle, &rate_map, &volume_map);
+            let message = format!("Arbitrage opportunity at cycle: {:?}\n\nVolume: {}", &negative_cycle, &volume);
             send_telegram_message(&bot_token, &chat_id, &message).await?;
         }
     }
