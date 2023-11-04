@@ -32,7 +32,9 @@ pub async fn evaluate_arbitrage_opportunities(
         let path = bellman_ford_negative_cycle(n, &rate_edges, 0); // This assumes source as 0, you can change if needed
         if let Some(negative_cycle) = path {
             let volume = limiting_volume(&negative_cycle, &rate_map, &volume_map);
-            let message = format!("Arbitrage opportunity at cycle: {:?}\n\nVolume: {}", &negative_cycle, &volume);
+            let asset_names: Vec<String> = negative_cycle.iter().map(|&i| asset_to_index.iter().find(|&(_, &v)| v == i).unwrap().0.clone()).collect();
+            let first_asset_units = &asset_names[0];
+            let message = format!("Arbitrage opportunity at cycle: {:?}\n\nLimiting volume: {} {}", asset_names, volume, first_asset_units);
             send_telegram_message(&bot_token, &chat_id, &message).await?;
         }
     }
