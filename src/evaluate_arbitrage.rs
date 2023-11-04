@@ -4,8 +4,10 @@ use std::sync::{Arc, Mutex};
 // use std::time::Instant;
 use tokio::time::Duration;
 use crate::graph_algorithms::{bellman_ford_negative_cycle, Edge};
+use crate::kraken::execute_trade;
 
 const FEE: f64 = 0.0026;
+const TRADEABLE_ASSET: &str = "ZUSD";
 
 pub async fn evaluate_arbitrage_opportunities(
     pair_to_assets: HashMap<String, (String, String)>,
@@ -30,12 +32,15 @@ pub async fn evaluate_arbitrage_opportunities(
         // let duration = start_time.elapsed();
         // println!("{:?}", duration);
         let path = bellman_ford_negative_cycle(n, &rate_edges, 0); // This assumes source as 0, you can change if needed
-        if let Some(negative_cycle) = path {
+        if let Some(mut negative_cycle) = path {
+            rotate_path(&mut negative_cycle, &asset_to_index, TRADEABLE_ASSET);  // Set `TRADEABLE_ASSET` to base unit
             let volume = limiting_volume(&negative_cycle, &rate_map, &volume_map);
             let asset_names: Vec<String> = negative_cycle.iter().map(|&i| asset_to_index.iter().find(|&(_, &v)| v == i).unwrap().0.clone()).collect();
-            let first_asset_units = &asset_names[0];
-            let message = format!("Arbitrage opportunity at cycle: {:?}\n\nLimiting volume: {} {}", asset_names, volume, first_asset_units);
+            let message = format!("Arbitrage opportunity at cycle: {:?}\n\nLimiting volume: ${} {}", asset_names, volume, asset_names[0]);
             send_telegram_message(&bot_token, &chat_id, &message).await?;
+            if asset_names.contains(&TRADEABLE_ASSET.to_string()) {
+                execute_trade(&asset_names[0], &asset_names[1], volume).await?;
+            }
         }
     }
 }
@@ -60,6 +65,15 @@ fn limiting_volume(path: &[usize], rates: &HashMap<(usize, usize), f64>, volumes
     }
 
     min_volume  // Return the volume in terms of the 1st asset in the path. TODO: must be USD, or whatever currency we own.
+}
+
+fn rotate_path(negative_cycle: &mut Vec<usize>, asset_to_index: &HashMap<String, usize>, asset: &str) {
+    negative_cycle.pop();  // Remove the last element in the path
+     // Rotate the path until `asset` is first
+    if let Some(usd_index) = negative_cycle.iter().position(|&i| asset_to_index.iter().find(|&(_, &v)| v == i).unwrap().0 == asset) {
+        negative_cycle.rotate_left(usd_index);
+    }
+    negative_cycle.push(*negative_cycle.first().unwrap());  // Add `asset` to the end of the path
 }
 
 async fn send_telegram_message(bot_token: &str, chat_id: &str, message: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -158,5 +172,20 @@ mod tests {
 
         let min_volume = limiting_volume(&path, &rates, &volumes);
         assert_eq!(min_volume, 2.0);  // Expected minimum volume is 1.0
+    }
+
+    #[test]
+    fn test_rotate_path() {
+        let mut negative_cycle = vec![0, 1, 2, 3, 4, 0];
+        let mut asset_to_index = HashMap::new();
+        asset_to_index.insert("asset0".to_string(), 0);
+        asset_to_index.insert("asset1".to_string(), 1);
+        asset_to_index.insert("asset2".to_string(), 2);
+        asset_to_index.insert("asset3".to_string(), 3);
+        asset_to_index.insert("asset4".to_string(), 4);
+
+        rotate_path(&mut negative_cycle, &asset_to_index, "asset2");
+
+        assert_eq!(negative_cycle, vec![2, 3, 4, 0, 1, 2]);
     }
 }
