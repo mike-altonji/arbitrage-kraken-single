@@ -4,8 +4,10 @@ use std::sync::{Arc, Mutex};
 // use std::time::Instant;
 use tokio::time::Duration;
 use crate::graph_algorithms::{bellman_ford_negative_cycle, Edge};
+use crate::kraken::execute_trade;
 
 const FEE: f64 = 0.0026;
+const TRADEABLE_ASSET: &str = "ZUSD";
 
 pub async fn evaluate_arbitrage_opportunities(
     pair_to_assets: HashMap<String, (String, String)>,
@@ -33,9 +35,11 @@ pub async fn evaluate_arbitrage_opportunities(
         if let Some(negative_cycle) = path {
             let volume = limiting_volume(&negative_cycle, &rate_map, &volume_map);
             let asset_names: Vec<String> = negative_cycle.iter().map(|&i| asset_to_index.iter().find(|&(_, &v)| v == i).unwrap().0.clone()).collect();
-            let first_asset_units = &asset_names[0];
-            let message = format!("Arbitrage opportunity at cycle: {:?}\n\nLimiting volume: {} {}", asset_names, volume, first_asset_units);
+            let message = format!("Arbitrage opportunity at cycle: {:?}\n\nLimiting volume: ${} {}", asset_names, volume, asset_names[0]);
             send_telegram_message(&bot_token, &chat_id, &message).await?;
+            if asset_names.contains(&TRADEABLE_ASSET.to_string()) {
+                execute_trade(&asset_names[0], &asset_names[1], volume).await?;
+            }
         }
     }
 }
