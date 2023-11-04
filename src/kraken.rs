@@ -89,6 +89,12 @@ pub async fn fetch_kraken_data_ws(pair_to_assets: HashMap<String, (String, Strin
 }
 
 
+pub async fn execute_trade(asset1: &str, asset2: &str, volume: f64) -> Result<(), Box<dyn std::error::Error>> {
+    log::info!("TODO: Buy {} of {} using {}", volume, asset2, asset1);
+    Ok(())
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
