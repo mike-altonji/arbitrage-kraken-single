@@ -19,10 +19,14 @@ pub async fn evaluate_arbitrage_opportunities(
     let message = "🚀 Launching websocket-based, Rust arbitrage trader.";
     send_telegram_message(&bot_token, &chat_id, &message).await?;
 
+    let asset_to_index = generate_asset_to_index_map(&pair_to_assets);
+    let n = asset_to_index.len();
+    log::info!("Asset to index map: {:?}", asset_to_index);
+
     loop {
         // let start_time = Instant::now();
         let asset_pairs = shared_asset_pairs.lock().unwrap().clone();
-        let (n, rate_edges, rate_map, volume_map) = prepare_graph(&asset_pairs, &pair_to_assets);
+        let (rate_edges, rate_map, volume_map) = prepare_graph(&asset_pairs, &pair_to_assets, &asset_to_index);
         // let duration = start_time.elapsed();
         // println!("{:?}", duration);
         let path = bellman_ford_negative_cycle(n, &rate_edges, 0); // This assumes source as 0, you can change if needed
@@ -62,19 +66,28 @@ async fn send_telegram_message(bot_token: &str, chat_id: &str, message: &str) ->
     Ok(())
 }
 
-fn prepare_graph(
-    asset_pairs: &HashMap<String, (f64, f64, f64, f64)>, 
-    pair_to_assets: &HashMap<String, (String, String)>
-) -> (usize, Vec<Edge>, HashMap<(usize, usize), f64>, HashMap<(usize, usize), f64>) {
+fn generate_asset_to_index_map(pair_to_assets: &HashMap<String, (String, String)>) -> HashMap<String, usize> {
     let mut asset_to_index = HashMap::new();
     let mut index = 0;
+    for (_, (asset1, asset2)) in pair_to_assets {
+        asset_to_index.entry(asset1.clone()).or_insert_with(|| { index += 1; index - 1 });
+        asset_to_index.entry(asset2.clone()).or_insert_with(|| { index += 1; index - 1 });
+    }
+    asset_to_index
+}
+
+fn prepare_graph(
+    asset_pairs: &HashMap<String, (f64, f64, f64, f64)>, 
+    pair_to_assets: &HashMap<String, (String, String)>,
+    asset_to_index: &HashMap<String, usize>
+) -> (Vec<Edge>, HashMap<(usize, usize), f64>, HashMap<(usize, usize), f64>) {
     let mut exchange_rates = vec![];
     let mut rates_map = HashMap::new();
     let mut volumes_map = HashMap::new();
     for (pair, (bid, ask, bid_volume, ask_volume)) in asset_pairs {
         if let Some((asset1, asset2)) = pair_to_assets.get(pair) {
-            let index1 = *asset_to_index.entry(asset1.clone()).or_insert_with(|| { index += 1; index - 1 });
-            let index2 = *asset_to_index.entry(asset2.clone()).or_insert_with(|| { index += 1; index - 1 });
+            let index1 = *asset_to_index.get(asset1).expect(&format!("Expected {} in asset_to_index", asset1));
+            let index2 = *asset_to_index.get(asset2).expect(&format!("Expected {} in asset_to_index", asset2));
             let bid_rate = bid * (1.0 - FEE);
             let ask_rate = 1.0 / (ask * (1.0 + FEE));
             exchange_rates.push(Edge { src: index1, dest: index2, weight: -(bid_rate).ln() });
@@ -85,13 +98,27 @@ fn prepare_graph(
             volumes_map.insert((index2, index1), *ask_volume);
         }
     }
-    (index, exchange_rates, rates_map, volumes_map)
+
+    (exchange_rates, rates_map, volumes_map)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn test_generate_asset_to_index_map() {
+        let mut pair_to_assets = HashMap::new();
+        pair_to_assets.insert("pair1".to_string(), ("asset1".to_string(), "asset2".to_string()));
+        pair_to_assets.insert("pair2".to_string(), ("asset2".to_string(), "asset3".to_string()));
+
+        let asset_to_index = generate_asset_to_index_map(&pair_to_assets);
+
+        assert!(asset_to_index.get("asset1").unwrap() >= &0 && asset_to_index.get("asset1").unwrap() <= &2);
+        assert!(asset_to_index.get("asset2").unwrap() >= &0 && asset_to_index.get("asset2").unwrap() <= &2);
+        assert!(asset_to_index.get("asset3").unwrap() >= &0 && asset_to_index.get("asset3").unwrap() <= &2);
+}
 
     #[test]
     fn test_prepare_graph() {
@@ -103,10 +130,16 @@ mod tests {
         pair_to_assets.insert("pair1".to_string(), ("asset1".to_string(), "asset2".to_string()));
         pair_to_assets.insert("pair2".to_string(), ("asset2".to_string(), "asset3".to_string()));
 
-        let (n, edges, _rate_map, _volume_map) = prepare_graph(&asset_pairs, &pair_to_assets);
+        let asset_to_index = generate_asset_to_index_map(&pair_to_assets);
 
-        assert_eq!(n, 3);
+        let (edges, _rate_map, _volume_map) = prepare_graph(&asset_pairs, &pair_to_assets, &asset_to_index);
+
         assert_eq!(edges.len(), 4);
+        
+        let edge_from_asset1_to_asset2 = edges.iter().find(|edge| edge.src == *asset_to_index.get("asset1").unwrap() && edge.dest == *asset_to_index.get("asset2").unwrap());
+        assert!(edge_from_asset1_to_asset2.is_some(), "Expected an edge from asset1 to asset2");
+        let edge = edge_from_asset1_to_asset2.unwrap();
+        assert_eq!(edge.weight, -(1.0 * (1.0 - FEE)).ln(), "Expected the weight of the edge from asset1 to asset2 to be the natural logarithm of the negative bid rate");
     }
 
     #[test]
