@@ -7,7 +7,7 @@ use crate::graph_algorithms::{bellman_ford_negative_cycle, Edge};
 use crate::kraken::execute_trade;
 
 const FEE: f64 = 0.0026;
-const TRADEABLE_ASSET: &str = "ZUSD";
+const TRADEABLE_ASSET: &str = "USD";
 
 pub async fn evaluate_arbitrage_opportunities(
     pair_to_assets: HashMap<String, (String, String)>,
