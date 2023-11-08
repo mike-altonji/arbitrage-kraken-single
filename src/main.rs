@@ -27,12 +27,17 @@ async fn main() {
     log4rs::init_config(log_config).unwrap();
 
     // Pull asset pairs and initialize bids/asks
-    let csv_files = vec!["resources/asset_pairs_a1.csv", "resources/asset_pairs_a2.csv", "resources/asset_pairs_b1.csv", "resources/asset_pairs_b2.csv"];
+    let paths = std::fs::read_dir("resources").expect("Failed to read directory");
+    let csv_files: Vec<_> = paths
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().and_then(std::ffi::OsStr::to_str) == Some("csv"))
+        .map(|e| e.path().to_str().unwrap().to_string())
+        .collect();
     let mut pairs_to_assets_vec = Vec::new();
     let mut shared_asset_pairs_vec = Vec::new();
     
     for csv_file in csv_files {
-        let pair_to_assets = kraken::asset_pairs_to_pull(csv_file).await.expect("Failed to get asset pairs");
+        let pair_to_assets = kraken::asset_pairs_to_pull(&csv_file).await.expect("Failed to get asset pairs");
         let shared_asset_pairs = Arc::new(Mutex::new(HashMap::new()));
         pairs_to_assets_vec.push(pair_to_assets);
         shared_asset_pairs_vec.push(shared_asset_pairs);
