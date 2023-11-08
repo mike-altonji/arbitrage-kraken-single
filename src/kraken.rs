@@ -6,34 +6,53 @@ use futures_util::StreamExt;
 use futures_util::sink::SinkExt;
 use std::sync::{Arc, Mutex};
 use reqwest;
+use std::fs::File;
+use csv::ReaderBuilder;
 
 pub async fn asset_pairs_to_pull() -> Result<HashMap<String, (String, String)>, Box<dyn std::error::Error>> {
     // Define the set of valid bases and quotes
-    let valid_assets = [
-        "ZUSD", "ZEUR", "XXBT", "XETH", "USDT", "ZGBP", "ZJPY", "ZAUD", "USDC", "XXRP", "BCH", "DOT",
-        "LINK", "XLTC", "ADA", "XTZ", "ZCAD", "ALGO", "ATOM", "CHF", "KSM", "AAVE", "BAT", "DAI",
-        "ENJ", "EOS", "FIL", "FLOW", "MANA", "MATIC", "OMG", "SOL", "ANT", "CRV", "EWT", "GRT",
-        "ICX", "KAVA", "KNC", "LPT", "LSK", "MINA", "NANO", "OCEAN", "PAXG", "QTUM", "REPV2", "SAND",
-        "SC", "SNX", "SUSHI", "TRX", "UNI", "UST", "WAVES", "XETC", "XMLN", "XXDG", "XXLM", "XXMR"
-    ].iter().cloned().collect::<HashSet<_>>();
+    let mut rdr = ReaderBuilder::new().from_reader(File::open("resources/asset_pairs_a1.csv")?);
+    let mut input_asset_pairs = HashSet::new();
+    for result in rdr.records() {
+        let record = result?;
+        input_asset_pairs.insert(record[0].to_string());
+    }
 
     // Fetch the list of all asset pairs
     let asset_pairs_url = "https://api.kraken.com/0/public/AssetPairs";
     let resp = reqwest::get(asset_pairs_url).await?;
     let text = resp.text().await?;
-    let data: Value = serde_json::from_str(&text)?;
+    let data_asset_pairs: Value = serde_json::from_str(&text)?;
+
+    // Fetch the list of all assets
+    let asset_pairs_url = "https://api.kraken.com/0/public/Assets";
+    let resp = reqwest::get(asset_pairs_url).await?;
+    let text = resp.text().await?;
+    let data_assets: Value = serde_json::from_str(&text)?;
+
     let mut pair_to_assets = HashMap::new();
-    if let Some(pairs) = data["result"].as_object() {
+    if let Some(pairs) = data_asset_pairs["result"].as_object() {
         for (_pair, details) in pairs {
+            let status = details["status"].as_str().unwrap_or("").to_string();
+            let pair_ws = details["wsname"].as_str().unwrap_or("").to_string();
+            
+            // Convert base/quote to ws_name format
             let base = details["base"].as_str().unwrap_or("").to_string();
             let quote = details["quote"].as_str().unwrap_or("").to_string();
-            if valid_assets.contains(base.as_str()) && valid_assets.contains(quote.as_str()) {
-                let wsname: String = details["wsname"].as_str().unwrap_or("").to_string();
-                pair_to_assets.insert(wsname, (base, quote));
+            let base_ws = data_assets["result"][&base]["altname"].as_str();
+            let quote_ws = data_assets["result"][&quote]["altname"].as_str();
+
+            // Only insert pair: (base, quote) if their values are not missing
+            match (base_ws, quote_ws) {
+                (Some(base_ws), Some(quote_ws)) => {
+                    if input_asset_pairs.contains(&pair_ws) && status == "online" {
+                        pair_to_assets.insert(pair_ws.to_string(), (base_ws.to_string(), quote_ws.to_string()));
+                    }
+                },
+                _ => {
+                    log::warn!("Altname does not exist for base or quote");
+                }
             }
-            // Uncomment if we want to run all asset pairs and edges
-            // let wsname: String = details["wsname"].as_str().unwrap_or("").to_string();
-            // pair_to_assets.insert(wsname, (base, quote));
         }
     }
 
@@ -105,9 +124,8 @@ mod tests {
         let result = Runtime::new().unwrap().block_on(asset_pairs_to_pull());
         assert!(result.is_ok());
         let pairs = result.unwrap();
-        assert!(pairs.contains_key("XBT/USD"));
-        assert!(pairs.contains_key("XBT/EUR"));
-        assert_eq!(pairs["XBT/USD"].0, "XXBT");
-        assert_eq!(pairs["XBT/USD"].1, "ZUSD");
+        assert!(pairs.contains_key("EUR/USD"));
+        assert_eq!(pairs["EUR/USD"].0, "EUR");
+        assert_eq!(pairs["EUR/USD"].1, "USD");
     }
 }
