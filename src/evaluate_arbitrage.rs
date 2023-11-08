@@ -1,10 +1,10 @@
-use std::env;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 // use std::time::Instant;
 use tokio::time::Duration;
 use crate::graph_algorithms::{bellman_ford_negative_cycle, Edge};
 use crate::kraken::execute_trade;
+use crate::telegram::send_telegram_message;
 
 const FEE: f64 = 0.0026;
 const TRADEABLE_ASSET: &str = "USD";
@@ -13,13 +13,10 @@ pub async fn evaluate_arbitrage_opportunities(
     pair_to_assets: HashMap<String, (String, String)>,
     shared_asset_pairs: Arc<Mutex<HashMap<String, (f64, f64, f64, f64)>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let bot_token = env::var("TELEGRAM_BOT_TOKEN").expect("TELEGRAM_BOT_TOKEN must be set");
-    let chat_id = env::var("TELEGRAM_CHAT_ID").expect("TELEGRAM_CHAT_ID must be set");
 
     // Give shared_asset_pairs time to populate
     tokio::time::sleep(Duration::from_secs(3)).await;
-    let message = "🚀 Launching websocket-based, Rust arbitrage trader.";
-    send_telegram_message(&bot_token, &chat_id, &message).await?;
+    send_telegram_message("🚀 Launching websocket-based, Rust arbitrage trader.").await?;
 
     let asset_to_index = generate_asset_to_index_map(&pair_to_assets);
     let n = asset_to_index.len();
@@ -37,7 +34,7 @@ pub async fn evaluate_arbitrage_opportunities(
             let volume = limiting_volume(&negative_cycle, &rate_map, &volume_map);
             let asset_names: Vec<String> = negative_cycle.iter().map(|&i| asset_to_index.iter().find(|&(_, &v)| v == i).unwrap().0.clone()).collect();
             let message = format!("Arbitrage opportunity at cycle: {:?}\n\nLimiting volume: ${} {}", asset_names, volume, asset_names[0]);
-            send_telegram_message(&bot_token, &chat_id, &message).await?;
+            send_telegram_message(&message).await?;
             if asset_names.contains(&TRADEABLE_ASSET.to_string()) {
                 execute_trade(&asset_names[0], &asset_names[1], volume).await?;
             }
@@ -74,12 +71,6 @@ fn rotate_path(negative_cycle: &mut Vec<usize>, asset_to_index: &HashMap<String,
         negative_cycle.rotate_left(usd_index);
     }
     negative_cycle.push(*negative_cycle.first().unwrap());  // Add `asset` to the end of the path
-}
-
-async fn send_telegram_message(bot_token: &str, chat_id: &str, message: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let url = format!("https://api.telegram.org/bot{}/sendMessage?chat_id={}&text={}", bot_token, chat_id, message);
-    let _response = reqwest::Client::new().post(&url).send().await?;
-    Ok(())
 }
 
 fn generate_asset_to_index_map(pair_to_assets: &HashMap<String, (String, String)>) -> HashMap<String, usize> {

@@ -9,9 +9,9 @@ use reqwest;
 use std::fs::File;
 use csv::ReaderBuilder;
 
-pub async fn asset_pairs_to_pull() -> Result<HashMap<String, (String, String)>, Box<dyn std::error::Error>> {
+pub async fn asset_pairs_to_pull(fname: &str) -> Result<HashMap<String, (String, String)>, Box<dyn std::error::Error>> {
     // Define the set of valid bases and quotes
-    let mut rdr = ReaderBuilder::new().from_reader(File::open("resources/asset_pairs_a1.csv")?);
+    let mut rdr = ReaderBuilder::new().from_reader(File::open(fname)?);
     let mut input_asset_pairs = HashSet::new();
     for result in rdr.records() {
         let record = result?;
@@ -60,17 +60,17 @@ pub async fn asset_pairs_to_pull() -> Result<HashMap<String, (String, String)>, 
 }
 
 
-pub async fn fetch_kraken_data_ws(pair_to_assets: HashMap<String, (String, String)>, shared_asset_pairs: Arc<Mutex<HashMap<String, (f64, f64, f64, f64)>>>) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn fetch_kraken_data_ws(all_pairs: HashSet<String>, shared_asset_pairs_vec: Vec<Arc<Mutex<HashMap<String, (f64, f64, f64, f64)>>>>) -> Result<(), Box<dyn std::error::Error>> {
     let url = url::Url::parse("wss://ws.kraken.com").unwrap();
     let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
     let (mut write, mut read) = ws_stream.split();
     let subscription_message = json!({
         "event": "subscribe",
         "subscription": {"name": "spread"},
-        "pair": pair_to_assets.keys().cloned().collect::<Vec<String>>(),
+        "pair": all_pairs.clone().into_iter().collect::<Vec<String>>(),
     });
     write.send(Message::Text(subscription_message.to_string())).await?;
-    log::info!("Subscribed to asset pairs: {:?}", pair_to_assets.keys().collect::<Vec<&String>>());
+    log::info!("Subscribed to asset pairs: {:?}", all_pairs.iter().collect::<Vec<&String>>());
 
     while let Some(msg) = read.next().await {
         match msg {
@@ -84,8 +84,13 @@ pub async fn fetch_kraken_data_ws(pair_to_assets: HashMap<String, (String, Strin
                             let ask = inner_array.get(1).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap();
                             let bid_volume = inner_array.get(3).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap();
                             let ask_volume = inner_array.get(4).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap();
-                            let mut locked_pairs = shared_asset_pairs.lock().unwrap();
-                            locked_pairs.insert(pair.to_string(), (bid, ask, bid_volume, ask_volume));
+                            // If the edge is in the graph, lock it
+                            for shared_asset_pairs in &shared_asset_pairs_vec {
+                                let mut locked_pairs = shared_asset_pairs.lock().unwrap();
+                                if locked_pairs.contains_key(&pair.to_string()) {
+                                    locked_pairs.insert(pair.to_string(), (bid, ask, bid_volume, ask_volume));
+                                }
+                            }
                             // Log lag to insert pair
                             if let Some(Ok(timestamp)) = inner_array.get(2).and_then(|s| s.as_str()).map(|s| s.parse::<f64>()) {
                                 let now = std::time::SystemTime::now()
@@ -99,7 +104,7 @@ pub async fn fetch_kraken_data_ws(pair_to_assets: HashMap<String, (String, Strin
                 }
             },
             Err(e) => {
-                println!("Error during websocket communication: {:?}", e);
+                log::error!("Error during websocket communication: {:?}", e);
             },
             _ => {} // Handle other message types if needed.
         }
@@ -121,7 +126,7 @@ mod tests {
 
     #[test]
     fn test_asset_pairs_to_pull() {
-        let result = Runtime::new().unwrap().block_on(asset_pairs_to_pull());
+        let result = Runtime::new().unwrap().block_on(asset_pairs_to_pull("resources/asset_pairs_a1.csv"));
         assert!(result.is_ok());
         let pairs = result.unwrap();
         assert!(pairs.contains_key("EUR/USD"));
