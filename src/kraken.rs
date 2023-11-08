@@ -104,7 +104,7 @@ pub async fn fetch_kraken_data_ws(all_pairs: HashSet<String>, shared_asset_pairs
                 }
             },
             Err(e) => {
-                println!("Error during websocket communication: {:?}", e);
+                log::error!("Error during websocket communication: {:?}", e);
             },
             _ => {} // Handle other message types if needed.
         }

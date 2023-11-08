@@ -7,6 +7,9 @@ use futures::future::select_all;
 mod kraken;
 mod evaluate_arbitrage;
 mod graph_algorithms;
+mod telegram;
+
+use crate::telegram::send_telegram_message;
 
 #[tokio::main]
 async fn main() {
@@ -81,7 +84,11 @@ async fn main() {
     
     let (result, _index, _remaining) = select_all(all_handles).await;
     match result {
-        Ok(_) => println!("A task completed successfully"),
-        Err(e) => eprintln!("A task failed with error: {:?}", e),
+        Ok(_) => send_telegram_message("Finished running").await.unwrap(),
+        Err(e) => {
+            let error_message = format!("A task failed with error: {:?}", e);
+            log::info!("{}", error_message);
+            send_telegram_message(&error_message).await.unwrap();
+        },
     }
 }
