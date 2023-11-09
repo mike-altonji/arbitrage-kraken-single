@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 // use std::time::Instant;
 use tokio::time::{Duration, sleep};
-use influx_db_client::{Client, reqwest::Url};
+use influx_db_client::{Client, Point, Precision, reqwest::Url};
 use crate::graph_algorithms::{bellman_ford_negative_cycle, Edge};
 use crate::kraken::execute_trade;
 use crate::telegram::send_telegram_message;
@@ -47,20 +47,25 @@ pub async fn evaluate_arbitrage_opportunities(
             let asset_names: Vec<String> = negative_cycle.iter().map(|&i| asset_to_index.iter().find(|&(_, &v)| v == i).unwrap().0.clone()).collect();
             
             // Log +/- 5 minutes of raw data
-            let client = Arc::clone(&client);
+            let client1 = Arc::clone(&client);
             let retention_policy = Arc::clone(&retention_policy_clone);
             tokio::spawn(async move {
-                save_spread_latency_around_arbitrage_to_influx(client, &*retention_policy).await;
+                save_spread_latency_around_arbitrage_to_influx(client1, &*retention_policy).await;
             });
 
-            // TODO: Log arbitrage-specific row to table
+            // Log arbitrage-specific row to table
+            let client2 = Arc::clone(&client);
+            tokio::spawn(async move {
+                arbitrage_details_to_influx(client2, 123, volume, asset_names[0].to_string(), asset_names).await;
+            });
 
-            // Send message
-            let message = format!("Arbitrage opportunity at cycle: {:?}\n\nLimiting volume: ${} {}", asset_names, volume, asset_names[0]);
-            send_telegram_message(&message).await?;
-            if asset_names.contains(&TRADEABLE_ASSET.to_string()) {
-                execute_trade(&asset_names[0], &asset_names[1], volume).await?;
-            }
+            // // Send message
+            // let message = format!("Arbitrage opportunity at cycle: {:?}\n\nLimiting volume: ${} {}", asset_names, volume, asset_names[0]);
+            // send_telegram_message(&message).await?;
+            // if asset_names.contains(&TRADEABLE_ASSET.to_string()) {
+            //     execute_trade(&asset_names[0], &asset_names[1], volume).await?;
+            // }
+
         }
     }
 }
@@ -136,6 +141,16 @@ async fn save_spread_latency_around_arbitrage_to_influx(client: Arc<Client>, ret
     sleep(Duration::from_secs(300)).await;
     let query = format!("SELECT * INTO spreads_around_arbitrage FROM {}.spread_latency WHERE time >= now() - 10m", retention_policy);
     let _ = client.query(&query, None).await.expect("Saving spreads_around_arbitrage failed");
+}
+
+async fn arbitrage_details_to_influx(client: Arc<Client>, graph_id: i64, limited_volume: f64, volume_units: String, path: Vec<String>) {
+    let point = Point::new("arbitrage_details")
+        .add_tag("graph_id", influx_db_client::Value::Integer(graph_id))
+        .add_field("limiting_volume", influx_db_client::Value::Float(limited_volume))
+        .add_field("volume_units", influx_db_client::Value::String(volume_units))
+        .add_field("path", influx_db_client::Value::String(path.join(", ")))
+    ;
+    let _ = client.write_point(point, Some(Precision::Nanoseconds), None).await.expect("Failed to write to arbitrage_details");
 }
 
 #[cfg(test)]
