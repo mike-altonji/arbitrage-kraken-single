@@ -29,6 +29,8 @@ async fn main() {
 
     log4rs::init_config(log_config).unwrap();
 
+    send_telegram_message("🚀 Launching websocket-based, Rust arbitrage trader.").await.expect("Launch message failed to send");
+
     // Pull asset pairs and initialize bids/asks
     let paths = std::fs::read_dir("resources").expect("Failed to read directory");
     let csv_files: Vec<_> = paths
