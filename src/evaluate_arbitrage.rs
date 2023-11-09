@@ -27,6 +27,8 @@ pub async fn evaluate_arbitrage_opportunities(
     let retention_policy_clone = Arc::clone(&retention_policy_var);
     let client = Arc::new(Client::new(Url::parse(&format!("http://{}:{}", &host, &port)).unwrap(), &db_name).set_authentication(&user, &password));
 
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+
     // Give shared_asset_pairs time to populate
     tokio::time::sleep(Duration::from_secs(3)).await;
     send_telegram_message("🚀 Launching websocket-based, Rust arbitrage trader.").await?;
@@ -46,7 +48,9 @@ pub async fn evaluate_arbitrage_opportunities(
             rotate_path(&mut negative_cycle, &asset_to_index, TRADEABLE_ASSET);  // Set `TRADEABLE_ASSET` to base unit
             let volume = limiting_volume(&negative_cycle, &rate_map, &volume_map);
             let asset_names: Vec<String> = negative_cycle.iter().map(|&i| asset_to_index.iter().find(|&(_, &v)| v == i).unwrap().0.clone()).collect();
-            
+            let asset_names_clone = asset_names.clone();
+            let message = format!("Arbitrage opportunity at cycle: {:?}\n\nLimiting volume: ${} {}", asset_names, volume, asset_names[0]);
+
             // Log +/- 5 minutes of raw data
             let client1 = Arc::clone(&client);
             let retention_policy = Arc::clone(&retention_policy_clone);
@@ -60,13 +64,18 @@ pub async fn evaluate_arbitrage_opportunities(
                 arbitrage_details_to_influx(client2, graph_id, volume, asset_names[0].to_string(), asset_names).await;
             });
 
-            // // Send message
-            // let message = format!("Arbitrage opportunity at cycle: {:?}\n\nLimiting volume: ${} {}", asset_names, volume, asset_names[0]);
-            // send_telegram_message(&message).await?;
-            // if asset_names.contains(&TRADEABLE_ASSET.to_string()) {
-            //     execute_trade(&asset_names[0], &asset_names[1], volume).await?;
-            // }
+            // Send message at most every 5 seconds
+            let sem_clone = Arc::clone(&semaphore);
+            tokio::spawn(async move {
+                let _permit = sem_clone.acquire().await.expect("Failed to acquire semaphore");
+                send_telegram_message(&message).await.expect("Unable to send Telegram message for Arbitrage");
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            });
 
+            // Execute Trade TODO: This is a dummy for now, need real logic
+            if asset_names_clone.contains(&TRADEABLE_ASSET.to_string()) {
+                execute_trade(&asset_names_clone[0], &asset_names_clone[1], volume).await?;
+            }
         }
     }
 }
