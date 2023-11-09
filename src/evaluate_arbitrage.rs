@@ -50,7 +50,7 @@ pub async fn evaluate_arbitrage_opportunities(
             let client = Arc::clone(&client);
             let retention_policy = Arc::clone(&retention_policy_clone);
             tokio::spawn(async move {
-                save_spread_latency_around_arbitrage(client, &*retention_policy).await;
+                save_spread_latency_around_arbitrage_to_influx(client, &*retention_policy).await;
             });
 
             // TODO: Log arbitrage-specific row to table
@@ -132,7 +132,7 @@ fn prepare_graph(
     (exchange_rates, rates_map, volumes_map)
 }
 
-async fn save_spread_latency_around_arbitrage(client: Arc<Client>, retention_policy: &str) {
+async fn save_spread_latency_around_arbitrage_to_influx(client: Arc<Client>, retention_policy: &str) {
     sleep(Duration::from_secs(300)).await;
     let query = format!("SELECT * INTO spreads_around_arbitrage FROM {}.spread_latency WHERE time >= now() - 10m", retention_policy);
     let _ = client.query(&query, None).await.expect("Saving spreads_around_arbitrage failed");
