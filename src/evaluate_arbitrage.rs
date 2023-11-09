@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 use tokio::time::{Duration, sleep};
 use influx_db_client::{Client, Point, Precision, reqwest::Url};
 use crate::graph_algorithms::{bellman_ford_negative_cycle, Edge};
@@ -26,7 +25,6 @@ pub async fn evaluate_arbitrage_opportunities(
     let retention_policy_var = Arc::new(std::env::var("RP_NAME").expect("RP_NAME must be set"));
     let retention_policy_clone = Arc::clone(&retention_policy_var);
     let client = Arc::new(Client::new(Url::parse(&format!("http://{}:{}", &host, &port)).unwrap(), &db_name).set_authentication(&user, &password));
-
     let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
 
     // Give shared_asset_pairs time to populate
@@ -39,11 +37,18 @@ pub async fn evaluate_arbitrage_opportunities(
 
     loop {
         // Create graph and run Bellman Ford
-        let start_time = Instant::now();
+        let start_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
         let asset_pairs = shared_asset_pairs.lock().unwrap().clone();
         let (rate_edges, rate_map, volume_map) = prepare_graph(&asset_pairs, &pair_to_assets, &asset_to_index);
         let path = bellman_ford_negative_cycle(n, &rate_edges, 0);
-        let duration = start_time.elapsed();
+        let end_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let duration = (end_time - start_time) as f64 / 1_000_000_000.0;
         
         // Log evaluation time
         let client0 = Arc::clone(&client);
@@ -156,13 +161,11 @@ fn prepare_graph(
     (exchange_rates, rates_map, volumes_map)
 }
 
-async fn save_evaluation_time_to_influx(client: Arc<Client>, retention_policy: &str, graph_id: i64, start_time: Instant, duration: Duration) {
-    let start_time_nanos = start_time.elapsed().as_nanos() as i64;
-    let duration_in_secs = duration.as_secs_f64();
+async fn save_evaluation_time_to_influx(client: Arc<Client>, retention_policy: &str, graph_id: i64, start_time: u128, duration: f64) {
     let point = Point::new("evaluation_time")
-        .add_timestamp(start_time_nanos)
+        .add_timestamp(start_time.try_into().unwrap())
         .add_tag("graph_id", influx_db_client::Value::Integer(graph_id))
-        .add_field("duration", influx_db_client::Value::Float(duration_in_secs))
+        .add_field("duration", influx_db_client::Value::Float(duration))
     ;
     let _ = client.write_point(point, Some(Precision::Nanoseconds), Some(retention_policy)).await.expect("Failed to write to evaluation_time");
 }
