@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-// use std::time::Instant;
+use std::time::Instant;
 use tokio::time::{Duration, sleep};
 use influx_db_client::{Client, Point, Precision, reqwest::Url};
 use crate::graph_algorithms::{bellman_ford_negative_cycle, Edge};
@@ -38,12 +38,21 @@ pub async fn evaluate_arbitrage_opportunities(
     log::info!("Asset to index map: {:?}", asset_to_index);
 
     loop {
-        // let start_time = Instant::now();
+        // Create graph and run Bellman Ford
+        let start_time = Instant::now();
         let asset_pairs = shared_asset_pairs.lock().unwrap().clone();
         let (rate_edges, rate_map, volume_map) = prepare_graph(&asset_pairs, &pair_to_assets, &asset_to_index);
-        // let duration = start_time.elapsed();
-        // println!("{:?}", duration);
-        let path = bellman_ford_negative_cycle(n, &rate_edges, 0); // This assumes source as 0, you can change if needed
+        let path = bellman_ford_negative_cycle(n, &rate_edges, 0);
+        let duration = start_time.elapsed();
+        
+        // Log evaluation time
+        let client0 = Arc::clone(&client);
+        let retention_policy = Arc::clone(&retention_policy_clone);
+        tokio::spawn(async move {
+            save_evaluation_time_to_influx(client0, &*retention_policy, graph_id, start_time, duration).await;
+        });
+
+        // Arbitrage opportunity found
         if let Some(mut negative_cycle) = path {
             rotate_path(&mut negative_cycle, &asset_to_index, TRADEABLE_ASSET);  // Set `TRADEABLE_ASSET` to base unit
             let volume = limiting_volume(&negative_cycle, &rate_map, &volume_map);
@@ -145,6 +154,17 @@ fn prepare_graph(
     }
 
     (exchange_rates, rates_map, volumes_map)
+}
+
+async fn save_evaluation_time_to_influx(client: Arc<Client>, retention_policy: &str, graph_id: i64, start_time: Instant, duration: Duration) {
+    let start_time_nanos = start_time.elapsed().as_nanos() as i64;
+    let duration_in_secs = duration.as_secs_f64();
+    let point = Point::new("evaluation_time")
+        .add_timestamp(start_time_nanos)
+        .add_tag("graph_id", influx_db_client::Value::Integer(graph_id))
+        .add_field("duration", influx_db_client::Value::Float(duration_in_secs))
+    ;
+    let _ = client.write_point(point, Some(Precision::Nanoseconds), Some(retention_policy)).await.expect("Failed to write to evaluation_time");
 }
 
 async fn save_spread_latency_around_arbitrage_to_influx(client: Arc<Client>, retention_policy: &str) {
