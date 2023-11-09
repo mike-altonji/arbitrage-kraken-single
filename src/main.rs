@@ -70,7 +70,7 @@ async fn main() {
             let pair_to_assets_clone = pairs_to_assets_vec[i].clone();
             let shared_asset_pairs_clone = shared_asset_pairs_vec[i].clone();
             tokio::spawn(async move {
-                let _ = evaluate_arbitrage::evaluate_arbitrage_opportunities(pair_to_assets_clone, shared_asset_pairs_clone).await;
+                let _ = evaluate_arbitrage::evaluate_arbitrage_opportunities(pair_to_assets_clone, shared_asset_pairs_clone, i as i64).await;
             })
         };
         evaluate_handles.push(evaluate_handle);

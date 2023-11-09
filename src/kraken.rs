@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use reqwest;
 use std::fs::File;
 use csv::ReaderBuilder;
+use influx_db_client::{Client, Point, Precision, reqwest::Url};
 
 pub async fn asset_pairs_to_pull(fname: &str) -> Result<HashMap<String, (String, String)>, Box<dyn std::error::Error>> {
     // Define the set of valid bases and quotes
@@ -72,13 +73,24 @@ pub async fn fetch_kraken_data_ws(all_pairs: HashSet<String>, shared_asset_pairs
     write.send(Message::Text(subscription_message.to_string())).await?;
     log::info!("Subscribed to asset pairs: {:?}", all_pairs.iter().collect::<Vec<&String>>());
 
+    // Set up InfluxDB client
+    dotenv::dotenv().ok();
+    let host = std::env::var("INFLUXDB_HOST").expect("INFLUXDB_HOST must be set");
+    let port = std::env::var("INFLUXDB_PORT").expect("INFLUXDB_PORT must be set");
+    let db_name = std::env::var("DB_NAME").expect("DB_NAME must be set");
+    let user = std::env::var("DB_USER").expect("DB_USER must be set");
+    let password = std::env::var("DB_PASSWORD").expect("DB_PASSWORD must be set");
+    let retention_policy_var = Arc::new(std::env::var("RP_NAME").expect("RP_NAME must be set"));
+    let retention_policy_clone = Arc::clone(&retention_policy_var);
+    let client = Arc::new(Client::new(Url::parse(&format!("http://{}:{}", &host, &port)).unwrap(), &db_name).set_authentication(&user, &password));
+
     while let Some(msg) = read.next().await {
         match msg {
             Ok(Message::Text(text)) => {
                 let data: Value = serde_json::from_str(&text)?;
                 if let Some(array) = data.as_array() {
                     if array.len() >= 4 {
-                        let pair = array[3].as_str().unwrap_or_default();
+                        let pair = array[3].as_str().unwrap_or_default().to_string();
                         if let Some(inner_array) = array[1].as_array() {
                             let bid = inner_array.get(0).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap();
                             let ask = inner_array.get(1).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap();
@@ -91,13 +103,17 @@ pub async fn fetch_kraken_data_ws(all_pairs: HashSet<String>, shared_asset_pairs
                                     locked_pairs.insert(pair.to_string(), (bid, ask, bid_volume, ask_volume));
                                 }
                             }
-                            // Log lag to insert pair
-                            if let Some(Ok(timestamp)) = inner_array.get(2).and_then(|s| s.as_str()).map(|s| s.parse::<f64>()) {
+                            // Log latency to insert pair
+                            if let Some(Ok(kraken_ts)) = inner_array.get(2).and_then(|s| s.as_str()).map(|s| s.parse::<f64>()) {
                                 let now = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap_or_default()
                                     .as_secs_f64();
-                                log::info!("Processing delay for pair {}: {:.6} seconds", pair, now - timestamp);
+                                let client = Arc::clone(&client);
+                                let retention_policy = Arc::clone(&retention_policy_clone);
+                                tokio::spawn(async move {
+                                    spread_latency_to_influx(client, &*retention_policy, &pair, kraken_ts, now).await;
+                                });
                             }
                         }
                     }
@@ -116,6 +132,18 @@ pub async fn fetch_kraken_data_ws(all_pairs: HashSet<String>, shared_asset_pairs
 pub async fn execute_trade(asset1: &str, asset2: &str, volume: f64) -> Result<(), Box<dyn std::error::Error>> {
     log::info!("TODO: Buy {} of {} using {}", volume, asset2, asset1);
     Ok(())
+}
+
+
+async fn spread_latency_to_influx(client: Arc<Client>, retention_policy: &str, pair: &str, kraken_ts: f64, update_graph_ts: f64) {
+    let latency = update_graph_ts - kraken_ts;
+    let point = Point::new("spread_latency")
+        .add_tag("pair", influx_db_client::Value::String(pair.to_string()))
+        .add_field("kraken_ts", influx_db_client::Value::Float(kraken_ts))
+        .add_field("update_graph_ts", influx_db_client::Value::Float(update_graph_ts))
+        .add_field("latency", latency)
+    ;
+    let _ = client.write_point(point, Some(Precision::Nanoseconds), Some(retention_policy)).await.expect("Failed to write to spread_latency");
 }
 
 

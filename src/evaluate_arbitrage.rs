@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-// use std::time::Instant;
-use tokio::time::Duration;
+use std::time::Instant;
+use tokio::time::{Duration, sleep};
+use influx_db_client::{Client, Point, Precision, reqwest::Url};
 use crate::graph_algorithms::{bellman_ford_negative_cycle, Edge};
 use crate::kraken::execute_trade;
 use crate::telegram::send_telegram_message;
@@ -12,7 +13,21 @@ const TRADEABLE_ASSET: &str = "USD";
 pub async fn evaluate_arbitrage_opportunities(
     pair_to_assets: HashMap<String, (String, String)>,
     shared_asset_pairs: Arc<Mutex<HashMap<String, (f64, f64, f64, f64)>>>,
+    graph_id: i64
 ) -> Result<(), Box<dyn std::error::Error>> {
+
+    // Set up InfluxDB client
+    dotenv::dotenv().ok();
+    let host = std::env::var("INFLUXDB_HOST").expect("INFLUXDB_HOST must be set");
+    let port = std::env::var("INFLUXDB_PORT").expect("INFLUXDB_PORT must be set");
+    let db_name = std::env::var("DB_NAME").expect("DB_NAME must be set");
+    let user = std::env::var("DB_USER").expect("DB_USER must be set");
+    let password = std::env::var("DB_PASSWORD").expect("DB_PASSWORD must be set");
+    let retention_policy_var = Arc::new(std::env::var("RP_NAME").expect("RP_NAME must be set"));
+    let retention_policy_clone = Arc::clone(&retention_policy_var);
+    let client = Arc::new(Client::new(Url::parse(&format!("http://{}:{}", &host, &port)).unwrap(), &db_name).set_authentication(&user, &password));
+
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
 
     // Give shared_asset_pairs time to populate
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -23,20 +38,52 @@ pub async fn evaluate_arbitrage_opportunities(
     log::info!("Asset to index map: {:?}", asset_to_index);
 
     loop {
-        // let start_time = Instant::now();
+        // Create graph and run Bellman Ford
+        let start_time = Instant::now();
         let asset_pairs = shared_asset_pairs.lock().unwrap().clone();
         let (rate_edges, rate_map, volume_map) = prepare_graph(&asset_pairs, &pair_to_assets, &asset_to_index);
-        // let duration = start_time.elapsed();
-        // println!("{:?}", duration);
-        let path = bellman_ford_negative_cycle(n, &rate_edges, 0); // This assumes source as 0, you can change if needed
+        let path = bellman_ford_negative_cycle(n, &rate_edges, 0);
+        let duration = start_time.elapsed();
+        
+        // Log evaluation time
+        let client0 = Arc::clone(&client);
+        let retention_policy = Arc::clone(&retention_policy_clone);
+        tokio::spawn(async move {
+            save_evaluation_time_to_influx(client0, &*retention_policy, graph_id, start_time, duration).await;
+        });
+
+        // Arbitrage opportunity found
         if let Some(mut negative_cycle) = path {
             rotate_path(&mut negative_cycle, &asset_to_index, TRADEABLE_ASSET);  // Set `TRADEABLE_ASSET` to base unit
             let volume = limiting_volume(&negative_cycle, &rate_map, &volume_map);
             let asset_names: Vec<String> = negative_cycle.iter().map(|&i| asset_to_index.iter().find(|&(_, &v)| v == i).unwrap().0.clone()).collect();
+            let asset_names_clone = asset_names.clone();
             let message = format!("Arbitrage opportunity at cycle: {:?}\n\nLimiting volume: ${} {}", asset_names, volume, asset_names[0]);
-            send_telegram_message(&message).await?;
-            if asset_names.contains(&TRADEABLE_ASSET.to_string()) {
-                execute_trade(&asset_names[0], &asset_names[1], volume).await?;
+
+            // Log +/- 5 minutes of raw data
+            let client1 = Arc::clone(&client);
+            let retention_policy = Arc::clone(&retention_policy_clone);
+            tokio::spawn(async move {
+                save_spread_latency_around_arbitrage_to_influx(client1, &*retention_policy).await;
+            });
+
+            // Log arbitrage-specific row to table
+            let client2 = Arc::clone(&client);
+            tokio::spawn(async move {
+                arbitrage_details_to_influx(client2, graph_id, volume, asset_names[0].to_string(), asset_names).await;
+            });
+
+            // Send message at most every 5 seconds
+            let sem_clone = Arc::clone(&semaphore);
+            tokio::spawn(async move {
+                let _permit = sem_clone.acquire().await.expect("Failed to acquire semaphore");
+                send_telegram_message(&message).await.expect("Unable to send Telegram message for Arbitrage");
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            });
+
+            // Execute Trade TODO: This is a dummy for now, need real logic
+            if asset_names_clone.contains(&TRADEABLE_ASSET.to_string()) {
+                execute_trade(&asset_names_clone[0], &asset_names_clone[1], volume).await?;
             }
         }
     }
@@ -107,6 +154,33 @@ fn prepare_graph(
     }
 
     (exchange_rates, rates_map, volumes_map)
+}
+
+async fn save_evaluation_time_to_influx(client: Arc<Client>, retention_policy: &str, graph_id: i64, start_time: Instant, duration: Duration) {
+    let start_time_nanos = start_time.elapsed().as_nanos() as i64;
+    let duration_in_secs = duration.as_secs_f64();
+    let point = Point::new("evaluation_time")
+        .add_timestamp(start_time_nanos)
+        .add_tag("graph_id", influx_db_client::Value::Integer(graph_id))
+        .add_field("duration", influx_db_client::Value::Float(duration_in_secs))
+    ;
+    let _ = client.write_point(point, Some(Precision::Nanoseconds), Some(retention_policy)).await.expect("Failed to write to evaluation_time");
+}
+
+async fn save_spread_latency_around_arbitrage_to_influx(client: Arc<Client>, retention_policy: &str) {
+    sleep(Duration::from_secs(300)).await;
+    let query = format!("SELECT * INTO spreads_around_arbitrage FROM {}.spread_latency WHERE time >= now() - 10m", retention_policy);
+    let _ = client.query(&query, None).await.expect("Saving spreads_around_arbitrage failed");
+}
+
+async fn arbitrage_details_to_influx(client: Arc<Client>, graph_id: i64, limited_volume: f64, volume_units: String, path: Vec<String>) {
+    let point = Point::new("arbitrage_details")
+        .add_tag("graph_id", influx_db_client::Value::Integer(graph_id))
+        .add_field("limiting_volume", influx_db_client::Value::Float(limited_volume))
+        .add_field("volume_units", influx_db_client::Value::String(volume_units))
+        .add_field("path", influx_db_client::Value::String(path.join(", ")))
+    ;
+    let _ = client.write_point(point, Some(Precision::Nanoseconds), None).await.expect("Failed to write to arbitrage_details");
 }
 
 #[cfg(test)]

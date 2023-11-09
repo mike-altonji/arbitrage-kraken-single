@@ -46,6 +46,7 @@ dependencies = [
  "dotenv",
  "futures",
  "futures-util",
+ "influx_db_client",
  "log",
  "log4rs",
  "reqwest",
@@ -561,6 +562,19 @@ checksum = "bd070e393353796e801d209ad339e89596eb4c8d430d18ede6a1cced8fafbd99"
 dependencies = [
  "autocfg",
  "hashbrown",
+]
+
+[[package]]
+name = "influx_db_client"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2ef03268010ccf98c178eed83aa7377b7f6531f8ec8d43a256902c24cadac60"
+dependencies = [
+ "bytes",
+ "futures",
+ "reqwest",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
