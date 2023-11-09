@@ -29,7 +29,6 @@ pub async fn evaluate_arbitrage_opportunities(
 
     // Give shared_asset_pairs time to populate
     tokio::time::sleep(Duration::from_secs(3)).await;
-    send_telegram_message("🚀 Launching websocket-based, Rust arbitrage trader.").await?;
 
     let asset_to_index = generate_asset_to_index_map(&pair_to_assets);
     let n = asset_to_index.len();
