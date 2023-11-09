@@ -13,6 +13,7 @@ const TRADEABLE_ASSET: &str = "USD";
 pub async fn evaluate_arbitrage_opportunities(
     pair_to_assets: HashMap<String, (String, String)>,
     shared_asset_pairs: Arc<Mutex<HashMap<String, (f64, f64, f64, f64)>>>,
+    graph_id: i64
 ) -> Result<(), Box<dyn std::error::Error>> {
 
     // Set up InfluxDB client
@@ -56,7 +57,7 @@ pub async fn evaluate_arbitrage_opportunities(
             // Log arbitrage-specific row to table
             let client2 = Arc::clone(&client);
             tokio::spawn(async move {
-                arbitrage_details_to_influx(client2, 123, volume, asset_names[0].to_string(), asset_names).await;
+                arbitrage_details_to_influx(client2, graph_id, volume, asset_names[0].to_string(), asset_names).await;
             });
 
             // // Send message
