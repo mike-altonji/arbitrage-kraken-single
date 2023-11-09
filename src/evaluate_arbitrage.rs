@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 // use std::time::Instant;
-use tokio::time::Duration;
+use tokio::time::{Duration, sleep};
+use influx_db_client::{Client, reqwest::Url};
 use crate::graph_algorithms::{bellman_ford_negative_cycle, Edge};
 use crate::kraken::execute_trade;
 use crate::telegram::send_telegram_message;
@@ -13,6 +14,17 @@ pub async fn evaluate_arbitrage_opportunities(
     pair_to_assets: HashMap<String, (String, String)>,
     shared_asset_pairs: Arc<Mutex<HashMap<String, (f64, f64, f64, f64)>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+
+    // Set up InfluxDB client
+    dotenv::dotenv().ok();
+    let host = std::env::var("INFLUXDB_HOST").expect("INFLUXDB_HOST must be set");
+    let port = std::env::var("INFLUXDB_PORT").expect("INFLUXDB_PORT must be set");
+    let db_name = std::env::var("DB_NAME").expect("DB_NAME must be set");
+    let user = std::env::var("DB_USER").expect("DB_USER must be set");
+    let password = std::env::var("DB_PASSWORD").expect("DB_PASSWORD must be set");
+    let retention_policy_var = Arc::new(std::env::var("RP_NAME").expect("RP_NAME must be set"));
+    let retention_policy_clone = Arc::clone(&retention_policy_var);
+    let client = Arc::new(Client::new(Url::parse(&format!("http://{}:{}", &host, &port)).unwrap(), &db_name).set_authentication(&user, &password));
 
     // Give shared_asset_pairs time to populate
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -33,6 +45,17 @@ pub async fn evaluate_arbitrage_opportunities(
             rotate_path(&mut negative_cycle, &asset_to_index, TRADEABLE_ASSET);  // Set `TRADEABLE_ASSET` to base unit
             let volume = limiting_volume(&negative_cycle, &rate_map, &volume_map);
             let asset_names: Vec<String> = negative_cycle.iter().map(|&i| asset_to_index.iter().find(|&(_, &v)| v == i).unwrap().0.clone()).collect();
+            
+            // Log +/- 5 minutes of raw data
+            let client = Arc::clone(&client);
+            let retention_policy = Arc::clone(&retention_policy_clone);
+            tokio::spawn(async move {
+                save_spread_latency_around_arbitrage(client, &*retention_policy).await;
+            });
+
+            // TODO: Log arbitrage-specific row to table
+
+            // Send message
             let message = format!("Arbitrage opportunity at cycle: {:?}\n\nLimiting volume: ${} {}", asset_names, volume, asset_names[0]);
             send_telegram_message(&message).await?;
             if asset_names.contains(&TRADEABLE_ASSET.to_string()) {
@@ -107,6 +130,12 @@ fn prepare_graph(
     }
 
     (exchange_rates, rates_map, volumes_map)
+}
+
+async fn save_spread_latency_around_arbitrage(client: Arc<Client>, retention_policy: &str) {
+    sleep(Duration::from_secs(300)).await;
+    let query = format!("SELECT * INTO spreads_around_arbitrage FROM {}.spread_latency WHERE time >= now() - 10m", retention_policy);
+    let _ = client.query(&query, None).await.expect("Saving spreads_around_arbitrage failed");
 }
 
 #[cfg(test)]
