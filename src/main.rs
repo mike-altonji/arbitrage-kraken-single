@@ -31,12 +31,13 @@ async fn main() {
 
     // Loop allows retries
     let mut retry = 0;
-    loop {
-        if retry > 0 {
-            sleep(Duration::from_secs(10)).await;
-            send_telegram_message(&format!("Restart arbitrage trader #{}", retry)).await.expect("Launch message failed to send");
-        }
+    while retry <= 3 {
         retry += 1;
+        if retry > 1 {
+            sleep(Duration::from_secs(10)).await;
+            send_telegram_message(&format!("Restart arbitrage trader #{}", retry - 1)).await.expect("Launch message failed to send");
+        }
+        
 
         // Pull asset pairs and initialize bids/asks
         let paths = std::fs::read_dir("resources").expect("Failed to read directory");
@@ -100,5 +101,7 @@ async fn main() {
                 send_telegram_message(&error_message).await.expect("Failure message failed to send");
             },
         }
+        send_telegram_message("Too many retries: Exiting the program.").await.expect("Failed to send");
+        std::process::exit(1);
     }
 }
