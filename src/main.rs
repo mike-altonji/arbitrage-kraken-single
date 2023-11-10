@@ -90,7 +90,7 @@ async fn main() {
         Err(e) => {
             let error_message = format!("A task failed with error: {:?}", e);
             log::info!("{}", error_message);
-            send_telegram_message(&error_message).await.unwrap();
+            send_telegram_message(&error_message).await.expect("Failure message failed to send");
         },
     }
 }
