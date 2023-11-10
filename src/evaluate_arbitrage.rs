@@ -32,7 +32,7 @@ pub async fn evaluate_arbitrage_opportunities(
 
     let asset_to_index = generate_asset_to_index_map(&pair_to_assets);
     let n = asset_to_index.len();
-    log::info!("Asset to index map: {:?}", asset_to_index);
+    log::info!("Asset to index map (Graph {}): {:?}", graph_id, asset_to_index);
 
     let mut counter = 0;
 
