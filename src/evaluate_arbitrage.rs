@@ -42,6 +42,10 @@ pub async fn evaluate_arbitrage_opportunities(
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
+        
+        // Take pauses so I don't overheat computer (actually waits longer...eval times went from 1.5us to 1.5ms. Fine with this for now!)
+        tokio::time::sleep(Duration::from_micros(10)).await;
+        
         let asset_pairs = shared_asset_pairs.lock().unwrap().clone();
         let (rate_edges, rate_map, volume_map) = prepare_graph(&asset_pairs, &pair_to_assets, &asset_to_index);
         let path = bellman_ford_negative_cycle(n, &rate_edges, 0);
