@@ -34,6 +34,8 @@ pub async fn evaluate_arbitrage_opportunities(
     let n = asset_to_index.len();
     log::info!("Asset to index map: {:?}", asset_to_index);
 
+    let mut counter = 0;
+
     loop {
         // Create graph and run Bellman Ford
         let start_time = std::time::SystemTime::now()
@@ -43,18 +45,21 @@ pub async fn evaluate_arbitrage_opportunities(
         let asset_pairs = shared_asset_pairs.lock().unwrap().clone();
         let (rate_edges, rate_map, volume_map) = prepare_graph(&asset_pairs, &pair_to_assets, &asset_to_index);
         let path = bellman_ford_negative_cycle(n, &rate_edges, 0);
-        let end_time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let duration = (end_time - start_time) as f64 / 1_000_000_000.0;
-        
-        // Log evaluation time
-        let client0 = Arc::clone(&client);
-        let retention_policy = Arc::clone(&retention_policy_clone);
-        tokio::spawn(async move {
-            save_evaluation_time_to_influx(client0, &*retention_policy, graph_id, start_time, duration).await;
-        });
+
+        // Log a subsample of events every N iterations
+        if counter == 1000 {
+            let end_time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let client0 = Arc::clone(&client);
+            let retention_policy = Arc::clone(&retention_policy_clone);
+            tokio::spawn(async move {
+                save_evaluation_time_to_influx(client0, &*retention_policy, graph_id, start_time, end_time).await;
+            });
+            counter = 0
+        }
+        counter += 1;
 
         // Arbitrage opportunity found
         if let Some(mut negative_cycle) = path {
@@ -160,7 +165,8 @@ fn prepare_graph(
     (exchange_rates, rates_map, volumes_map)
 }
 
-async fn save_evaluation_time_to_influx(client: Arc<Client>, retention_policy: &str, graph_id: i64, start_time: u128, duration: f64) {
+async fn save_evaluation_time_to_influx(client: Arc<Client>, retention_policy: &str, graph_id: i64, start_time: u128, end_time: u128) {
+    let duration = (end_time - start_time) as f64 / 1_000_000_000.0;
     let point = Point::new("evaluation_time")
         .add_timestamp(start_time.try_into().unwrap())
         .add_tag("graph_id", influx_db_client::Value::Integer(graph_id))
