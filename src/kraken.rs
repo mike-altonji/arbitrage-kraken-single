@@ -94,6 +94,7 @@ pub async fn fetch_kraken_data_ws(all_pairs: HashSet<String>, shared_asset_pairs
                         if let Some(inner_array) = array[1].as_array() {
                             let bid = inner_array.get(0).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap();
                             let ask = inner_array.get(1).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap();
+                            let kraken_ts = inner_array.get(2).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap();
                             let bid_volume = inner_array.get(3).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap();
                             let ask_volume = inner_array.get(4).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap();
                             // If the edge is in the graph, lock it
@@ -104,17 +105,15 @@ pub async fn fetch_kraken_data_ws(all_pairs: HashSet<String>, shared_asset_pairs
                                 }
                             }
                             // Log latency to insert pair
-                            if let Some(Ok(kraken_ts)) = inner_array.get(2).and_then(|s| s.as_str()).map(|s| s.parse::<f64>()) {
-                                let now = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs_f64();
-                                let client = Arc::clone(&client);
-                                let retention_policy = Arc::clone(&retention_policy_clone);
-                                tokio::spawn(async move {
-                                    spread_latency_to_influx(client, &*retention_policy, &pair, kraken_ts, now).await;
-                                });
-                            }
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs_f64();
+                            let client = Arc::clone(&client);
+                            let retention_policy = Arc::clone(&retention_policy_clone);
+                            tokio::spawn(async move {
+                                spread_latency_to_influx(client, &*retention_policy, &pair, kraken_ts, now).await;
+                            });
                         }
                     }
                 }
