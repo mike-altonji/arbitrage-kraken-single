@@ -11,7 +11,7 @@ const TRADEABLE_ASSET: &str = "USD";
 
 pub async fn evaluate_arbitrage_opportunities(
     pair_to_assets: HashMap<String, (String, String)>,
-    shared_asset_pairs: Arc<Mutex<HashMap<String, (f64, f64, f64, f64)>>>,
+    shared_asset_pairs: Arc<Mutex<HashMap<String, (f64, f64, f64, f64, f64)>>>,
     graph_id: i64
 ) -> Result<(), Box<dyn std::error::Error>> {
 
@@ -144,14 +144,14 @@ fn generate_asset_to_index_map(pair_to_assets: &HashMap<String, (String, String)
 }
 
 fn prepare_graph(
-    asset_pairs: &HashMap<String, (f64, f64, f64, f64)>, 
+    asset_pairs: &HashMap<String, (f64, f64, f64, f64, f64)>, 
     pair_to_assets: &HashMap<String, (String, String)>,
     asset_to_index: &HashMap<String, usize>
 ) -> (Vec<Edge>, HashMap<(usize, usize), f64>, HashMap<(usize, usize), f64>) {
     let mut exchange_rates = vec![];
     let mut rates_map = HashMap::new();
     let mut volumes_map = HashMap::new();
-    for (pair, (bid, ask, bid_volume, ask_volume)) in asset_pairs {
+    for (pair, (bid, ask, _, bid_volume, ask_volume)) in asset_pairs {
         if let Some((asset1, asset2)) = pair_to_assets.get(pair) {
             let index1 = *asset_to_index.get(asset1).expect(&format!("Expected {} in asset_to_index", asset1));
             let index2 = *asset_to_index.get(asset2).expect(&format!("Expected {} in asset_to_index", asset2));
@@ -216,8 +216,8 @@ mod tests {
     #[test]
     fn test_prepare_graph() {
         let mut asset_pairs = HashMap::new();
-        asset_pairs.insert("pair1".to_string(), (1.0, 2.0, 0.0, 0.0));
-        asset_pairs.insert("pair2".to_string(), (3.0, 4.0, 0.0, 0.0));
+        asset_pairs.insert("pair1".to_string(), (1.0, 2.0, 123., 0.0, 0.0));
+        asset_pairs.insert("pair2".to_string(), (3.0, 4.0, 123., 0.0, 0.0));
 
         let mut pair_to_assets = HashMap::new();
         pair_to_assets.insert("pair1".to_string(), ("asset1".to_string(), "asset2".to_string()));

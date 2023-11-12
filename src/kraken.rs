@@ -61,7 +61,7 @@ pub async fn asset_pairs_to_pull(fname: &str) -> Result<HashMap<String, (String,
 }
 
 
-pub async fn fetch_kraken_data_ws(all_pairs: HashSet<String>, shared_asset_pairs_vec: Vec<Arc<Mutex<HashMap<String, (f64, f64, f64, f64)>>>>) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn fetch_kraken_data_ws(all_pairs: HashSet<String>, shared_asset_pairs_vec: Vec<Arc<Mutex<HashMap<String, (f64, f64, f64, f64, f64)>>>>) -> Result<(), Box<dyn std::error::Error>> {
     let url = url::Url::parse("wss://ws.kraken.com").unwrap();
     let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
     let (mut write, mut read) = ws_stream.split();
@@ -101,7 +101,10 @@ pub async fn fetch_kraken_data_ws(all_pairs: HashSet<String>, shared_asset_pairs
                             for shared_asset_pairs in &shared_asset_pairs_vec {
                                 let mut locked_pairs = shared_asset_pairs.lock().unwrap();
                                 if locked_pairs.contains_key(&pair.to_string()) {
-                                    locked_pairs.insert(pair.to_string(), (bid, ask, bid_volume, ask_volume));
+                                    let &(_, _, existing_kraken_ts, _, _) = locked_pairs.get(&pair.to_string()).unwrap();
+                                    if kraken_ts > existing_kraken_ts {
+                                        locked_pairs.insert(pair.to_string(), (bid, ask, kraken_ts, bid_volume, ask_volume));
+                                    }
                                 }
                             }
                             // Log latency to insert pair
