@@ -7,7 +7,7 @@ use crate::kraken::execute_trade;
 use crate::telegram::send_telegram_message;
 
 const FEE: f64 = 0.0026;
-const TRADEABLE_ASSET: &str = "USD";
+const TRADEABLE_ASSET: &str = "USD";  // Cycle must contain this to execute a trade.
 
 pub async fn evaluate_arbitrage_opportunities(
     pair_to_assets: HashMap<String, (String, String)>,
@@ -111,8 +111,10 @@ fn limiting_volume(path: &[usize], rates: &HashMap<(usize, usize), f64>, volumes
         let asset2 = path[i + 1];
 
         // Find the volume for the current asset pair, in terms of the 1st asset
-        let rate = rates.get(&(asset1, asset2)).expect("Expected rate");
-        let volume2 =  volumes.get(&(asset1, asset2)).expect("Expected volume");
+        let rate = rates.get(&(asset1, asset2)).expect(&format!("Expected rate for assets {} and {}, but found none. 
+            Rates are {:?} and path is {:?}", asset1, asset2, rates, path));
+        let volume2 =  volumes.get(&(asset1, asset2)).expect(&format!("Expected volume for assets {} and {}, but found none. 
+            Volumes are {:?} and path is {:?}", asset1, asset2, volumes, path));
         let volume1 = volume2 / rate;
         ending_volume *= rate;
 
