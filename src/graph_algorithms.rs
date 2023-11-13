@@ -37,17 +37,21 @@ fn backtrack_negative_cycle_path(n: usize, pred: &[Option<usize>], dest: usize) 
     visited[dest] = true;
     while path.len() <= n {
         if let Some(p) = pred[current] {
-            path.push(p);
             current = p;
             if visited[p] {
+                path = path.into_iter().rev().take_while(|&x| x != p).collect();
+                path.push(p);
                 break;
             }
+            path.push(p);
             visited[p] = true;
         } else {
             break;
         }
     }
-    path.reverse();
+    if let Some(&first) = path.first() {
+        path.push(first);
+    }
     path
 }
 
