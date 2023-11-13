@@ -31,7 +31,7 @@ async fn main() {
 
     // Loop allows retries
     let mut retry = 0;
-    while retry <= 3 {
+    while retry <= 5 {
         retry += 1;
         if retry > 1 {
             sleep(Duration::from_secs(10)).await;
@@ -101,7 +101,7 @@ async fn main() {
                 send_telegram_message(&error_message).await.expect("Failure message failed to send");
             },
         }
-        send_telegram_message("Too many retries: Exiting the program.").await.expect("Failed to send");
-        std::process::exit(1);
     }
+    send_telegram_message("Too many retries: Exiting the program.").await.expect("Failed to send");
+    std::process::exit(1);
 }
