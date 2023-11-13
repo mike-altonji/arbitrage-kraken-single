@@ -68,10 +68,10 @@ pub async fn evaluate_arbitrage_opportunities(
         // Arbitrage opportunity found
         if let Some(mut negative_cycle) = path {
             rotate_path(&mut negative_cycle, &asset_to_index, TRADEABLE_ASSET);  // Set `TRADEABLE_ASSET` to base unit
-            let volume = limiting_volume(&negative_cycle, &rate_map, &volume_map);
+            let (min_volume, end_volume) = limiting_volume(&negative_cycle, &rate_map, &volume_map);
             let asset_names: Vec<String> = negative_cycle.iter().map(|&i| asset_to_index.iter().find(|&(_, &v)| v == i).unwrap().0.clone()).collect();
             let asset_names_clone = asset_names.clone();
-            let message = format!("Arbitrage opportunity at cycle: {:?}\n\nLimiting volume: ${} {}", asset_names, volume, asset_names[0]);
+            let message = format!("Arbitrage opportunity at cycle: {:?}\n\n${:.4} -> {:.4} {}", asset_names, min_volume, end_volume, asset_names[0]);
 
             // Log +/- 5 minutes of raw data
             let client1 = Arc::clone(&client);
@@ -83,7 +83,7 @@ pub async fn evaluate_arbitrage_opportunities(
             // Log arbitrage-specific row to table
             let client2 = Arc::clone(&client);
             tokio::spawn(async move {
-                arbitrage_details_to_influx(client2, graph_id, volume, asset_names[0].to_string(), asset_names).await;
+                arbitrage_details_to_influx(client2, graph_id, min_volume, end_volume, asset_names[0].to_string(), asset_names).await;
             });
 
             // Send message at most every 5 seconds
@@ -96,14 +96,15 @@ pub async fn evaluate_arbitrage_opportunities(
 
             // Execute Trade TODO: This is a dummy for now, need real logic
             if asset_names_clone.contains(&TRADEABLE_ASSET.to_string()) {
-                execute_trade(&asset_names_clone[0], &asset_names_clone[1], volume).await?;
+                execute_trade(&asset_names_clone[0], &asset_names_clone[1], min_volume).await?;
             }
         }
     }
 }
 
-fn limiting_volume(path: &[usize], rates: &HashMap<(usize, usize), f64>, volumes: &HashMap<(usize, usize), f64>) -> f64 {
+fn limiting_volume(path: &[usize], rates: &HashMap<(usize, usize), f64>, volumes: &HashMap<(usize, usize), f64>) -> (f64, f64) {
     let mut min_volume = std::f64::MAX;
+    let mut ending_volume = 1.;
 
     for i in 0..path.len() - 1 {
         let asset1 = path[i];
@@ -113,6 +114,7 @@ fn limiting_volume(path: &[usize], rates: &HashMap<(usize, usize), f64>, volumes
         let rate = rates.get(&(asset1, asset2)).expect("Expected rate");
         let volume2 =  volumes.get(&(asset1, asset2)).expect("Expected volume");
         let volume1 = volume2 / rate;
+        ending_volume *= rate;
 
         // Update the minimum volume if necessary
         if volume1 < min_volume {
@@ -120,8 +122,8 @@ fn limiting_volume(path: &[usize], rates: &HashMap<(usize, usize), f64>, volumes
         }
         min_volume *= rate;  // Regardless, convert to the next asset's terms
     }
-
-    min_volume  // Return the volume in terms of the 1st asset in the path. TODO: must be USD, or whatever currency we own.
+    ending_volume *= min_volume;
+    (min_volume, ending_volume)
 }
 
 fn rotate_path(negative_cycle: &mut Vec<usize>, asset_to_index: &HashMap<String, usize>, asset: &str) {
@@ -185,10 +187,11 @@ async fn save_spread_latency_around_arbitrage_to_influx(client: Arc<Client>, ret
     let _ = client.query(&query, None).await.expect("Saving spreads_around_arbitrage failed");
 }
 
-async fn arbitrage_details_to_influx(client: Arc<Client>, graph_id: i64, limited_volume: f64, volume_units: String, path: Vec<String>) {
+async fn arbitrage_details_to_influx(client: Arc<Client>, graph_id: i64, limited_volume: f64, ending_volume: f64, volume_units: String, path: Vec<String>) {
     let point = Point::new("arbitrage_details")
         .add_tag("graph_id", influx_db_client::Value::Integer(graph_id))
         .add_field("limiting_volume", influx_db_client::Value::Float(limited_volume))
+        .add_field("ending_volume", influx_db_client::Value::Float(ending_volume))
         .add_field("volume_units", influx_db_client::Value::String(volume_units))
         .add_field("path", influx_db_client::Value::String(path.join(", ")))
     ;
@@ -247,8 +250,9 @@ mod tests {
         volumes.insert((1, 2), 1.0);
         volumes.insert((2, 0), 4.0);
 
-        let min_volume = limiting_volume(&path, &rates, &volumes);
+        let (min_volume, ending_volume) = limiting_volume(&path, &rates, &volumes);
         assert_eq!(min_volume, 2.0);  // Expected minimum volume is 1.0
+        assert_eq!(ending_volume, 4.0);  // Putting in $2 yields $4
     }
 
     #[test]
