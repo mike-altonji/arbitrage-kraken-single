@@ -97,28 +97,26 @@ pub async fn fetch_kraken_data_ws(all_pairs: HashSet<String>, shared_asset_pairs
                             let kraken_ts = inner_array.get(2).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap();
                             let bid_volume = inner_array.get(3).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap();
                             let ask_volume = inner_array.get(4).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap();
-                            // If the edge is in the graph, lock it
-                            let mut updated_graph = false;
                             for shared_asset_pairs in &shared_asset_pairs_vec {
                                 let mut locked_pairs = shared_asset_pairs.lock().unwrap();
                                 if locked_pairs.contains_key(&pair.to_string()) {
                                     let &(_, _, existing_kraken_ts, _, _) = locked_pairs.get(&pair.to_string()).unwrap();
                                     if kraken_ts > existing_kraken_ts {
+                                        // If data is new, update graph and write to DB (we often get old data from Kraken)
                                         locked_pairs.insert(pair.to_string(), (bid, ask, kraken_ts, bid_volume, ask_volume));
-                                        updated_graph = true;
+                                        let now = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_default()
+                                            .as_secs_f64();
+                                        let client = Arc::clone(&client);
+                                        let retention_policy = Arc::clone(&retention_policy_clone);
+                                        let pair_clone = pair.clone(); // Clone the pair here
+                                        tokio::spawn(async move {
+                                            spread_latency_to_influx(client, &*retention_policy, &pair_clone, kraken_ts, now).await;
+                                        });
                                     }
                                 }
                             }
-                            // Log latency to insert pair
-                            let now = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs_f64();
-                            let client = Arc::clone(&client);
-                            let retention_policy = Arc::clone(&retention_policy_clone);
-                            tokio::spawn(async move {
-                                spread_latency_to_influx(client, &*retention_policy, &pair, kraken_ts, now, updated_graph).await;
-                            });
                         }
                     }
                 }
@@ -139,13 +137,12 @@ pub async fn execute_trade(asset1: &str, asset2: &str, volume: f64) -> Result<()
 }
 
 
-async fn spread_latency_to_influx(client: Arc<Client>, retention_policy: &str, pair: &str, kraken_ts: f64, update_graph_ts: f64, updated_graph: bool) {
+async fn spread_latency_to_influx(client: Arc<Client>, retention_policy: &str, pair: &str, kraken_ts: f64, update_graph_ts: f64) {
     let latency = update_graph_ts - kraken_ts;
     let point = Point::new("spread_latency")
         .add_tag("pair", influx_db_client::Value::String(pair.to_string()))
         .add_field("kraken_ts", influx_db_client::Value::Float(kraken_ts))
         .add_field("update_graph_ts", influx_db_client::Value::Float(update_graph_ts))
-        .add_field("updated_graph", influx_db_client::Value::Boolean(updated_graph))
         .add_field("latency", latency)
     ;
     let _ = client.write_point(point, Some(Precision::Nanoseconds), Some(retention_policy)).await.expect("Failed to write to spread_latency");
