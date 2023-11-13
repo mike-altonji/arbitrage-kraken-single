@@ -33,13 +33,16 @@ pub fn bellman_ford_negative_cycle(n: usize, edges: &[Edge], source: usize) -> O
 fn backtrack_negative_cycle_path(n: usize, pred: &[Option<usize>], dest: usize) -> Vec<usize> {
     let mut path = vec![dest];
     let mut current = dest;
+    let mut visited = vec![false; n];
+    visited[dest] = true;
     while path.len() <= n {
         if let Some(p) = pred[current] {
             path.push(p);
             current = p;
-            if p == dest && path.len() > 1 {
+            if visited[p] {
                 break;
             }
+            visited[p] = true;
         } else {
             break;
         }
