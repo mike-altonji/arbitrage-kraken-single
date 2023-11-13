@@ -68,8 +68,9 @@ async fn main() {
         let fetch_handle = {
             let all_pairs_clone = all_pairs.clone();
             let shared_asset_pairs_vec_clone = shared_asset_pairs_vec.clone();
+            let pairs_to_assets_vec_clone = pairs_to_assets_vec.clone();
             tokio::spawn(async move {
-                kraken::fetch_kraken_data_ws(all_pairs_clone, shared_asset_pairs_vec_clone).await.expect("Failed to fetch data");
+                kraken::fetch_kraken_data_ws(all_pairs_clone, shared_asset_pairs_vec_clone, pairs_to_assets_vec_clone).await.expect("Failed to fetch data");
             })
         };
 

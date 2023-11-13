@@ -61,7 +61,11 @@ pub async fn asset_pairs_to_pull(fname: &str) -> Result<HashMap<String, (String,
 }
 
 
-pub async fn fetch_kraken_data_ws(all_pairs: HashSet<String>, shared_asset_pairs_vec: Vec<Arc<Mutex<HashMap<String, (f64, f64, f64, f64, f64)>>>>) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn fetch_kraken_data_ws(
+    all_pairs: HashSet<String>, 
+    shared_asset_pairs_vec: Vec<Arc<Mutex<HashMap<String, (f64, f64, f64, f64, f64)>>>>, 
+    pair_to_assets_vec: Vec<HashMap<String, (String, String)>>
+) -> Result<(), Box<dyn std::error::Error>> {
     let url = url::Url::parse("wss://ws.kraken.com").unwrap();
     let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
     let (mut write, mut read) = ws_stream.split();
@@ -97,10 +101,13 @@ pub async fn fetch_kraken_data_ws(all_pairs: HashSet<String>, shared_asset_pairs
                             let kraken_ts = inner_array.get(2).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap();
                             let bid_volume = inner_array.get(3).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap();
                             let ask_volume = inner_array.get(4).and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap();
-                            for shared_asset_pairs in &shared_asset_pairs_vec {
-                                let mut locked_pairs = shared_asset_pairs.lock().unwrap();
-                                if locked_pairs.contains_key(&pair.to_string()) {
-                                    let &(_, _, existing_kraken_ts, _, _) = locked_pairs.get(&pair.to_string()).unwrap();
+                            for i in 0..pair_to_assets_vec.len() {
+                                if pair_to_assets_vec[i].contains_key(&pair.to_string()) {
+                                    let mut locked_pairs = shared_asset_pairs_vec[i].lock().unwrap();
+                                    let existing_kraken_ts = match locked_pairs.get(&pair.to_string()) {
+                                        Some(&(_, _, ts, _, _)) => ts,
+                                        None => 0.0,
+                                    };
                                     if kraken_ts > existing_kraken_ts {
                                         // If data is new, update graph and write to DB (we often get old data from Kraken)
                                         locked_pairs.insert(pair.to_string(), (bid, ask, kraken_ts, bid_volume, ask_volume));
