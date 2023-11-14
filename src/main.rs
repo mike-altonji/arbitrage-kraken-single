@@ -1,13 +1,13 @@
-use std::time::{SystemTime, UNIX_EPOCH, Duration};
-use std::sync::{Arc, Mutex};
-use std::collections::{HashMap, HashSet};
 use dotenv::dotenv;
 use futures::future::select_all;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
 
-mod kraken;
 mod evaluate_arbitrage;
 mod graph_algorithms;
+mod kraken;
 mod telegram;
 
 use crate::telegram::send_telegram_message;
@@ -24,10 +24,16 @@ async fn main() {
         .unwrap();
     let log_config = log4rs::config::Config::builder()
         .appender(log4rs::config::Appender::builder().build("default", Box::new(log_config)))
-        .build(log4rs::config::Root::builder().appender("default").build(log::LevelFilter::Info))
+        .build(
+            log4rs::config::Root::builder()
+                .appender("default")
+                .build(log::LevelFilter::Info),
+        )
         .unwrap();
     log4rs::init_config(log_config).unwrap();
-    send_telegram_message("🚀 Launching arbitrage trader.").await.expect("Launch message failed to send");
+    send_telegram_message("🚀 Launching arbitrage trader.")
+        .await
+        .expect("Launch message failed to send");
 
     // Loop allows retries
     let mut retry = 0;
@@ -35,9 +41,10 @@ async fn main() {
         retry += 1;
         if retry > 1 {
             sleep(Duration::from_secs(10)).await;
-            send_telegram_message(&format!("Restart arbitrage trader #{}", retry - 1)).await.expect("Launch message failed to send");
+            send_telegram_message(&format!("Restart arbitrage trader #{}", retry - 1))
+                .await
+                .expect("Launch message failed to send");
         }
-        
 
         // Pull asset pairs and initialize bids/asks
         let paths = std::fs::read_dir("resources").expect("Failed to read directory");
@@ -48,9 +55,11 @@ async fn main() {
             .collect();
         let mut pairs_to_assets_vec = Vec::new();
         let mut shared_asset_pairs_vec = Vec::new();
-        
+
         for csv_file in csv_files {
-            let pair_to_assets = kraken::asset_pairs_to_pull(&csv_file).await.expect("Failed to get asset pairs");
+            let pair_to_assets = kraken::asset_pairs_to_pull(&csv_file)
+                .await
+                .expect("Failed to get asset pairs");
             let shared_asset_pairs = Arc::new(Mutex::new(HashMap::new()));
             pairs_to_assets_vec.push(pair_to_assets);
             shared_asset_pairs_vec.push(shared_asset_pairs);
@@ -70,7 +79,13 @@ async fn main() {
             let shared_asset_pairs_vec_clone = shared_asset_pairs_vec.clone();
             let pairs_to_assets_vec_clone = pairs_to_assets_vec.clone();
             tokio::spawn(async move {
-                kraken::fetch_kraken_data_ws(all_pairs_clone, shared_asset_pairs_vec_clone, pairs_to_assets_vec_clone).await.expect("Failed to fetch data");
+                kraken::fetch_kraken_data_ws(
+                    all_pairs_clone,
+                    shared_asset_pairs_vec_clone,
+                    pairs_to_assets_vec_clone,
+                )
+                .await
+                .expect("Failed to fetch data");
             })
         };
 
@@ -81,7 +96,12 @@ async fn main() {
                 let pair_to_assets_clone = pairs_to_assets_vec[i].clone();
                 let shared_asset_pairs_clone = shared_asset_pairs_vec[i].clone();
                 tokio::spawn(async move {
-                    let _ = evaluate_arbitrage::evaluate_arbitrage_opportunities(pair_to_assets_clone, shared_asset_pairs_clone, i as i64).await;
+                    let _ = evaluate_arbitrage::evaluate_arbitrage_opportunities(
+                        pair_to_assets_clone,
+                        shared_asset_pairs_clone,
+                        i as i64,
+                    )
+                    .await;
                 })
             };
             evaluate_handles.push(evaluate_handle);
@@ -92,17 +112,25 @@ async fn main() {
         for handle in evaluate_handles {
             all_handles.push(Box::pin(handle));
         }
-        
+
         let (result, _index, _remaining) = select_all(all_handles).await;
         match result {
-            Ok(_) => send_telegram_message("Code died for some reason. Waiting 10 seconds, then restarting.").await.unwrap(),
+            Ok(_) => send_telegram_message(
+                "Code died for some reason. Waiting 10 seconds, then restarting.",
+            )
+            .await
+            .unwrap(),
             Err(e) => {
                 let error_message = format!("A task failed with error: {:?}", e);
                 log::info!("{}", error_message);
-                send_telegram_message(&error_message).await.expect("Failure message failed to send");
-            },
+                send_telegram_message(&error_message)
+                    .await
+                    .expect("Failure message failed to send");
+            }
         }
     }
-    send_telegram_message("Too many retries: Exiting the program.").await.expect("Failed to send");
+    send_telegram_message("Too many retries: Exiting the program.")
+        .await
+        .expect("Failed to send");
     std::process::exit(1);
 }

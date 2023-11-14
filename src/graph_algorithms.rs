@@ -62,14 +62,38 @@ mod tests {
     #[test]
     fn test_bellman_ford_negative_cycle() {
         let edges = vec![
-            Edge { src: 0, dest: 1, weight: 1.0 },
-            Edge { src: 1, dest: 2, weight: 1.0 },
-            Edge { src: 2, dest: 3, weight: -4.0 },
-            Edge { src: 3, dest: 1, weight: 2.0 },
-            Edge { src: 1, dest: 4, weight: 1.0 },
-            Edge { src: 3, dest: 4, weight: 3.0 }
+            Edge {
+                src: 0,
+                dest: 1,
+                weight: 1.0,
+            },
+            Edge {
+                src: 1,
+                dest: 2,
+                weight: 1.0,
+            },
+            Edge {
+                src: 2,
+                dest: 3,
+                weight: -4.0,
+            },
+            Edge {
+                src: 3,
+                dest: 1,
+                weight: 2.0,
+            },
+            Edge {
+                src: 1,
+                dest: 4,
+                weight: 1.0,
+            },
+            Edge {
+                src: 3,
+                dest: 4,
+                weight: 3.0,
+            },
         ];
-        
+
         let mut result = bellman_ford_negative_cycle(5, &edges, 1);
         // Ensure the starting position is 2 to find the same cycle as the test-case
         if let Some(ref mut path) = result {
