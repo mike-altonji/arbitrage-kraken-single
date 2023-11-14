@@ -25,7 +25,7 @@ pub async fn evaluate_arbitrage_opportunities(
     let retention_policy_clone = Arc::clone(&retention_policy_var);
     let client = Arc::new(
         Client::new(
-            Url::parse(&format!("http://{}:{}", &host, &port)).unwrap(),
+            Url::parse(&format!("http://{}:{}", &host, &port)).expect("Failed to parse URL"),
             &db_name,
         )
         .set_authentication(&user, &password),
