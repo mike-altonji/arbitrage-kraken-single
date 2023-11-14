@@ -38,9 +38,7 @@ async fn main() {
     let mut retry = 0;
     while retry <= 5 {
         retry += 1;
-        if retry > 1 {
-            sleep(Duration::from_secs(10)).await;
-        }
+        sleep(Duration::from_secs(10)).await;
 
         // Pull asset pairs and initialize bids/asks
         let paths = std::fs::read_dir("resources").expect("Failed to read directory");
