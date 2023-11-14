@@ -1,7 +1,7 @@
 use crate::graph_algorithms::{bellman_ford_negative_cycle, Edge};
 use crate::kraken::execute_trade;
 use crate::telegram::send_telegram_message;
-use influx_db_client::{reqwest::Url, Client, Point, Precision};
+use influx_db_client::{reqwest::Url, Client, Point, Precision, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::time::{sleep, Duration};
@@ -271,8 +271,8 @@ async fn save_evaluation_time_to_influx(
     let duration = (end_time - start_time) as f64 / 1_000_000_000.0;
     let point = Point::new("evaluation_time")
         .add_timestamp(start_time.try_into().unwrap())
-        .add_tag("graph_id", influx_db_client::Value::Integer(graph_id))
-        .add_field("duration", influx_db_client::Value::Float(duration));
+        .add_tag("graph_id", Value::Integer(graph_id))
+        .add_field("duration", Value::Float(duration));
     let _ = client
         .write_point(point, Some(Precision::Nanoseconds), Some(retention_policy))
         .await
@@ -304,23 +304,14 @@ async fn arbitrage_details_to_influx(
     rates: Vec<f64>,
 ) {
     let point = Point::new("arbitrage_details")
-        .add_tag("graph_id", influx_db_client::Value::Integer(graph_id))
-        .add_field(
-            "limiting_volume",
-            influx_db_client::Value::Float(limited_volume),
-        )
-        .add_field(
-            "ending_volume",
-            influx_db_client::Value::Float(ending_volume),
-        )
-        .add_field(
-            "volume_units",
-            influx_db_client::Value::String(volume_units),
-        )
-        .add_field("path", influx_db_client::Value::String(path.join(", ")))
+        .add_tag("graph_id", Value::Integer(graph_id))
+        .add_field("limiting_volume", Value::Float(limited_volume))
+        .add_field("ending_volume", Value::Float(ending_volume))
+        .add_field("volume_units", Value::String(volume_units))
+        .add_field("path", Value::String(path.join(", ")))
         .add_field(
             "rates",
-            influx_db_client::Value::String(
+            Value::String(
                 rates
                     .iter()
                     .map(|r| r.to_string())

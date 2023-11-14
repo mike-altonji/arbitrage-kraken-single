@@ -1,5 +1,6 @@
 use dotenv::dotenv;
 use futures::future::select_all;
+use log4rs::{append::file::FileAppender, config};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -19,13 +20,13 @@ async fn main() {
     let now = SystemTime::now();
     let since_the_epoch = now.duration_since(UNIX_EPOCH).expect("Time invalid");
     let timestamp = since_the_epoch.as_secs();
-    let log_config = log4rs::append::file::FileAppender::builder()
+    let log_config = FileAppender::builder()
         .build(format!("logs/arbitrage_log_{}.log", timestamp))
         .expect("Unable to build log file");
-    let log_config = log4rs::config::Config::builder()
-        .appender(log4rs::config::Appender::builder().build("default", Box::new(log_config)))
+    let log_config = config::Config::builder()
+        .appender(config::Appender::builder().build("default", Box::new(log_config)))
         .build(
-            log4rs::config::Root::builder()
+            config::Root::builder()
                 .appender("default")
                 .build(log::LevelFilter::Info),
         )

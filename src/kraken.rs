@@ -1,9 +1,8 @@
 use csv::ReaderBuilder;
 use futures_util::sink::SinkExt;
 use futures_util::StreamExt;
-use influx_db_client::{reqwest::Url, Client, Point, Precision};
+use influx_db_client::{reqwest::Url, Client, Point, Precision, Value};
 use reqwest;
-use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::sync::{Arc, Mutex};
@@ -25,23 +24,23 @@ pub async fn asset_pairs_to_pull(
     let asset_pairs_url = "https://api.kraken.com/0/public/AssetPairs";
     let resp = reqwest::get(asset_pairs_url).await?;
     let text = resp.text().await?;
-    let data_asset_pairs: Value = serde_json::from_str(&text)?;
+    let data_asset_pairs: serde_json::Value = serde_json::from_str(&text)?;
 
     // Fetch the list of all assets
     let asset_pairs_url = "https://api.kraken.com/0/public/Assets";
     let resp = reqwest::get(asset_pairs_url).await?;
     let text = resp.text().await?;
-    let data_assets: Value = serde_json::from_str(&text)?;
+    let data_assets: serde_json::Value = serde_json::from_str(&text)?;
 
     let mut pair_to_assets = HashMap::new();
     if let Some(pairs) = data_asset_pairs["result"].as_object() {
         for (_pair, details) in pairs {
             let status = details["status"].as_str().unwrap_or("").to_string();
             let pair_ws = details["wsname"].as_str().unwrap_or("").to_string();
-
-            // Convert base/quote to ws_name format
             let base = details["base"].as_str().unwrap_or("").to_string();
             let quote = details["quote"].as_str().unwrap_or("").to_string();
+
+            // Convert base/quote to ws_name format
             let base_ws = data_assets["result"][&base]["altname"].as_str();
             let quote_ws = data_assets["result"][&quote]["altname"].as_str();
 
@@ -73,7 +72,7 @@ pub async fn fetch_kraken_data_ws(
     let url = url::Url::parse("wss://ws.kraken.com").unwrap();
     let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
     let (mut write, mut read) = ws_stream.split();
-    let subscription_message = json!({
+    let subscription_message = serde_json::json!({
         "event": "subscribe",
         "subscription": {"name": "spread"},
         "pair": all_pairs.clone().into_iter().collect::<Vec<String>>(),
@@ -106,7 +105,7 @@ pub async fn fetch_kraken_data_ws(
     while let Some(msg) = read.next().await {
         match msg {
             Ok(Message::Text(text)) => {
-                let data: Value = serde_json::from_str(&text)?;
+                let data: serde_json::Value = serde_json::from_str(&text)?;
                 if let Some(array) = data.as_array() {
                     if array.len() >= 4 {
                         let pair = array[3].as_str().unwrap_or_default().to_string();
@@ -202,12 +201,9 @@ async fn spread_latency_to_influx(
 ) {
     let latency = update_graph_ts - kraken_ts;
     let point = Point::new("spread_latency")
-        .add_tag("pair", influx_db_client::Value::String(pair.to_string()))
-        .add_field("kraken_ts", influx_db_client::Value::Float(kraken_ts))
-        .add_field(
-            "update_graph_ts",
-            influx_db_client::Value::Float(update_graph_ts),
-        )
+        .add_tag("pair", Value::String(pair.to_string()))
+        .add_field("kraken_ts", Value::Float(kraken_ts))
+        .add_field("update_graph_ts", Value::Float(update_graph_ts))
         .add_field("latency", latency);
     let _ = client
         .write_point(point, Some(Precision::Nanoseconds), Some(retention_policy))
