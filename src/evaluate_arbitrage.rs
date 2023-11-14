@@ -102,8 +102,10 @@ pub async fn evaluate_arbitrage_opportunities(
             let message = format!(
                 "Arbitrage opportunity at cycle {:?}.
                 ${:.4} -> ${:.4} {}.
-                Rates: {:?}",
-                asset_names, min_volume, end_volume, asset_names[0], rates
+                Rates: {:?}
+                Asset Pairs: {:?}
+                ",
+                asset_names, min_volume, end_volume, asset_names[0], rates, asset_pairs
             );
 
             // Log +/- 5 minutes of raw data
