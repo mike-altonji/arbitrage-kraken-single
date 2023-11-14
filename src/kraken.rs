@@ -1,3 +1,4 @@
+use core::sync::atomic::Ordering;
 use csv::ReaderBuilder;
 use futures_util::sink::SinkExt;
 use futures_util::StreamExt;
@@ -5,6 +6,7 @@ use influx_db_client::{reqwest::Url, Client, Point, Precision, Value};
 use reqwest;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
@@ -205,10 +207,16 @@ async fn spread_latency_to_influx(
         .add_field("kraken_ts", Value::Float(kraken_ts))
         .add_field("update_graph_ts", Value::Float(update_graph_ts))
         .add_field("latency", latency);
-    let _ = client
+    if let Err(e) = client
         .write_point(point, Some(Precision::Nanoseconds), Some(retention_policy))
         .await
-        .expect("Failed to write to spread_latency");
+    {
+        static ERROR_COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let error_count = ERROR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        if error_count % 1000 == 0 {
+            log::error!("Failed to write to spread_latency: {:?}", e);
+        }
+    }
 }
 
 #[cfg(test)]
