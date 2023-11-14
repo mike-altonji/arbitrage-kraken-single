@@ -135,9 +135,7 @@ pub async fn evaluate_arbitrage_opportunities(
                     .acquire()
                     .await
                     .expect("Failed to acquire semaphore");
-                send_telegram_message(&message)
-                    .await
-                    .expect("Unable to send Telegram message for Arbitrage");
+                send_telegram_message(&message).await;
                 tokio::time::sleep(Duration::from_secs(5)).await;
             });
 

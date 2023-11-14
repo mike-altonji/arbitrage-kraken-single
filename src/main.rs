@@ -21,7 +21,7 @@ async fn main() {
     let timestamp = since_the_epoch.as_secs();
     let log_config = log4rs::append::file::FileAppender::builder()
         .build(format!("logs/arbitrage_log_{}.log", timestamp))
-        .unwrap();
+        .expect("Unable to build log file");
     let log_config = log4rs::config::Config::builder()
         .appender(log4rs::config::Appender::builder().build("default", Box::new(log_config)))
         .build(
@@ -29,11 +29,9 @@ async fn main() {
                 .appender("default")
                 .build(log::LevelFilter::Info),
         )
-        .unwrap();
-    log4rs::init_config(log_config).unwrap();
-    send_telegram_message("🚀 Launching arbitrage trader.")
-        .await
-        .expect("Launch message failed to send");
+        .expect("Unable to build log file");
+    log4rs::init_config(log_config).expect("Unable to build log file");
+    send_telegram_message("🚀 Launching arbitrage trader.").await;
 
     // Loop allows retries
     let mut retry = 0;
@@ -112,22 +110,14 @@ async fn main() {
 
         let (result, _index, _remaining) = select_all(all_handles).await;
         match result {
-            Ok(_) => send_telegram_message(
-                "Code died for some reason. Waiting 10 seconds, then restarting.",
-            )
-            .await
-            .unwrap(),
+            Ok(_) => send_telegram_message("Code died: Waiting 10 seconds, then restarting.").await,
             Err(e) => {
                 let error_message = format!("A task failed with error: {:?}", e);
                 log::info!("{}", error_message);
-                send_telegram_message(&error_message)
-                    .await
-                    .expect("Failure message failed to send");
+                send_telegram_message(&error_message).await;
             }
         }
     }
-    send_telegram_message("Too many retries: Exiting the program.")
-        .await
-        .expect("Failed to send");
+    send_telegram_message("Too many retries: Exiting the program.").await;
     std::process::exit(1);
 }
