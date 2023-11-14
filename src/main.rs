@@ -41,9 +41,6 @@ async fn main() {
         retry += 1;
         if retry > 1 {
             sleep(Duration::from_secs(10)).await;
-            send_telegram_message(&format!("Restart arbitrage trader #{}", retry - 1))
-                .await
-                .expect("Launch message failed to send");
         }
 
         // Pull asset pairs and initialize bids/asks
