@@ -169,16 +169,28 @@ fn limiting_volume(
         let asset2 = path[i + 1];
 
         // Find the volume for the current asset pair, in terms of the 1st asset
-        let rate = rates.get(&(asset1, asset2)).expect(&format!(
-            "Expected rate for assets {} and {}, but found none. 
-            Rates are {:?} and path is {:?}",
-            asset1, asset2, rates, path
-        ));
-        let volume2 = volumes.get(&(asset1, asset2)).expect(&format!(
-            "Expected volume for assets {} and {}, but found none. 
-            Volumes are {:?} and path is {:?}",
-            asset1, asset2, volumes, path
-        ));
+        let rate = match rates.get(&(asset1, asset2)) {
+            Some(rate) => rate,
+            None => {
+                let msg = format!(
+                    "Expected rate for assets {} and {}, but found none. Rates are {:?} and path is {:?}",
+                    asset1, asset2, rates, path
+                );
+                log::error!("{}", msg);
+                panic!("{}", msg);
+            }
+        };
+        let volume2 = match volumes.get(&(asset1, asset2)) {
+            Some(volume) => volume,
+            None => {
+                let msg = format!(
+                    "Expected volume for assets {} and {}, but found none. Volumes are {:?} and path is {:?}",
+                    asset1, asset2, volumes, path
+                );
+                log::error!("{}", msg);
+                panic!("{}", msg);
+            }
+        };
         let volume1 = volume2 / rate;
         ending_volume *= rate;
         rate_vec.push(*rate);
