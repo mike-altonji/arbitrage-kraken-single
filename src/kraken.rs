@@ -186,11 +186,11 @@ pub async fn fetch_kraken_data_ws(
 }
 
 pub async fn execute_trade(
-    asset1: &str,
-    asset2: &str,
-    volume: f64,
+    _asset1: &str,
+    _asset2: &str,
+    _volume: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    log::info!("TODO: Buy {} of {} using {}", volume, asset2, asset1);
+    // log::info!("TODO: Buy {} of {} using {}", volume, asset2, asset1);
     Ok(())
 }
 
