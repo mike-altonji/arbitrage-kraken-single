@@ -98,26 +98,21 @@ pub async fn evaluate_arbitrage_opportunities(
                         .clone()
                 })
                 .collect();
+
+            // Log and send message at most every 5 seconds
             let asset_names_clone = asset_names.clone();
-            let message = format!(
-                "Arbitrage opportunity at cycle {:?}.
-                ${:.4} -> ${:.4} {}.
-                Rates: {:?}
-                Asset Pairs: {:?}
-                ",
-                asset_names, min_volume, end_volume, asset_names[0], rates, asset_pairs
-            );
-
-            // Log +/- 5 minutes of raw data
-            let client1 = Arc::clone(&client);
+            let asset_names_clone2 = asset_names.clone();
+            let rates_clone = rates.clone();
             let retention_policy = Arc::clone(&retention_policy_clone);
-            tokio::spawn(async move {
-                save_spread_latency_around_arbitrage_to_influx(client1, &*retention_policy).await;
-            });
-
-            // Log arbitrage-specific row to table
+            let client1 = Arc::clone(&client);
             let client2 = Arc::clone(&client);
+            let sem_clone = Arc::clone(&semaphore);
             tokio::spawn(async move {
+                let _permit = sem_clone
+                    .acquire()
+                    .await
+                    .expect("Failed to acquire semaphore");
+
                 arbitrage_details_to_influx(
                     client2,
                     graph_id,
@@ -128,22 +123,33 @@ pub async fn evaluate_arbitrage_opportunities(
                     rates,
                 )
                 .await;
-            });
 
-            // Send message at most every 5 seconds
-            let sem_clone = Arc::clone(&semaphore);
-            tokio::spawn(async move {
-                let _permit = sem_clone
-                    .acquire()
-                    .await
-                    .expect("Failed to acquire semaphore");
+                // Log +/- 5 minutes of raw data. Don't need to wait for it to finish
+                tokio::spawn(async move {
+                    save_spread_latency_around_arbitrage_to_influx(client1, &*retention_policy)
+                        .await;
+                });
+
+                let message = format!(
+                    "Arbitrage opportunity at cycle {:?}.
+                    ${:.4} -> ${:.4} {}.
+                    Rates: {:?}
+                    Asset Pairs: {:?}
+                    ",
+                    asset_names_clone,
+                    min_volume,
+                    end_volume,
+                    asset_names_clone[0],
+                    rates_clone,
+                    asset_pairs
+                );
                 send_telegram_message(&message).await;
                 tokio::time::sleep(Duration::from_secs(5)).await;
             });
 
             // Execute Trade TODO: This is a dummy for now, need real logic
-            if asset_names_clone.contains(&TRADEABLE_ASSET.to_string()) {
-                execute_trade(&asset_names_clone[0], &asset_names_clone[1], min_volume).await?;
+            if asset_names_clone2.contains(&TRADEABLE_ASSET.to_string()) {
+                execute_trade(&asset_names_clone2[0], &asset_names_clone2[1], min_volume).await?;
             }
         }
     }

@@ -104,6 +104,9 @@ pub async fn fetch_kraken_data_ws(
         .set_authentication(&user, &password),
     );
 
+    let batch_size: usize = 500;
+    let mut points = Vec::new();
+
     while let Some(msg) = read.next().await {
         match msg {
             Ok(Message::Text(text)) => {
@@ -158,17 +161,20 @@ pub async fn fetch_kraken_data_ws(
                                             .as_secs_f64();
                                         let client = Arc::clone(&client);
                                         let retention_policy = Arc::clone(&retention_policy_clone);
-                                        let pair_clone = pair.clone(); // Clone the pair here
-                                        tokio::spawn(async move {
-                                            spread_latency_to_influx(
-                                                client,
-                                                &*retention_policy,
-                                                &pair_clone,
-                                                kraken_ts,
-                                                now,
-                                            )
-                                            .await;
-                                        });
+                                        let pair_ = pair.clone();
+                                        update_points_vector(&mut points, pair_, kraken_ts, now);
+                                        if points.len() >= batch_size {
+                                            let points_clone = points.clone();
+                                            points.clear();
+                                            tokio::spawn(async move {
+                                                spread_latency_to_influx(
+                                                    client,
+                                                    &*retention_policy,
+                                                    points_clone,
+                                                )
+                                                .await;
+                                            });
+                                        }
                                     }
                                 }
                             }
@@ -186,18 +192,17 @@ pub async fn fetch_kraken_data_ws(
 }
 
 pub async fn execute_trade(
-    asset1: &str,
-    asset2: &str,
-    volume: f64,
+    _asset1: &str,
+    _asset2: &str,
+    _volume: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    log::info!("TODO: Buy {} of {} using {}", volume, asset2, asset1);
+    // log::info!("TODO: Buy {} of {} using {}", volume, asset2, asset1);
     Ok(())
 }
 
-async fn spread_latency_to_influx(
-    client: Arc<Client>,
-    retention_policy: &str,
-    pair: &str,
+fn update_points_vector(
+    points: &mut Vec<Point>,
+    pair: String,
     kraken_ts: f64,
     update_graph_ts: f64,
 ) {
@@ -207,8 +212,12 @@ async fn spread_latency_to_influx(
         .add_field("kraken_ts", Value::Float(kraken_ts))
         .add_field("update_graph_ts", Value::Float(update_graph_ts))
         .add_field("latency", latency);
+    points.push(point);
+}
+
+async fn spread_latency_to_influx(client: Arc<Client>, retention_policy: &str, points: Vec<Point>) {
     if let Err(e) = client
-        .write_point(point, Some(Precision::Nanoseconds), Some(retention_policy))
+        .write_points(points, Some(Precision::Nanoseconds), Some(retention_policy))
         .await
     {
         static ERROR_COUNTER: AtomicUsize = AtomicUsize::new(0);
