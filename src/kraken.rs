@@ -190,7 +190,6 @@ pub async fn fetch_kraken_data_ws(
                 log::error!("Error during websocket communication: {:?}", e);
                 return Err(Box::new(e));
             }
-            _ => {} // Handle other message types if needed.
         }
     }
     Ok(())
