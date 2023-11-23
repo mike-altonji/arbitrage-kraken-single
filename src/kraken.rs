@@ -182,8 +182,13 @@ pub async fn fetch_kraken_data_ws(
                     }
                 }
             }
+            Ok(_) => {
+                log::error!("Websocket connection closed or stopped sending data");
+                return Ok(());
+            }
             Err(e) => {
                 log::error!("Error during websocket communication: {:?}", e);
+                return Err(Box::new(e));
             }
             _ => {} // Handle other message types if needed.
         }
