@@ -107,7 +107,15 @@ async fn main() {
             all_handles.push(Box::pin(handle));
         }
 
-        let (result, _index, _remaining) = select_all(all_handles).await;
+        let (result, index, remaining) = select_all(all_handles).await;
+
+        // Abort all tasks except the one that has already finished or panicked
+        for (i, handle) in remaining.into_iter().enumerate() {
+            if i != index {
+                handle.abort();
+            }
+        }
+
         match result {
             Ok(_) => send_telegram_message("Code died: Waiting 10 seconds, then restarting.").await,
             Err(e) => {
