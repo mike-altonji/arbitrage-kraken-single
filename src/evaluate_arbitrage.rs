@@ -108,43 +108,40 @@ pub async fn evaluate_arbitrage_opportunities(
             let client2 = Arc::clone(&client);
             let sem_clone = Arc::clone(&semaphore);
             tokio::spawn(async move {
-                let _permit = sem_clone
-                    .acquire()
-                    .await
-                    .expect("Failed to acquire semaphore");
+                if let Ok(_permit) = sem_clone.try_acquire() {
+                    arbitrage_details_to_influx(
+                        client2,
+                        graph_id,
+                        min_volume,
+                        end_volume,
+                        asset_names[0].to_string(),
+                        asset_names,
+                        rates,
+                    )
+                    .await;
 
-                arbitrage_details_to_influx(
-                    client2,
-                    graph_id,
-                    min_volume,
-                    end_volume,
-                    asset_names[0].to_string(),
-                    asset_names,
-                    rates,
-                )
-                .await;
+                    // Log +/- 5 minutes of raw data. Don't need to wait for it to finish
+                    tokio::spawn(async move {
+                        save_spread_latency_around_arbitrage_to_influx(client1, &*retention_policy)
+                            .await;
+                    });
 
-                // Log +/- 5 minutes of raw data. Don't need to wait for it to finish
-                tokio::spawn(async move {
-                    save_spread_latency_around_arbitrage_to_influx(client1, &*retention_policy)
-                        .await;
-                });
-
-                let message = format!(
-                    "Arbitrage opportunity at cycle {:?}.
+                    let message = format!(
+                        "Arbitrage opportunity at cycle {:?}.
                     ${:.4} -> ${:.4} {}.
                     Rates: {:?}
                     Asset Pairs: {:?}
                     ",
-                    asset_names_clone,
-                    min_volume,
-                    end_volume,
-                    asset_names_clone[0],
-                    rates_clone,
-                    asset_pairs
-                );
-                send_telegram_message(&message).await;
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                        asset_names_clone,
+                        min_volume,
+                        end_volume,
+                        asset_names_clone[0],
+                        rates_clone,
+                        asset_pairs
+                    );
+                    send_telegram_message(&message).await;
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
             });
 
             // Execute Trade TODO: This is a dummy for now, need real logic
