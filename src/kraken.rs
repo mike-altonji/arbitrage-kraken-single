@@ -239,9 +239,9 @@ mod tests {
 
     #[test]
     fn test_asset_pairs_to_pull() {
-        let result = Runtime::new()
-            .unwrap()
-            .block_on(asset_pairs_to_pull("resources/asset_pairs_a1.csv"));
+        let result = Runtime::new().unwrap().block_on(asset_pairs_to_pull(
+            "resources/kraken_pairs/asset_pairs_a1.csv",
+        ));
         assert!(result.is_ok());
         let pairs = result.unwrap();
         assert!(pairs.contains_key("EUR/USD"));
