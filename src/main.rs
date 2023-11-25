@@ -41,7 +41,7 @@ async fn main() {
         sleep(Duration::from_secs(10)).await;
 
         // Pull asset pairs and initialize bids/asks
-        let paths = std::fs::read_dir("resources/kraken_pairs").expect("Failed to read directory");
+        let paths = std::fs::read_dir("resources").expect("Failed to read directory");
         let csv_files: Vec<_> = paths
             .filter_map(Result::ok)
             .filter(|e| e.path().extension().and_then(std::ffi::OsStr::to_str) == Some("csv"))
