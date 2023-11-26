@@ -12,6 +12,7 @@ pub async fn evaluate_arbitrage_opportunities(
     pair_to_assets: HashMap<String, (String, String)>,
     shared_asset_pairs: Arc<Mutex<HashMap<String, (f64, f64, f64, f64, f64)>>>,
     pair_status: Arc<Mutex<HashMap<String, bool>>>,
+    public_online: Arc<Mutex<bool>>,
     graph_id: i64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Set up InfluxDB client
@@ -46,6 +47,12 @@ pub async fn evaluate_arbitrage_opportunities(
     let mut counter = 0;
 
     loop {
+        // If the public endpoint is down, don't attempt evaluation
+        if !*public_online.lock().unwrap() {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            continue;
+        }
+
         // Create graph and run Bellman Ford
         let start_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -400,10 +407,14 @@ mod tests {
             ("asset2".to_string(), "asset3".to_string()),
         );
 
+        let mut pair_status = HashMap::new();
+        pair_status.insert("pair1".to_string(), true);
+        pair_status.insert("pair2".to_string(), true);
+
         let asset_to_index = generate_asset_to_index_map(&pair_to_assets);
 
         let (edges, _rate_map, _volume_map) =
-            prepare_graph(&asset_pairs, &pair_to_assets, &asset_to_index);
+            prepare_graph(&asset_pairs, &pair_to_assets, &asset_to_index, &pair_status);
 
         assert_eq!(edges.len(), 4);
 

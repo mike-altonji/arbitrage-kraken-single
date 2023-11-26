@@ -71,6 +71,7 @@ pub async fn fetch_kraken_data_ws(
     shared_asset_pairs_vec: Vec<Arc<Mutex<HashMap<String, (f64, f64, f64, f64, f64)>>>>,
     pair_to_assets_vec: Vec<HashMap<String, (String, String)>>,
     pair_status: Arc<Mutex<HashMap<String, bool>>>,
+    public_online: Arc<Mutex<bool>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let url = url::Url::parse("wss://ws.kraken.com").unwrap();
     let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
@@ -114,6 +115,11 @@ pub async fn fetch_kraken_data_ws(
                 let data: serde_json::Value = serde_json::from_str(&text)?;
                 if let Some(event) = data["event"].as_str() {
                     match event {
+                        "systemStatus" => {
+                            let status = data["status"].as_str().unwrap_or("") == "online";
+                            let mut public_online_lock = public_online.lock().unwrap();
+                            *public_online_lock = status;
+                        }
                         "subscriptionStatus" => {
                             let pair = data["pair"].as_str().unwrap_or("").to_string();
                             let status = data["status"].as_str().unwrap_or("") == "subscribed";
