@@ -1,6 +1,5 @@
 use crate::graph_algorithms::{bellman_ford_negative_cycle, Edge};
 use crate::kraken::execute_trade;
-use crate::telegram::send_telegram_message;
 use influx_db_client::{reqwest::Url, Client, Point, Precision, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -101,8 +100,6 @@ pub async fn evaluate_arbitrage_opportunities(
 
             // Log and send message at most every 5 seconds
             let asset_names_clone = asset_names.clone();
-            let asset_names_clone2 = asset_names.clone();
-            let rates_clone = rates.clone();
             let retention_policy = Arc::clone(&retention_policy_clone);
             let client1 = Arc::clone(&client);
             let client2 = Arc::clone(&client);
@@ -126,27 +123,13 @@ pub async fn evaluate_arbitrage_opportunities(
                             .await;
                     });
 
-                    let message = format!(
-                        "Arbitrage opportunity at cycle {:?}.
-                    ${:.4} -> ${:.4} {}.
-                    Rates: {:?}
-                    Asset Pairs: {:?}
-                    ",
-                        asset_names_clone,
-                        min_volume,
-                        end_volume,
-                        asset_names_clone[0],
-                        rates_clone,
-                        asset_pairs
-                    );
-                    send_telegram_message(&message).await;
                     tokio::time::sleep(Duration::from_secs(5)).await;
                 }
             });
 
             // Execute Trade TODO: This is a dummy for now, need real logic
-            if asset_names_clone2.contains(&TRADEABLE_ASSET.to_string()) {
-                execute_trade(&asset_names_clone2[0], &asset_names_clone2[1], min_volume).await?;
+            if asset_names_clone.contains(&TRADEABLE_ASSET.to_string()) {
+                execute_trade(&asset_names_clone[0], &asset_names_clone[1], min_volume).await?;
             }
         }
     }
