@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use tokio::time::{sleep, Duration};
 
 const FEE: f64 = 0.0026;
-const TRADEABLE_ASSET: &str = "USD"; // Cycle must contain this to execute a trade.
+const TRADEABLE_ASSETS: [&str; 2] = ["USD", "EUR"]; // Cycle must contain one of these to execute a trade.
 
 pub async fn evaluate_arbitrage_opportunities(
     pair_to_assets: HashMap<String, (String, String)>,
@@ -83,7 +83,11 @@ pub async fn evaluate_arbitrage_opportunities(
 
         // Arbitrage opportunity found
         if let Some(mut negative_cycle) = path {
-            rotate_path(&mut negative_cycle, &asset_to_index, TRADEABLE_ASSET); // Set `TRADEABLE_ASSET` to base unit
+            rotate_path(
+                &mut negative_cycle,
+                &asset_to_index,
+                &Vec::from(TRADEABLE_ASSETS),
+            );
             let (min_volume, end_volume, rates) =
                 limiting_volume(&negative_cycle, &rate_map, &volume_map);
             let asset_names: Vec<String> = negative_cycle
@@ -128,7 +132,10 @@ pub async fn evaluate_arbitrage_opportunities(
             });
 
             // Execute Trade TODO: This is a dummy for now, need real logic
-            if asset_names_clone.contains(&TRADEABLE_ASSET.to_string()) {
+            if TRADEABLE_ASSETS
+                .iter()
+                .any(|&asset| asset_names_clone.contains(&asset.to_string()))
+            {
                 execute_trade(&asset_names_clone[0], &asset_names_clone[1], min_volume).await?;
             }
         }
@@ -188,17 +195,25 @@ fn limiting_volume(
 fn rotate_path(
     negative_cycle: &mut Vec<usize>,
     asset_to_index: &HashMap<String, usize>,
-    asset: &str,
+    prioritized_assets: &Vec<&str>,
 ) {
     negative_cycle.pop(); // Remove the last element in the path
-                          // Rotate the path until `asset` is first
-    if let Some(usd_index) = negative_cycle
-        .iter()
-        .position(|&i| asset_to_index.iter().find(|&(_, &v)| v == i).unwrap().0 == asset)
-    {
-        negative_cycle.rotate_left(usd_index);
+                          // Rotate the path until one of the `prioritized_assets` is first
+    for asset in prioritized_assets {
+        if let Some(asset_index) = negative_cycle.iter().position(|&i| {
+            asset_to_index
+                .iter()
+                .find(|&(_, &v)| v == i)
+                .unwrap()
+                .0
+                .as_str()
+                == *asset
+        }) {
+            negative_cycle.rotate_left(asset_index);
+            break;
+        }
     }
-    negative_cycle.push(*negative_cycle.first().unwrap()); // Add `asset` to the end of the path
+    negative_cycle.push(*negative_cycle.first().unwrap()); // Add the first asset to the end of the path
 }
 
 fn generate_asset_to_index_map(
@@ -420,7 +435,11 @@ mod tests {
         asset_to_index.insert("asset3".to_string(), 3);
         asset_to_index.insert("asset4".to_string(), 4);
 
-        rotate_path(&mut negative_cycle, &asset_to_index, "asset2");
+        rotate_path(
+            &mut negative_cycle,
+            &asset_to_index,
+            &vec!["asset999", "asset2"],
+        );
 
         assert_eq!(negative_cycle, vec![2, 3, 4, 0, 1, 2]);
     }
