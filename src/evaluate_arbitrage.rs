@@ -11,6 +11,8 @@ const TRADEABLE_ASSETS: [&str; 2] = ["USD", "EUR"]; // Cycle must contain one of
 pub async fn evaluate_arbitrage_opportunities(
     pair_to_assets: HashMap<String, (String, String)>,
     shared_asset_pairs: Arc<Mutex<HashMap<String, (f64, f64, f64, f64, f64)>>>,
+    pair_status: Arc<Mutex<HashMap<String, bool>>>,
+    public_online: Arc<Mutex<bool>>,
     graph_id: i64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Set up InfluxDB client
@@ -45,6 +47,12 @@ pub async fn evaluate_arbitrage_opportunities(
     let mut counter = 0;
 
     loop {
+        // If the public endpoint is down, don't attempt evaluation
+        if !*public_online.lock().unwrap() {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            continue;
+        }
+
         // Create graph and run Bellman Ford
         let start_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -55,8 +63,13 @@ pub async fn evaluate_arbitrage_opportunities(
         tokio::time::sleep(Duration::from_micros(10)).await;
 
         let asset_pairs = shared_asset_pairs.lock().unwrap().clone();
-        let (rate_edges, rate_map, volume_map) =
-            prepare_graph(&asset_pairs, &pair_to_assets, &asset_to_index);
+        let pair_status_clone = pair_status.lock().unwrap().clone();
+        let (rate_edges, rate_map, volume_map) = prepare_graph(
+            &asset_pairs,
+            &pair_to_assets,
+            &asset_to_index,
+            &pair_status_clone,
+        );
         let path = bellman_ford_negative_cycle(n, &rate_edges, 0);
 
         // Log a subsample of events every N iterations
@@ -238,6 +251,7 @@ fn prepare_graph(
     asset_pairs: &HashMap<String, (f64, f64, f64, f64, f64)>,
     pair_to_assets: &HashMap<String, (String, String)>,
     asset_to_index: &HashMap<String, usize>,
+    pair_status: &HashMap<String, bool>,
 ) -> (
     Vec<Edge>,
     HashMap<(usize, usize), f64>,
@@ -248,28 +262,32 @@ fn prepare_graph(
     let mut volumes_map = HashMap::new();
     for (pair, (bid, ask, _, bid_volume, ask_volume)) in asset_pairs {
         if let Some((asset1, asset2)) = pair_to_assets.get(pair) {
-            let index1 = *asset_to_index
-                .get(asset1)
-                .expect(&format!("Expected {} in asset_to_index", asset1));
-            let index2 = *asset_to_index
-                .get(asset2)
-                .expect(&format!("Expected {} in asset_to_index", asset2));
-            let bid_rate = bid * (1.0 - FEE);
-            let ask_rate = 1.0 / (ask * (1.0 + FEE));
-            exchange_rates.push(Edge {
-                src: index1,
-                dest: index2,
-                weight: -(bid_rate).ln(),
-            });
-            exchange_rates.push(Edge {
-                src: index2,
-                dest: index1,
-                weight: -(ask_rate).ln(),
-            });
-            rates_map.insert((index1, index2), bid_rate);
-            rates_map.insert((index2, index1), ask_rate);
-            volumes_map.insert((index1, index2), bid_volume * bid);
-            volumes_map.insert((index2, index1), *ask_volume);
+            if let Some(status) = pair_status.get(pair) {
+                if *status {
+                    let index1 = *asset_to_index
+                        .get(asset1)
+                        .expect(&format!("Expected {} in asset_to_index", asset1));
+                    let index2 = *asset_to_index
+                        .get(asset2)
+                        .expect(&format!("Expected {} in asset_to_index", asset2));
+                    let bid_rate = bid * (1.0 - FEE);
+                    let ask_rate = 1.0 / (ask * (1.0 + FEE));
+                    exchange_rates.push(Edge {
+                        src: index1,
+                        dest: index2,
+                        weight: -(bid_rate).ln(),
+                    });
+                    exchange_rates.push(Edge {
+                        src: index2,
+                        dest: index1,
+                        weight: -(ask_rate).ln(),
+                    });
+                    rates_map.insert((index1, index2), bid_rate);
+                    rates_map.insert((index2, index1), ask_rate);
+                    volumes_map.insert((index1, index2), bid_volume * bid);
+                    volumes_map.insert((index2, index1), *ask_volume);
+                }
+            }
         }
     }
 
@@ -389,10 +407,14 @@ mod tests {
             ("asset2".to_string(), "asset3".to_string()),
         );
 
+        let mut pair_status = HashMap::new();
+        pair_status.insert("pair1".to_string(), true);
+        pair_status.insert("pair2".to_string(), true);
+
         let asset_to_index = generate_asset_to_index_map(&pair_to_assets);
 
         let (edges, _rate_map, _volume_map) =
-            prepare_graph(&asset_pairs, &pair_to_assets, &asset_to_index);
+            prepare_graph(&asset_pairs, &pair_to_assets, &asset_to_index, &pair_status);
 
         assert_eq!(edges.len(), 4);
 

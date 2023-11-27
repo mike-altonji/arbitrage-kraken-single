@@ -49,6 +49,8 @@ async fn main() {
             .collect();
         let mut pairs_to_assets_vec = Vec::new();
         let mut shared_asset_pairs_vec = Vec::new();
+        let pair_status: Arc<Mutex<HashMap<String, bool>>> = Arc::new(Mutex::new(HashMap::new()));
+        let public_online = Arc::new(Mutex::new(false));
 
         for csv_file in csv_files {
             let pair_to_assets = kraken::asset_pairs_to_pull(&csv_file)
@@ -72,11 +74,15 @@ async fn main() {
             let all_pairs_clone = all_pairs.clone();
             let shared_asset_pairs_vec_clone = shared_asset_pairs_vec.clone();
             let pairs_to_assets_vec_clone = pairs_to_assets_vec.clone();
+            let pair_status_clone = pair_status.clone();
+            let public_online_clone = public_online.clone();
             tokio::spawn(async move {
                 kraken::fetch_kraken_data_ws(
                     all_pairs_clone,
                     shared_asset_pairs_vec_clone,
                     pairs_to_assets_vec_clone,
+                    pair_status_clone,
+                    public_online_clone,
                 )
                 .await
                 .expect("Failed to fetch data");
@@ -89,10 +95,14 @@ async fn main() {
             let evaluate_handle = {
                 let pair_to_assets_clone = pairs_to_assets_vec[i].clone();
                 let shared_asset_pairs_clone = shared_asset_pairs_vec[i].clone();
+                let pair_status_clone = pair_status.clone();
+                let public_online_clone = public_online.clone();
                 tokio::spawn(async move {
                     let _ = evaluate_arbitrage::evaluate_arbitrage_opportunities(
                         pair_to_assets_clone,
                         shared_asset_pairs_clone,
+                        pair_status_clone,
+                        public_online_clone,
                         i as i64,
                     )
                     .await;
