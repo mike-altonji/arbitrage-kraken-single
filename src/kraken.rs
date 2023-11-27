@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
 
@@ -73,124 +74,139 @@ pub async fn fetch_kraken_data_ws(
     pair_status: Arc<Mutex<HashMap<String, bool>>>,
     public_online: Arc<Mutex<bool>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let url = url::Url::parse("wss://ws.kraken.com").unwrap();
-    let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
-    let (mut write, mut read) = ws_stream.split();
-    let subscription_message = serde_json::json!({
-        "event": "subscribe",
-        "subscription": {"name": "spread"},
-        "pair": all_pairs.clone().into_iter().collect::<Vec<String>>(),
-    });
-    write
-        .send(Message::Text(subscription_message.to_string()))
-        .await?;
-    log::info!(
-        "Subscribed to asset pairs: {:?}",
-        all_pairs.iter().collect::<Vec<&String>>()
-    );
+    const SLEEP_DURATION: Duration = Duration::from_secs(5);
+    loop {
+        let url = url::Url::parse("wss://ws.kraken.com").unwrap();
+        let ws_stream = match connect_async(url).await {
+            Ok((ws_stream, _)) => ws_stream,
+            Err(_) => {
+                tokio::time::sleep(SLEEP_DURATION).await;
+                continue;
+            }
+        };
+        let (mut write, mut read) = ws_stream.split();
+        let subscription_message = serde_json::json!({
+            "event": "subscribe",
+            "subscription": {"name": "spread"},
+            "pair": all_pairs.clone().into_iter().collect::<Vec<String>>(),
+        });
+        write
+            .send(Message::Text(subscription_message.to_string()))
+            .await?;
+        log::info!(
+            "Subscribed to asset pairs: {:?}",
+            all_pairs.iter().collect::<Vec<&String>>()
+        );
 
-    // Set up InfluxDB client
-    dotenv::dotenv().ok();
-    let host = std::env::var("INFLUXDB_HOST").expect("INFLUXDB_HOST must be set");
-    let port = std::env::var("INFLUXDB_PORT").expect("INFLUXDB_PORT must be set");
-    let db_name = std::env::var("DB_NAME").expect("DB_NAME must be set");
-    let user = std::env::var("DB_USER").expect("DB_USER must be set");
-    let password = std::env::var("DB_PASSWORD").expect("DB_PASSWORD must be set");
-    let retention_policy_var = Arc::new(std::env::var("RP_NAME").expect("RP_NAME must be set"));
-    let retention_policy_clone = Arc::clone(&retention_policy_var);
-    let client = Arc::new(
-        Client::new(
-            Url::parse(&format!("http://{}:{}", &host, &port)).unwrap(),
-            &db_name,
-        )
-        .set_authentication(&user, &password),
-    );
+        // Set up InfluxDB client
+        dotenv::dotenv().ok();
+        let host = std::env::var("INFLUXDB_HOST").expect("INFLUXDB_HOST must be set");
+        let port = std::env::var("INFLUXDB_PORT").expect("INFLUXDB_PORT must be set");
+        let db_name = std::env::var("DB_NAME").expect("DB_NAME must be set");
+        let user = std::env::var("DB_USER").expect("DB_USER must be set");
+        let password = std::env::var("DB_PASSWORD").expect("DB_PASSWORD must be set");
+        let retention_policy_var = Arc::new(std::env::var("RP_NAME").expect("RP_NAME must be set"));
+        let retention_policy_clone = Arc::clone(&retention_policy_var);
+        let client = Arc::new(
+            Client::new(
+                Url::parse(&format!("http://{}:{}", &host, &port)).unwrap(),
+                &db_name,
+            )
+            .set_authentication(&user, &password),
+        );
 
-    let batch_size: usize = 500;
-    let mut points = Vec::new();
+        let batch_size: usize = 500;
+        let mut points = Vec::new();
 
-    while let Some(msg) = read.next().await {
-        match msg {
-            Ok(Message::Text(text)) => {
-                let data: serde_json::Value = serde_json::from_str(&text)?;
-                if let Some(event) = data["event"].as_str() {
-                    match event {
-                        "systemStatus" => {
-                            let status = data["status"].as_str().unwrap_or("") == "online";
-                            let mut public_online_lock = public_online.lock().unwrap();
-                            *public_online_lock = status;
+        while let Some(msg) = read.next().await {
+            match msg {
+                Ok(Message::Text(text)) => {
+                    let data: serde_json::Value = serde_json::from_str(&text)?;
+                    if let Some(event) = data["event"].as_str() {
+                        match event {
+                            "systemStatus" => {
+                                let status = data["status"].as_str().unwrap_or("") == "online";
+                                let mut public_online_lock = public_online.lock().unwrap();
+                                *public_online_lock = status;
+                            }
+                            "subscriptionStatus" => {
+                                let pair = data["pair"].as_str().unwrap_or("").to_string();
+                                let status = data["status"].as_str().unwrap_or("") == "subscribed";
+                                let mut pair_status = pair_status.lock().unwrap();
+                                pair_status.insert(pair, status);
+                            }
+                            _ => {}
                         }
-                        "subscriptionStatus" => {
-                            let pair = data["pair"].as_str().unwrap_or("").to_string();
-                            let status = data["status"].as_str().unwrap_or("") == "subscribed";
-                            let mut pair_status = pair_status.lock().unwrap();
-                            pair_status.insert(pair, status);
-                        }
-                        _ => {}
-                    }
-                } else if let Some(array) = data.as_array() {
-                    if array.len() >= 4 {
-                        let pair = array[3].as_str().unwrap_or_default().to_string();
-                        if let Some(inner_array) = array[1].as_array() {
-                            let bid = inner_array
-                                .get(0)
-                                .and_then(|s| s.as_str())
-                                .and_then(|s| s.parse::<f64>().ok())
-                                .unwrap();
-                            let ask = inner_array
-                                .get(1)
-                                .and_then(|s| s.as_str())
-                                .and_then(|s| s.parse::<f64>().ok())
-                                .unwrap();
-                            let kraken_ts = inner_array
-                                .get(2)
-                                .and_then(|s| s.as_str())
-                                .and_then(|s| s.parse::<f64>().ok())
-                                .unwrap();
-                            let bid_volume = inner_array
-                                .get(3)
-                                .and_then(|s| s.as_str())
-                                .and_then(|s| s.parse::<f64>().ok())
-                                .unwrap();
-                            let ask_volume = inner_array
-                                .get(4)
-                                .and_then(|s| s.as_str())
-                                .and_then(|s| s.parse::<f64>().ok())
-                                .unwrap();
-                            for i in 0..pair_to_assets_vec.len() {
-                                if pair_to_assets_vec[i].contains_key(&pair.to_string()) {
-                                    let mut locked_pairs =
-                                        shared_asset_pairs_vec[i].lock().unwrap();
-                                    let existing_kraken_ts =
-                                        match locked_pairs.get(&pair.to_string()) {
-                                            Some(&(_, _, ts, _, _)) => ts,
-                                            None => 0.0,
-                                        };
-                                    if kraken_ts > existing_kraken_ts {
-                                        // If data is new, update graph and write to DB (we often get old data from Kraken)
-                                        locked_pairs.insert(
-                                            pair.to_string(),
-                                            (bid, ask, kraken_ts, bid_volume, ask_volume),
-                                        );
-                                        let now = std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .unwrap_or_default()
-                                            .as_secs_f64();
-                                        let client = Arc::clone(&client);
-                                        let retention_policy = Arc::clone(&retention_policy_clone);
-                                        let pair_ = pair.clone();
-                                        update_points_vector(&mut points, pair_, kraken_ts, now);
-                                        if points.len() >= batch_size {
-                                            let points_clone = points.clone();
-                                            points.clear();
-                                            tokio::spawn(async move {
-                                                spread_latency_to_influx(
-                                                    client,
-                                                    &*retention_policy,
-                                                    points_clone,
-                                                )
-                                                .await;
-                                            });
+                    } else if let Some(array) = data.as_array() {
+                        if array.len() >= 4 {
+                            let pair = array[3].as_str().unwrap_or_default().to_string();
+                            if let Some(inner_array) = array[1].as_array() {
+                                let bid = inner_array
+                                    .get(0)
+                                    .and_then(|s| s.as_str())
+                                    .and_then(|s| s.parse::<f64>().ok())
+                                    .unwrap();
+                                let ask = inner_array
+                                    .get(1)
+                                    .and_then(|s| s.as_str())
+                                    .and_then(|s| s.parse::<f64>().ok())
+                                    .unwrap();
+                                let kraken_ts = inner_array
+                                    .get(2)
+                                    .and_then(|s| s.as_str())
+                                    .and_then(|s| s.parse::<f64>().ok())
+                                    .unwrap();
+                                let bid_volume = inner_array
+                                    .get(3)
+                                    .and_then(|s| s.as_str())
+                                    .and_then(|s| s.parse::<f64>().ok())
+                                    .unwrap();
+                                let ask_volume = inner_array
+                                    .get(4)
+                                    .and_then(|s| s.as_str())
+                                    .and_then(|s| s.parse::<f64>().ok())
+                                    .unwrap();
+                                for i in 0..pair_to_assets_vec.len() {
+                                    if pair_to_assets_vec[i].contains_key(&pair.to_string()) {
+                                        let mut locked_pairs =
+                                            shared_asset_pairs_vec[i].lock().unwrap();
+                                        let existing_kraken_ts =
+                                            match locked_pairs.get(&pair.to_string()) {
+                                                Some(&(_, _, ts, _, _)) => ts,
+                                                None => 0.0,
+                                            };
+                                        if kraken_ts > existing_kraken_ts {
+                                            // If data is new, update graph and write to DB (we often get old data from Kraken)
+                                            locked_pairs.insert(
+                                                pair.to_string(),
+                                                (bid, ask, kraken_ts, bid_volume, ask_volume),
+                                            );
+                                            let now = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .unwrap_or_default()
+                                                .as_secs_f64();
+                                            let client = Arc::clone(&client);
+                                            let retention_policy =
+                                                Arc::clone(&retention_policy_clone);
+                                            let pair_ = pair.clone();
+                                            update_points_vector(
+                                                &mut points,
+                                                pair_,
+                                                kraken_ts,
+                                                now,
+                                            );
+                                            if points.len() >= batch_size {
+                                                let points_clone = points.clone();
+                                                points.clear();
+                                                tokio::spawn(async move {
+                                                    spread_latency_to_influx(
+                                                        client,
+                                                        &*retention_policy,
+                                                        points_clone,
+                                                    )
+                                                    .await;
+                                                });
+                                            }
                                         }
                                     }
                                 }
@@ -198,18 +214,19 @@ pub async fn fetch_kraken_data_ws(
                         }
                     }
                 }
-            }
-            Ok(_) => {
-                log::error!("Websocket connection closed or stopped sending data");
-                return Ok(());
-            }
-            Err(e) => {
-                log::error!("Error during websocket communication: {:?}", e);
-                return Err(Box::new(e));
+                Ok(_) => {
+                    log::error!("Websocket connection closed or stopped sending data");
+                    tokio::time::sleep(SLEEP_DURATION).await;
+                    continue;
+                }
+                Err(e) => {
+                    log::error!("Error during websocket communication: {:?}", e);
+                    tokio::time::sleep(SLEEP_DURATION).await;
+                    continue;
+                }
             }
         }
     }
-    Ok(())
 }
 
 pub async fn execute_trade(
