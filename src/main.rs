@@ -2,6 +2,7 @@ use dotenv::dotenv;
 use futures::future::select_all;
 use log4rs::{append::file::FileAppender, config};
 use std::collections::{HashMap, HashSet};
+use std::env;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
@@ -17,6 +18,8 @@ use crate::telegram::send_telegram_message;
 async fn main() {
     // Initialize setup
     dotenv().ok();
+    let args: Vec<String> = env::args().collect();
+    let allow_trades = args.contains(&"--trade".to_string());
     let now = SystemTime::now();
     let since_the_epoch = now.duration_since(UNIX_EPOCH).expect("Time invalid");
     let timestamp = since_the_epoch.as_secs();
@@ -32,7 +35,11 @@ async fn main() {
         )
         .expect("Unable to build log file");
     log4rs::init_config(log_config).expect("Unable to build log file");
-    send_telegram_message("🚀 Launching arbitrage trader.").await;
+    if allow_trades {
+        send_telegram_message("🚀 Launching Kraken arbitrage: Trade mode").await;
+    } else {
+        send_telegram_message("🚀 Launching Kraken arbitrage: Evaluation-only mode").await;
+    }
 
     // Loop allows retries
     let mut retry = 0;
