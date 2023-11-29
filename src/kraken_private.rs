@@ -1,15 +1,10 @@
 use base64::{decode_config, encode_config, STANDARD};
-use futures_util::SinkExt;
 use hmac::{Hmac, Mac, NewMac};
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::Value;
 use sha2::{Digest, Sha256, Sha512};
 use std::env;
-use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::net::TcpStream;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 pub async fn get_auth_token() -> Result<String, Box<dyn std::error::Error>> {
     let api_key = env::var("KRAKEN_KEY").expect("KRAKEN_KEY must be set");
@@ -55,4 +50,3 @@ pub async fn get_auth_token() -> Result<String, Box<dyn std::error::Error>> {
 
     Ok(token)
 }
-
