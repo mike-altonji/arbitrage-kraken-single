@@ -1,9 +1,13 @@
 use crate::graph_algorithms::{bellman_ford_negative_cycle, Edge};
 use crate::kraken::execute_trade;
+use crate::kraken_private::get_auth_token;
+use futures_util::SinkExt;
 use influx_db_client::{reqwest::Url, Client, Point, Precision, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::time::{sleep, Duration};
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
 
 const FEE: f64 = 0.0026;
 const TRADEABLE_ASSETS: [&str; 2] = ["USD", "EUR"]; // Cycle must contain one of these to execute a trade.
@@ -13,6 +17,7 @@ pub async fn evaluate_arbitrage_opportunities(
     shared_asset_pairs: Arc<Mutex<HashMap<String, (f64, f64, f64, f64, f64)>>>,
     pair_status: Arc<Mutex<HashMap<String, bool>>>,
     public_online: Arc<Mutex<bool>>,
+    allow_trades: bool,
     graph_id: i64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Set up InfluxDB client
@@ -32,6 +37,20 @@ pub async fn evaluate_arbitrage_opportunities(
         .set_authentication(&user, &password),
     );
     let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+
+    // Set up websocket connection to private Kraken endpoint if trading & subscribe to `ownTrades`
+    if allow_trades {
+        let token = get_auth_token().await?;
+        let (mut private_ws, _) = connect_async("wss://ws-auth.kraken.com").await?;
+        let sub_msg = serde_json::json!({
+            "event": "subscribe",
+            "subscription": {
+                "name": "ownTrades",
+                "token": token.to_string()
+            }
+        });
+        private_ws.send(Message::Text(sub_msg.to_string())).await?;
+    }
 
     // Give shared_asset_pairs time to populate
     tokio::time::sleep(Duration::from_secs(3)).await;

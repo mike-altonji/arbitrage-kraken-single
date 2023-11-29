@@ -10,6 +10,7 @@ use tokio::time::sleep;
 mod evaluate_arbitrage;
 mod graph_algorithms;
 mod kraken;
+mod kraken_private;
 mod telegram;
 
 use crate::telegram::send_telegram_message;
@@ -110,6 +111,7 @@ async fn main() {
                         shared_asset_pairs_clone,
                         pair_status_clone,
                         public_online_clone,
+                        allow_trades,
                         i as i64,
                     )
                     .await;
