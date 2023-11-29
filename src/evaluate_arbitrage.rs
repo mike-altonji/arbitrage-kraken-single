@@ -1,5 +1,5 @@
 use crate::graph_algorithms::{bellman_ford_negative_cycle, Edge};
-use crate::kraken::execute_trade;
+use crate::kraken::{execute_trade, AssetsToPair, PairToAssets};
 use crate::kraken_private::get_auth_token;
 use futures_util::SinkExt;
 use influx_db_client::{reqwest::Url, Client, Point, Precision, Value};
@@ -16,8 +16,9 @@ const MIN_PROFIT: f64 = 0.10;
 const MAX_TRADES: usize = 4;
 
 pub async fn evaluate_arbitrage_opportunities(
-    pair_to_assets: HashMap<String, (String, String)>,
-    shared_asset_pairs: Arc<Mutex<HashMap<String, (f64, f64, f64, f64, f64)>>>,
+    pair_to_assets: HashMap<String, PairToAssets>,
+    assets_to_pair: HashMap<(String, String), AssetsToPair>,
+    pair_to_spread: Arc<Mutex<HashMap<String, (f64, f64, f64, f64, f64)>>>,
     pair_status: Arc<Mutex<HashMap<String, bool>>>,
     public_online: Arc<Mutex<bool>>,
     allow_trades: bool,
@@ -55,7 +56,7 @@ pub async fn evaluate_arbitrage_opportunities(
         private_ws.send(Message::Text(sub_msg.to_string())).await?;
     }
 
-    // Give shared_asset_pairs time to populate
+    // Give pair_to_spread time to populate
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     let asset_to_index = generate_asset_to_index_map(&pair_to_assets);
@@ -84,7 +85,7 @@ pub async fn evaluate_arbitrage_opportunities(
         // Take pauses so I don't overheat computer (actually waits longer...eval times went from 1.5us to 1.5ms. Fine with this for now!)
         tokio::time::sleep(Duration::from_micros(10)).await;
 
-        let asset_pairs = shared_asset_pairs.lock().unwrap().clone();
+        let asset_pairs = pair_to_spread.lock().unwrap().clone();
         let pair_status_clone = pair_status.lock().unwrap().clone();
         let (rate_edges, rate_map, volume_map) = prepare_graph(
             &asset_pairs,
@@ -100,11 +101,11 @@ pub async fn evaluate_arbitrage_opportunities(
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos();
-            let client0 = Arc::clone(&client);
+            let client_clone = Arc::clone(&client);
             let retention_policy = Arc::clone(&retention_policy_clone);
             tokio::spawn(async move {
                 save_evaluation_time_to_influx(
-                    client0,
+                    client_clone,
                     &*retention_policy,
                     graph_id,
                     start_time,
@@ -146,7 +147,7 @@ pub async fn evaluate_arbitrage_opportunities(
             tokio::spawn(async move {
                 if let Ok(_permit) = sem_clone.try_acquire() {
                     arbitrage_details_to_influx(
-                        client2,
+                        client1,
                         graph_id,
                         min_volume,
                         end_volume,
@@ -158,7 +159,7 @@ pub async fn evaluate_arbitrage_opportunities(
 
                     // Log +/- 5 minutes of raw data. Don't need to wait for it to finish
                     tokio::spawn(async move {
-                        save_spread_latency_around_arbitrage_to_influx(client1, &*retention_policy)
+                        save_spread_latency_around_arbitrage_to_influx(client2, &*retention_policy)
                             .await;
                     });
 
@@ -254,11 +255,18 @@ fn rotate_path(
 }
 
 fn generate_asset_to_index_map(
-    pair_to_assets: &HashMap<String, (String, String)>,
+    pair_to_assets: &HashMap<String, PairToAssets>,
 ) -> HashMap<String, usize> {
     let mut asset_to_index = HashMap::new();
     let mut index = 0;
-    for (_, (asset1, asset2)) in pair_to_assets {
+    for (
+        _,
+        PairToAssets {
+            base: asset1,
+            quote: asset2,
+        },
+    ) in pair_to_assets
+    {
         asset_to_index.entry(asset1.clone()).or_insert_with(|| {
             index += 1;
             index - 1
@@ -273,7 +281,7 @@ fn generate_asset_to_index_map(
 
 fn prepare_graph(
     asset_pairs: &HashMap<String, (f64, f64, f64, f64, f64)>,
-    pair_to_assets: &HashMap<String, (String, String)>,
+    pair_to_assets: &HashMap<String, PairToAssets>,
     asset_to_index: &HashMap<String, usize>,
     pair_status: &HashMap<String, bool>,
 ) -> (
@@ -285,7 +293,11 @@ fn prepare_graph(
     let mut rates_map = HashMap::new();
     let mut volumes_map = HashMap::new();
     for (pair, (bid, ask, _, bid_volume, ask_volume)) in asset_pairs {
-        if let Some((asset1, asset2)) = pair_to_assets.get(pair) {
+        if let Some(PairToAssets {
+            base: asset1,
+            quote: asset2,
+        }) = pair_to_assets.get(pair)
+        {
             if let Some(status) = pair_status.get(pair) {
                 if *status {
                     let index1 = *asset_to_index
@@ -392,11 +404,17 @@ mod tests {
         let mut pair_to_assets = HashMap::new();
         pair_to_assets.insert(
             "pair1".to_string(),
-            ("asset1".to_string(), "asset2".to_string()),
+            PairToAssets {
+                base: "asset1".to_string(),
+                quote: "asset2".to_string(),
+            },
         );
         pair_to_assets.insert(
             "pair2".to_string(),
-            ("asset2".to_string(), "asset3".to_string()),
+            PairToAssets {
+                base: "asset2".to_string(),
+                quote: "asset3".to_string(),
+            },
         );
 
         let asset_to_index = generate_asset_to_index_map(&pair_to_assets);
@@ -424,11 +442,17 @@ mod tests {
         let mut pair_to_assets = HashMap::new();
         pair_to_assets.insert(
             "pair1".to_string(),
-            ("asset1".to_string(), "asset2".to_string()),
+            PairToAssets {
+                base: "asset1".to_string(),
+                quote: "asset2".to_string(),
+            },
         );
         pair_to_assets.insert(
             "pair2".to_string(),
-            ("asset2".to_string(), "asset3".to_string()),
+            PairToAssets {
+                base: "asset2".to_string(),
+                quote: "asset3".to_string(),
+            },
         );
 
         let mut pair_status = HashMap::new();
