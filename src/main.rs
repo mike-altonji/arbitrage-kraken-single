@@ -130,9 +130,7 @@ async fn main() {
 
         // Abort all tasks except the one that has already finished or panicked
         for (i, handle) in remaining.into_iter().enumerate() {
-            if i != index {
-                handle.abort();
-            }
+            handle.abort();
         }
 
         match result {
