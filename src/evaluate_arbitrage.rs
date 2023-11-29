@@ -84,10 +84,10 @@ pub async fn evaluate_arbitrage_opportunities(
         // Take pauses so I don't overheat computer (actually waits longer...eval times went from 1.5us to 1.5ms. Fine with this for now!)
         tokio::time::sleep(Duration::from_micros(10)).await;
 
-        let asset_pairs = pair_to_spread.lock().unwrap().clone();
+        let pair_to_spread = pair_to_spread.lock().unwrap().clone();
         let pair_status_clone = pair_status.lock().unwrap().clone();
         let (rate_edges, rate_map, volume_map) = prepare_graph(
-            &asset_pairs,
+            &pair_to_spread,
             &pair_to_assets,
             &asset_to_index,
             &pair_status_clone,
@@ -429,9 +429,9 @@ mod tests {
 
     #[test]
     fn test_prepare_graph() {
-        let mut asset_pairs = HashMap::new();
-        asset_pairs.insert("pair1".to_string(), (1.0, 2.0, 123., 0.0, 0.0));
-        asset_pairs.insert("pair2".to_string(), (3.0, 4.0, 123., 0.0, 0.0));
+        let mut pair_to_spread = HashMap::new();
+        pair_to_spread.insert("pair1".to_string(), (1.0, 2.0, 123., 0.0, 0.0));
+        pair_to_spread.insert("pair2".to_string(), (3.0, 4.0, 123., 0.0, 0.0));
 
         let mut pair_to_assets = HashMap::new();
         pair_to_assets.insert(
@@ -455,8 +455,12 @@ mod tests {
 
         let asset_to_index = generate_asset_to_index_map(&pair_to_assets);
 
-        let (edges, _rate_map, _volume_map) =
-            prepare_graph(&asset_pairs, &pair_to_assets, &asset_to_index, &pair_status);
+        let (edges, _rate_map, _volume_map) = prepare_graph(
+            &pair_to_spread,
+            &pair_to_assets,
+            &asset_to_index,
+            &pair_status,
+        );
 
         assert_eq!(edges.len(), 4);
 
