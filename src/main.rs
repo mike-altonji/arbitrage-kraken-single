@@ -2,6 +2,7 @@ use dotenv::dotenv;
 use futures::future::select_all;
 use log4rs::{append::file::FileAppender, config};
 use std::collections::{HashMap, HashSet};
+use std::env;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
@@ -9,6 +10,7 @@ use tokio::time::sleep;
 mod evaluate_arbitrage;
 mod graph_algorithms;
 mod kraken;
+mod kraken_private;
 mod telegram;
 
 use crate::telegram::send_telegram_message;
@@ -17,6 +19,8 @@ use crate::telegram::send_telegram_message;
 async fn main() {
     // Initialize setup
     dotenv().ok();
+    let args: Vec<String> = env::args().collect();
+    let allow_trades = args.contains(&"--trade".to_string());
     let now = SystemTime::now();
     let since_the_epoch = now.duration_since(UNIX_EPOCH).expect("Time invalid");
     let timestamp = since_the_epoch.as_secs();
@@ -32,7 +36,11 @@ async fn main() {
         )
         .expect("Unable to build log file");
     log4rs::init_config(log_config).expect("Unable to build log file");
-    send_telegram_message("🚀 Launching arbitrage trader.").await;
+    if allow_trades {
+        send_telegram_message("🚀 Launching Kraken arbitrage: Trade mode").await;
+    } else {
+        send_telegram_message("🚀 Launching Kraken arbitrage: Evaluation-only mode").await;
+    }
 
     // Loop allows retries
     let mut retry = 0;
@@ -47,23 +55,25 @@ async fn main() {
             .filter(|e| e.path().extension().and_then(std::ffi::OsStr::to_str) == Some("csv"))
             .map(|e| e.path().to_str().unwrap().to_string())
             .collect();
-        let mut pairs_to_assets_vec = Vec::new();
-        let mut shared_asset_pairs_vec = Vec::new();
+        let mut pair_to_assets_vec = Vec::new();
+        let mut assets_to_pair_vec = Vec::new();
+        let mut pair_to_spread_vec = Vec::new();
         let pair_status: Arc<Mutex<HashMap<String, bool>>> = Arc::new(Mutex::new(HashMap::new()));
         let public_online = Arc::new(Mutex::new(false));
 
         for csv_file in csv_files {
-            let pair_to_assets = kraken::asset_pairs_to_pull(&csv_file)
+            let (pair_to_assets, assets_to_pair) = kraken::asset_pairs_to_pull(&csv_file)
                 .await
                 .expect("Failed to get asset pairs");
-            let shared_asset_pairs = Arc::new(Mutex::new(HashMap::new()));
-            pairs_to_assets_vec.push(pair_to_assets);
-            shared_asset_pairs_vec.push(shared_asset_pairs);
+            let pair_to_spread = Arc::new(Mutex::new(HashMap::new()));
+            pair_to_assets_vec.push(pair_to_assets);
+            assets_to_pair_vec.push(assets_to_pair);
+            pair_to_spread_vec.push(pair_to_spread);
         }
 
         // Unique set of all pairs, so we just have 1 subscription to the Kraken websocket
         let mut all_pairs = HashSet::new();
-        for pair_to_assets in &pairs_to_assets_vec {
+        for pair_to_assets in &pair_to_assets_vec {
             for pair in pair_to_assets.keys() {
                 all_pairs.insert(pair.clone());
             }
@@ -72,15 +82,15 @@ async fn main() {
         // Keep bids/asks up to date
         let fetch_handle = {
             let all_pairs_clone = all_pairs.clone();
-            let shared_asset_pairs_vec_clone = shared_asset_pairs_vec.clone();
-            let pairs_to_assets_vec_clone = pairs_to_assets_vec.clone();
+            let pair_to_spread_vec_clone = pair_to_spread_vec.clone();
+            let pair_to_assets_vec_clone = pair_to_assets_vec.clone();
             let pair_status_clone = pair_status.clone();
             let public_online_clone = public_online.clone();
             tokio::spawn(async move {
-                kraken::fetch_kraken_data_ws(
+                kraken::fetch_spreads(
                     all_pairs_clone,
-                    shared_asset_pairs_vec_clone,
-                    pairs_to_assets_vec_clone,
+                    pair_to_spread_vec_clone,
+                    pair_to_assets_vec_clone,
                     pair_status_clone,
                     public_online_clone,
                 )
@@ -91,18 +101,21 @@ async fn main() {
 
         // Search for arbitrage opportunities, for each graph
         let mut evaluate_handles = Vec::new();
-        for i in 0..pairs_to_assets_vec.len() {
+        for i in 0..pair_to_assets_vec.len() {
             let evaluate_handle = {
-                let pair_to_assets_clone = pairs_to_assets_vec[i].clone();
-                let shared_asset_pairs_clone = shared_asset_pairs_vec[i].clone();
+                let pair_to_assets_clone = pair_to_assets_vec[i].clone();
+                let assets_to_pair_clone = assets_to_pair_vec[i].clone();
+                let pair_to_spread_clone = pair_to_spread_vec[i].clone();
                 let pair_status_clone = pair_status.clone();
                 let public_online_clone = public_online.clone();
                 tokio::spawn(async move {
                     let _ = evaluate_arbitrage::evaluate_arbitrage_opportunities(
                         pair_to_assets_clone,
-                        shared_asset_pairs_clone,
+                        assets_to_pair_clone,
+                        pair_to_spread_clone,
                         pair_status_clone,
                         public_online_clone,
+                        allow_trades,
                         i as i64,
                     )
                     .await;
@@ -117,13 +130,11 @@ async fn main() {
             all_handles.push(Box::pin(handle));
         }
 
-        let (result, index, remaining) = select_all(all_handles).await;
+        let (result, _index, remaining) = select_all(all_handles).await;
 
-        // Abort all tasks except the one that has already finished or panicked
-        for (i, handle) in remaining.into_iter().enumerate() {
-            if i != index {
-                handle.abort();
-            }
+        // Abort tasks upon failure or completion
+        for (_i, handle) in remaining.into_iter().enumerate() {
+            handle.abort();
         }
 
         match result {

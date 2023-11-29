@@ -1,20 +1,36 @@
 use core::sync::atomic::Ordering;
 use csv::ReaderBuilder;
-use futures_util::sink::SinkExt;
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use influx_db_client::{reqwest::Url, Client, Point, Precision, Value};
 use reqwest;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::sync::atomic::AtomicUsize;
-use std::sync::{Arc, Mutex};
+use std::sync::{atomic::AtomicUsize, Arc, Mutex};
 use std::time::Duration;
-use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::protocol::Message;
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+
+#[derive(Clone)]
+pub struct PairToAssets {
+    pub base: String,
+    pub quote: String,
+}
+
+#[derive(Clone)]
+pub struct AssetsToPair {
+    pub base: String,
+    pub quote: String,
+    pub pair: String,
+}
 
 pub async fn asset_pairs_to_pull(
     fname: &str,
-) -> Result<HashMap<String, (String, String)>, Box<dyn std::error::Error>> {
+) -> Result<
+    (
+        HashMap<String, PairToAssets>,
+        HashMap<(String, String), AssetsToPair>,
+    ),
+    Box<dyn std::error::Error>,
+> {
     // Define the set of valid bases and quotes
     let mut rdr = ReaderBuilder::new().from_reader(File::open(fname)?);
     let mut input_asset_pairs = HashSet::new();
@@ -30,11 +46,12 @@ pub async fn asset_pairs_to_pull(
     let data_asset_pairs: serde_json::Value = serde_json::from_str(&text)?;
 
     // Fetch the list of all assets
-    let asset_pairs_url = "https://api.kraken.com/0/public/Assets";
-    let resp = reqwest::get(asset_pairs_url).await?;
+    let assets_url = "https://api.kraken.com/0/public/Assets";
+    let resp = reqwest::get(assets_url).await?;
     let text = resp.text().await?;
     let data_assets: serde_json::Value = serde_json::from_str(&text)?;
 
+    // Create the {pair: (base, quote)} HashMap
     let mut pair_to_assets = HashMap::new();
     if let Some(pairs) = data_asset_pairs["result"].as_object() {
         for (_pair, details) in pairs {
@@ -53,7 +70,10 @@ pub async fn asset_pairs_to_pull(
                     if input_asset_pairs.contains(&pair_ws) && status == "online" {
                         pair_to_assets.insert(
                             pair_ws.to_string(),
-                            (base_ws.to_string(), quote_ws.to_string()),
+                            PairToAssets {
+                                base: base_ws.to_string(),
+                                quote: quote_ws.to_string(),
+                            },
                         );
                     }
                 }
@@ -64,13 +84,36 @@ pub async fn asset_pairs_to_pull(
         }
     }
 
-    Ok(pair_to_assets)
+    // Create the {(asset, asset): (base, quote, pair)} HashMap
+    let mut assets_to_pair = HashMap::new();
+    for (pair, assets) in pair_to_assets.clone() {
+        let base = assets.base;
+        let quote = assets.quote;
+        assets_to_pair.insert(
+            (base.clone(), quote.clone()),
+            AssetsToPair {
+                base: base.clone(),
+                quote: quote.clone(),
+                pair: pair.clone(),
+            },
+        );
+        assets_to_pair.insert(
+            (quote.clone(), base.clone()),
+            AssetsToPair {
+                base: base.clone(),
+                quote: quote.clone(),
+                pair: pair.clone(),
+            },
+        );
+    }
+
+    Ok((pair_to_assets, assets_to_pair))
 }
 
-pub async fn fetch_kraken_data_ws(
+pub async fn fetch_spreads(
     all_pairs: HashSet<String>,
-    shared_asset_pairs_vec: Vec<Arc<Mutex<HashMap<String, (f64, f64, f64, f64, f64)>>>>,
-    pair_to_assets_vec: Vec<HashMap<String, (String, String)>>,
+    pair_to_spread_vec: Vec<Arc<Mutex<HashMap<String, (f64, f64, f64, f64, f64)>>>>,
+    pair_to_assets_vec: Vec<HashMap<String, PairToAssets>>,
     pair_status: Arc<Mutex<HashMap<String, bool>>>,
     public_online: Arc<Mutex<bool>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -169,7 +212,7 @@ pub async fn fetch_kraken_data_ws(
                                 for i in 0..pair_to_assets_vec.len() {
                                     if pair_to_assets_vec[i].contains_key(&pair.to_string()) {
                                         let mut locked_pairs =
-                                            shared_asset_pairs_vec[i].lock().unwrap();
+                                            pair_to_spread_vec[i].lock().unwrap();
                                         let existing_kraken_ts =
                                             match locked_pairs.get(&pair.to_string()) {
                                                 Some(&(_, _, ts, _, _)) => ts,
@@ -229,15 +272,6 @@ pub async fn fetch_kraken_data_ws(
     }
 }
 
-pub async fn execute_trade(
-    _asset1: &str,
-    _asset2: &str,
-    _volume: f64,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // log::info!("TODO: Buy {} of {} using {}", volume, asset2, asset1);
-    Ok(())
-}
-
 fn update_points_vector(
     points: &mut Vec<Point>,
     pair: String,
@@ -277,9 +311,20 @@ mod tests {
             .unwrap()
             .block_on(asset_pairs_to_pull("resources/asset_pairs_a1.csv"));
         assert!(result.is_ok());
-        let pairs = result.unwrap();
-        assert!(pairs.contains_key("EUR/USD"));
-        assert_eq!(pairs["EUR/USD"].0, "EUR");
-        assert_eq!(pairs["EUR/USD"].1, "USD");
+        let (pair_to_assets, assets_to_pair) = result.unwrap();
+        assert!(pair_to_assets.contains_key("EUR/USD"));
+        assert_eq!(pair_to_assets["EUR/USD"].base, "EUR");
+        assert_eq!(pair_to_assets["EUR/USD"].quote, "USD");
+
+        let usd_eur = ("USD".to_string(), "EUR".to_string());
+        let eur_usd = ("EUR".to_string(), "USD".to_string());
+        assert!(assets_to_pair.contains_key(&usd_eur));
+        assert!(assets_to_pair.contains_key(&eur_usd));
+        assert_eq!(assets_to_pair[&eur_usd].base, "EUR");
+        assert_eq!(assets_to_pair[&usd_eur].base, "EUR");
+        assert_eq!(assets_to_pair[&eur_usd].quote, "USD");
+        assert_eq!(assets_to_pair[&usd_eur].quote, "USD");
+        assert_eq!(assets_to_pair[&eur_usd].pair, "EUR/USD");
+        assert_eq!(assets_to_pair[&usd_eur].pair, "EUR/USD");
     }
 }

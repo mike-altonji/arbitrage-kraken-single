@@ -1,18 +1,27 @@
 use crate::graph_algorithms::{bellman_ford_negative_cycle, Edge};
-use crate::kraken::execute_trade;
+use crate::kraken::{AssetsToPair, PairToAssets};
+use crate::kraken_private::get_auth_token;
+use futures_util::{SinkExt, StreamExt};
 use influx_db_client::{reqwest::Url, Client, Point, Precision, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::time::{sleep, Duration};
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 const FEE: f64 = 0.0026;
 const TRADEABLE_ASSETS: [&str; 2] = ["USD", "EUR"]; // Cycle must contain one of these to execute a trade.
+const MIN_ROI: f64 = 1.0025;
+const MIN_PROFIT: f64 = 0.10;
+const MAX_TRADES: usize = 4;
+const FIAT_BALANCE: f64 = 1000.0; // TODO: Replace with real number, kept up-to-date
 
 pub async fn evaluate_arbitrage_opportunities(
-    pair_to_assets: HashMap<String, (String, String)>,
-    shared_asset_pairs: Arc<Mutex<HashMap<String, (f64, f64, f64, f64, f64)>>>,
+    pair_to_assets: HashMap<String, PairToAssets>,
+    assets_to_pair: HashMap<(String, String), AssetsToPair>,
+    pair_to_spread: Arc<Mutex<HashMap<String, (f64, f64, f64, f64, f64)>>>,
     pair_status: Arc<Mutex<HashMap<String, bool>>>,
     public_online: Arc<Mutex<bool>>,
+    allow_trades: bool,
     graph_id: i64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Set up InfluxDB client
@@ -33,8 +42,26 @@ pub async fn evaluate_arbitrage_opportunities(
     );
     let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
 
-    // Give shared_asset_pairs time to populate
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // Set up websocket connection to private Kraken endpoint if trading & subscribe to `ownTrades`
+    let token = get_auth_token().await?;
+    let mut private_ws = None;
+    if allow_trades {
+        let (ws, _) = connect_async("wss://ws-auth.kraken.com").await?;
+        private_ws = Some(ws);
+        let sub_msg = serde_json::json!({
+            "event": "subscribe",
+            "subscription": {
+                "name": "ownTrades",
+                "token": token.to_string()
+            }
+        });
+        if let Some(ws) = &mut private_ws {
+            ws.send(Message::Text(sub_msg.to_string())).await?;
+        }
+    }
+
+    // Give pair_to_spread time to populate
+    tokio::time::sleep(Duration::from_secs(5)).await;
 
     let asset_to_index = generate_asset_to_index_map(&pair_to_assets);
     let n = asset_to_index.len();
@@ -45,7 +72,6 @@ pub async fn evaluate_arbitrage_opportunities(
     );
 
     let mut counter = 0;
-
     loop {
         // If the public endpoint is down, don't attempt evaluation
         if !*public_online.lock().unwrap() {
@@ -62,10 +88,10 @@ pub async fn evaluate_arbitrage_opportunities(
         // Take pauses so I don't overheat computer (actually waits longer...eval times went from 1.5us to 1.5ms. Fine with this for now!)
         tokio::time::sleep(Duration::from_micros(10)).await;
 
-        let asset_pairs = shared_asset_pairs.lock().unwrap().clone();
+        let pair_to_spread = pair_to_spread.lock().unwrap().clone();
         let pair_status_clone = pair_status.lock().unwrap().clone();
         let (rate_edges, rate_map, volume_map) = prepare_graph(
-            &asset_pairs,
+            &pair_to_spread,
             &pair_to_assets,
             &asset_to_index,
             &pair_status_clone,
@@ -78,11 +104,11 @@ pub async fn evaluate_arbitrage_opportunities(
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos();
-            let client0 = Arc::clone(&client);
+            let client_clone = Arc::clone(&client);
             let retention_policy = Arc::clone(&retention_policy_clone);
             tokio::spawn(async move {
                 save_evaluation_time_to_influx(
-                    client0,
+                    client_clone,
                     &*retention_policy,
                     graph_id,
                     start_time,
@@ -95,15 +121,10 @@ pub async fn evaluate_arbitrage_opportunities(
         counter += 1;
 
         // Arbitrage opportunity found
-        if let Some(mut negative_cycle) = path {
-            rotate_path(
-                &mut negative_cycle,
-                &asset_to_index,
-                &Vec::from(TRADEABLE_ASSETS),
-            );
-            let (min_volume, end_volume, rates) =
-                limiting_volume(&negative_cycle, &rate_map, &volume_map);
-            let asset_names: Vec<String> = negative_cycle
+        if let Some(mut path) = path {
+            rotate_path(&mut path, &asset_to_index, &Vec::from(TRADEABLE_ASSETS));
+            let (min_volume, end_volume, rates) = limiting_volume(&path, &rate_map, &volume_map);
+            let path_names: Vec<String> = path
                 .iter()
                 .map(|&i| {
                     asset_to_index
@@ -116,7 +137,7 @@ pub async fn evaluate_arbitrage_opportunities(
                 .collect();
 
             // Log and send message at most every 5 seconds
-            let asset_names_clone = asset_names.clone();
+            let path_names_clone = path_names.clone();
             let retention_policy = Arc::clone(&retention_policy_clone);
             let client1 = Arc::clone(&client);
             let client2 = Arc::clone(&client);
@@ -124,19 +145,19 @@ pub async fn evaluate_arbitrage_opportunities(
             tokio::spawn(async move {
                 if let Ok(_permit) = sem_clone.try_acquire() {
                     arbitrage_details_to_influx(
-                        client2,
+                        client1,
                         graph_id,
                         min_volume,
                         end_volume,
-                        asset_names[0].to_string(),
-                        asset_names,
+                        path_names[0].to_string(),
+                        path_names,
                         rates,
                     )
                     .await;
 
                     // Log +/- 5 minutes of raw data. Don't need to wait for it to finish
                     tokio::spawn(async move {
-                        save_spread_latency_around_arbitrage_to_influx(client1, &*retention_policy)
+                        save_spread_latency_around_arbitrage_to_influx(client2, &*retention_policy)
                             .await;
                     });
 
@@ -144,12 +165,97 @@ pub async fn evaluate_arbitrage_opportunities(
                 }
             });
 
-            // Execute Trade TODO: This is a dummy for now, need real logic
-            if TRADEABLE_ASSETS
-                .iter()
-                .any(|&asset| asset_names_clone.contains(&asset.to_string()))
+            // Execute Trade, given conditions
+            // TODO: Also only execute if have enough `FIAT_BALANCE`
+            if TRADEABLE_ASSETS.contains(&path_names_clone[0].as_str())
+                && allow_trades
+                && path_names_clone.len() <= MAX_TRADES + 1
+                && end_volume / min_volume > MIN_ROI
+                && end_volume - min_volume > MIN_PROFIT
             {
-                execute_trade(&asset_names_clone[0], &asset_names_clone[1], min_volume).await?;
+                let mut volume = min_volume.min(FIAT_BALANCE); // TODO: Remove hard-coding
+                for i in 0..path_names_clone.len() - 1 {
+                    let asset1 = &path_names_clone[i];
+                    let asset2 = &path_names_clone[i + 1];
+
+                    if let Some(assets_to_pair) =
+                        assets_to_pair.get(&(asset1.to_string(), asset2.to_string()))
+                    {
+                        let pair = &assets_to_pair.pair;
+                        let base = &assets_to_pair.base;
+
+                        let trade_type = if asset1 == base {
+                            "sell"
+                        } else if asset2 == base {
+                            let ask = pair_to_spread[pair].1;
+                            volume = (volume * (1. - FEE)) / ask; // In this case, the prior volume was actually the cost
+                            "buy"
+                        } else {
+                            panic!("TRADE FAILED: Neither asset is base in the pair.");
+                        };
+                        let trade_msg = serde_json::json!({
+                            "event": "addOrder",
+                            "token": token,
+                            "type": trade_type,
+                            "ordertype": "market",
+                            "volume": volume,
+                            "pair": pair,
+                        });
+                        if let Some(ws) = &mut private_ws {
+                            ws.send(Message::Text(trade_msg.to_string())).await?;
+                        }
+
+                        // Response from `ownTrades`
+                        if let Some(ws_stream) = &mut private_ws {
+                            while let Some(message) = ws_stream.next().await {
+                                match message {
+                                    Ok(msg) => {
+                                        let data: serde_json::Value =
+                                            serde_json::from_str(&msg.to_string()).unwrap();
+                                        if let Some(trades) = data.get("ownTrades") {
+                                            for trade in trades.as_object().unwrap() {
+                                                let d = trade.1.as_object().unwrap();
+                                                let received_pair =
+                                                    d.get("pair").unwrap().as_str().unwrap();
+                                                if received_pair == pair {
+                                                    let cost = d
+                                                        .get("cost")
+                                                        .unwrap()
+                                                        .as_str()
+                                                        .unwrap()
+                                                        .parse::<f64>()
+                                                        .unwrap();
+                                                    let price = d
+                                                        .get("price")
+                                                        .unwrap()
+                                                        .as_str()
+                                                        .unwrap()
+                                                        .parse::<f64>()
+                                                        .unwrap();
+                                                    let fee = d
+                                                        .get("fee")
+                                                        .unwrap()
+                                                        .as_str()
+                                                        .unwrap()
+                                                        .parse::<f64>()
+                                                        .unwrap();
+                                                    // Get the amount of asset2
+                                                    if asset1 == base {
+                                                        volume = cost - fee;
+                                                    } else if asset2 == base {
+                                                        volume = (cost - fee) / price;
+                                                    }
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Err(e) => eprintln!("Error: {}", e),
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -230,11 +336,18 @@ fn rotate_path(
 }
 
 fn generate_asset_to_index_map(
-    pair_to_assets: &HashMap<String, (String, String)>,
+    pair_to_assets: &HashMap<String, PairToAssets>,
 ) -> HashMap<String, usize> {
     let mut asset_to_index = HashMap::new();
     let mut index = 0;
-    for (_, (asset1, asset2)) in pair_to_assets {
+    for (
+        _,
+        PairToAssets {
+            base: asset1,
+            quote: asset2,
+        },
+    ) in pair_to_assets
+    {
         asset_to_index.entry(asset1.clone()).or_insert_with(|| {
             index += 1;
             index - 1
@@ -248,8 +361,8 @@ fn generate_asset_to_index_map(
 }
 
 fn prepare_graph(
-    asset_pairs: &HashMap<String, (f64, f64, f64, f64, f64)>,
-    pair_to_assets: &HashMap<String, (String, String)>,
+    pair_to_spread: &HashMap<String, (f64, f64, f64, f64, f64)>,
+    pair_to_assets: &HashMap<String, PairToAssets>,
     asset_to_index: &HashMap<String, usize>,
     pair_status: &HashMap<String, bool>,
 ) -> (
@@ -260,8 +373,12 @@ fn prepare_graph(
     let mut exchange_rates = vec![];
     let mut rates_map = HashMap::new();
     let mut volumes_map = HashMap::new();
-    for (pair, (bid, ask, _, bid_volume, ask_volume)) in asset_pairs {
-        if let Some((asset1, asset2)) = pair_to_assets.get(pair) {
+    for (pair, (bid, ask, _, bid_volume, ask_volume)) in pair_to_spread {
+        if let Some(PairToAssets {
+            base: asset1,
+            quote: asset2,
+        }) = pair_to_assets.get(pair)
+        {
             if let Some(status) = pair_status.get(pair) {
                 if *status {
                     let index1 = *asset_to_index
@@ -368,11 +485,17 @@ mod tests {
         let mut pair_to_assets = HashMap::new();
         pair_to_assets.insert(
             "pair1".to_string(),
-            ("asset1".to_string(), "asset2".to_string()),
+            PairToAssets {
+                base: "asset1".to_string(),
+                quote: "asset2".to_string(),
+            },
         );
         pair_to_assets.insert(
             "pair2".to_string(),
-            ("asset2".to_string(), "asset3".to_string()),
+            PairToAssets {
+                base: "asset2".to_string(),
+                quote: "asset3".to_string(),
+            },
         );
 
         let asset_to_index = generate_asset_to_index_map(&pair_to_assets);
@@ -393,18 +516,24 @@ mod tests {
 
     #[test]
     fn test_prepare_graph() {
-        let mut asset_pairs = HashMap::new();
-        asset_pairs.insert("pair1".to_string(), (1.0, 2.0, 123., 0.0, 0.0));
-        asset_pairs.insert("pair2".to_string(), (3.0, 4.0, 123., 0.0, 0.0));
+        let mut pair_to_spread = HashMap::new();
+        pair_to_spread.insert("pair1".to_string(), (1.0, 2.0, 123., 0.0, 0.0));
+        pair_to_spread.insert("pair2".to_string(), (3.0, 4.0, 123., 0.0, 0.0));
 
         let mut pair_to_assets = HashMap::new();
         pair_to_assets.insert(
             "pair1".to_string(),
-            ("asset1".to_string(), "asset2".to_string()),
+            PairToAssets {
+                base: "asset1".to_string(),
+                quote: "asset2".to_string(),
+            },
         );
         pair_to_assets.insert(
             "pair2".to_string(),
-            ("asset2".to_string(), "asset3".to_string()),
+            PairToAssets {
+                base: "asset2".to_string(),
+                quote: "asset3".to_string(),
+            },
         );
 
         let mut pair_status = HashMap::new();
@@ -413,8 +542,12 @@ mod tests {
 
         let asset_to_index = generate_asset_to_index_map(&pair_to_assets);
 
-        let (edges, _rate_map, _volume_map) =
-            prepare_graph(&asset_pairs, &pair_to_assets, &asset_to_index, &pair_status);
+        let (edges, _rate_map, _volume_map) = prepare_graph(
+            &pair_to_spread,
+            &pair_to_assets,
+            &asset_to_index,
+            &pair_status,
+        );
 
         assert_eq!(edges.len(), 4);
 
