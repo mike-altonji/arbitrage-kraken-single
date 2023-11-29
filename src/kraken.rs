@@ -1,16 +1,13 @@
 use core::sync::atomic::Ordering;
 use csv::ReaderBuilder;
-use futures_util::sink::SinkExt;
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use influx_db_client::{reqwest::Url, Client, Point, Precision, Value};
 use reqwest;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::sync::atomic::AtomicUsize;
-use std::sync::{Arc, Mutex};
+use std::sync::{atomic::AtomicUsize, Arc, Mutex};
 use std::time::Duration;
-use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::protocol::Message;
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
 #[derive(Clone)]
 pub struct PairToAssets {
@@ -273,15 +270,6 @@ pub async fn fetch_spreads(
             }
         }
     }
-}
-
-pub async fn execute_trade(
-    _asset1: &str,
-    _asset2: &str,
-    _volume: f64,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // log::info!("TODO: Buy {} of {} using {}", volume, asset2, asset1);
-    Ok(())
 }
 
 fn update_points_vector(
