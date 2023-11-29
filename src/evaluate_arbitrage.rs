@@ -274,7 +274,7 @@ fn generate_asset_to_index_map(
 }
 
 fn prepare_graph(
-    asset_pairs: &HashMap<String, (f64, f64, f64, f64, f64)>,
+    pair_to_spread: &HashMap<String, (f64, f64, f64, f64, f64)>,
     pair_to_assets: &HashMap<String, PairToAssets>,
     asset_to_index: &HashMap<String, usize>,
     pair_status: &HashMap<String, bool>,
@@ -286,7 +286,7 @@ fn prepare_graph(
     let mut exchange_rates = vec![];
     let mut rates_map = HashMap::new();
     let mut volumes_map = HashMap::new();
-    for (pair, (bid, ask, _, bid_volume, ask_volume)) in asset_pairs {
+    for (pair, (bid, ask, _, bid_volume, ask_volume)) in pair_to_spread {
         if let Some(PairToAssets {
             base: asset1,
             quote: asset2,
