@@ -117,15 +117,10 @@ pub async fn evaluate_arbitrage_opportunities(
         counter += 1;
 
         // Arbitrage opportunity found
-        if let Some(mut negative_cycle) = path {
-            rotate_path(
-                &mut negative_cycle,
-                &asset_to_index,
-                &Vec::from(TRADEABLE_ASSETS),
-            );
-            let (min_volume, end_volume, rates) =
-                limiting_volume(&negative_cycle, &rate_map, &volume_map);
-            let asset_names: Vec<String> = negative_cycle
+        if let Some(mut path) = path {
+            rotate_path(&mut path, &asset_to_index, &Vec::from(TRADEABLE_ASSETS));
+            let (min_volume, end_volume, rates) = limiting_volume(&path, &rate_map, &volume_map);
+            let path_names: Vec<String> = path
                 .iter()
                 .map(|&i| {
                     asset_to_index
@@ -138,7 +133,7 @@ pub async fn evaluate_arbitrage_opportunities(
                 .collect();
 
             // Log and send message at most every 5 seconds
-            let asset_names_clone = asset_names.clone();
+            let path_names_clone = path_names.clone();
             let retention_policy = Arc::clone(&retention_policy_clone);
             let client1 = Arc::clone(&client);
             let client2 = Arc::clone(&client);
@@ -150,8 +145,8 @@ pub async fn evaluate_arbitrage_opportunities(
                         graph_id,
                         min_volume,
                         end_volume,
-                        asset_names[0].to_string(),
-                        asset_names,
+                        path_names[0].to_string(),
+                        path_names,
                         rates,
                     )
                     .await;
@@ -167,13 +162,13 @@ pub async fn evaluate_arbitrage_opportunities(
             });
 
             // Execute Trade, given conditions
-            if TRADEABLE_ASSETS.contains(&asset_names_clone[0].as_str())
+            if TRADEABLE_ASSETS.contains(&path_names_clone[0].as_str())
                 && allow_trades
-                && asset_names_clone.len() <= MAX_TRADES + 1
+                && path_names_clone.len() <= MAX_TRADES + 1
                 && end_volume / min_volume > MIN_ROI
                 && end_volume - min_volume > MIN_PROFIT
             {
-                execute_trade(&asset_names_clone[0], &asset_names_clone[1], min_volume).await?;
+                execute_trade(&path_names_clone[0], &path_names_clone[1], min_volume).await?;
             }
         }
     }
