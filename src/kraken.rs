@@ -229,6 +229,15 @@ pub async fn fetch_kraken_data_ws(
     }
 }
 
+pub async fn execute_trade(
+    _asset1: &str,
+    _asset2: &str,
+    _volume: f64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // log::info!("TODO: Buy {} of {} using {}", volume, asset2, asset1);
+    Ok(())
+}
+
 fn update_points_vector(
     points: &mut Vec<Point>,
     pair: String,

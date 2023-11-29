@@ -10,7 +10,6 @@ use tokio::time::sleep;
 mod evaluate_arbitrage;
 mod graph_algorithms;
 mod kraken;
-mod kraken_private;
 mod telegram;
 
 use crate::telegram::send_telegram_message;
@@ -59,8 +58,6 @@ async fn main() {
         let mut shared_asset_pairs_vec = Vec::new();
         let pair_status: Arc<Mutex<HashMap<String, bool>>> = Arc::new(Mutex::new(HashMap::new()));
         let public_online = Arc::new(Mutex::new(false));
-        // let private_stream = Arc::new(Mutex::new(None));
-        let auth_token = Arc::new(Mutex::new(None));
 
         for csv_file in csv_files {
             let pair_to_assets = kraken::asset_pairs_to_pull(&csv_file)
@@ -121,24 +118,10 @@ async fn main() {
             evaluate_handles.push(evaluate_handle);
         }
 
-        // Wait for tasks to complete (this will likely never happen given the current logic)
+        // Wait for both tasks to complete (this will likely never happen given the current logic)
         let mut all_handles = vec![Box::pin(fetch_handle)];
         for handle in evaluate_handles {
             all_handles.push(Box::pin(handle));
-        }
-
-        // Handle for the private Kraken endpoint
-        if allow_trades {
-            let private_handle = {
-                // let private_stream_clone = Arc::clone(&private_stream);
-                let auth_token_clone = Arc::clone(&auth_token);
-                tokio::spawn(async move {
-                    kraken_private::connect_to_private_feed(auth_token_clone)
-                        .await
-                        .expect("Failed to connect to private feed");
-                })
-            };
-            all_handles.push(Box::pin(private_handle));
         }
 
         let (result, index, remaining) = select_all(all_handles).await;

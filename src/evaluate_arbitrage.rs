@@ -1,5 +1,5 @@
 use crate::graph_algorithms::{bellman_ford_negative_cycle, Edge};
-use crate::kraken_private::execute_trade;
+use crate::kraken::execute_trade;
 use influx_db_client::{reqwest::Url, Client, Point, Precision, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -149,7 +149,7 @@ pub async fn evaluate_arbitrage_opportunities(
                 .iter()
                 .any(|&asset| asset_names_clone.contains(&asset.to_string()))
             {
-                // execute_trade(&asset_names_clone[0], &asset_names_clone[1], min_volume).await?;
+                execute_trade(&asset_names_clone[0], &asset_names_clone[1], min_volume).await?;
             }
         }
     }
