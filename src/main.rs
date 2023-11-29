@@ -129,7 +129,7 @@ async fn main() {
         let (result, index, remaining) = select_all(all_handles).await;
 
         // Abort all tasks except the one that has already finished or panicked
-        for (i, handle) in remaining.into_iter().enumerate() {
+        for (_i, handle) in remaining.into_iter().enumerate() {
             handle.abort();
         }
 
