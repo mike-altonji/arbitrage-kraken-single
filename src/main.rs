@@ -126,9 +126,9 @@ async fn main() {
             all_handles.push(Box::pin(handle));
         }
 
-        let (result, index, remaining) = select_all(all_handles).await;
+        let (result, _index, remaining) = select_all(all_handles).await;
 
-        // Abort all tasks except the one that has already finished or panicked
+        // Abort tasks upon failure or completion
         for (_i, handle) in remaining.into_iter().enumerate() {
             handle.abort();
         }
