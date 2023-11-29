@@ -11,6 +11,9 @@ use tokio_tungstenite::tungstenite::Message;
 
 const FEE: f64 = 0.0026;
 const TRADEABLE_ASSETS: [&str; 2] = ["USD", "EUR"]; // Cycle must contain one of these to execute a trade.
+const MIN_ROI: f64 = 1.0025;
+const MIN_PROFIT: f64 = 0.10;
+const MAX_TRADES: usize = 4;
 
 pub async fn evaluate_arbitrage_opportunities(
     pair_to_assets: HashMap<String, (String, String)>,
@@ -163,10 +166,12 @@ pub async fn evaluate_arbitrage_opportunities(
                 }
             });
 
-            // Execute Trade TODO: This is a dummy for now, need real logic
-            if TRADEABLE_ASSETS
-                .iter()
-                .any(|&asset| asset_names_clone.contains(&asset.to_string()))
+            // Execute Trade, given conditions
+            if TRADEABLE_ASSETS.contains(&asset_names_clone[0].as_str())
+                && allow_trades
+                && asset_names_clone.len() <= MAX_TRADES + 1
+                && end_volume / min_volume > MIN_ROI
+                && end_volume - min_volume > MIN_PROFIT
             {
                 execute_trade(&asset_names_clone[0], &asset_names_clone[1], min_volume).await?;
             }
