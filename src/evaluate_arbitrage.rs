@@ -57,7 +57,7 @@ pub async fn evaluate_arbitrage_opportunities(
     }
 
     // Give pair_to_spread time to populate
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
 
     let asset_to_index = generate_asset_to_index_map(&pair_to_assets);
     let n = asset_to_index.len();
@@ -68,7 +68,6 @@ pub async fn evaluate_arbitrage_opportunities(
     );
 
     let mut counter = 0;
-
     loop {
         // If the public endpoint is down, don't attempt evaluation
         if !*public_online.lock().unwrap() {
