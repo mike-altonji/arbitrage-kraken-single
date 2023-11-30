@@ -195,29 +195,39 @@ pub async fn fetch_spreads(
                             if let Some(inner_array) = array[1].as_array() {
                                 let bid = inner_array
                                     .get(0)
-                                    .and_then(|s| s.as_str())
-                                    .and_then(|s| s.parse::<f64>().ok())
-                                    .unwrap();
+                                    .ok_or("Failed to get 'bid' from fetched data")?
+                                    .as_str()
+                                    .ok_or("Failed to parse 'bid' as string")?
+                                    .parse::<f64>()
+                                    .map_err(|_| "Failed to parse 'bid' as f64")?;
                                 let ask = inner_array
                                     .get(1)
-                                    .and_then(|s| s.as_str())
-                                    .and_then(|s| s.parse::<f64>().ok())
-                                    .unwrap();
+                                    .ok_or("Failed to get 'ask' from fetched data")?
+                                    .as_str()
+                                    .ok_or("Failed to parse 'ask' as string")?
+                                    .parse::<f64>()
+                                    .map_err(|_| "Failed to parse 'ask as f64")?;
                                 let kraken_ts = inner_array
                                     .get(2)
-                                    .and_then(|s| s.as_str())
-                                    .and_then(|s| s.parse::<f64>().ok())
-                                    .unwrap();
+                                    .ok_or("Failed to get 'kraken_ts' from fetched data")?
+                                    .as_str()
+                                    .ok_or("Failed to parse 'kraken_ts' as string")?
+                                    .parse::<f64>()
+                                    .map_err(|_| "Failed to parse 'kraken_ts' as f64")?;
                                 let bid_volume = inner_array
                                     .get(3)
-                                    .and_then(|s| s.as_str())
-                                    .and_then(|s| s.parse::<f64>().ok())
-                                    .unwrap();
+                                    .ok_or("Failed to get 'bid_volume' from fetched data")?
+                                    .as_str()
+                                    .ok_or("Failed to parse 'bid_volume' as string")?
+                                    .parse::<f64>()
+                                    .map_err(|_| "Failed to parse 'bid_volume' as f64")?;
                                 let ask_volume = inner_array
                                     .get(4)
-                                    .and_then(|s| s.as_str())
-                                    .and_then(|s| s.parse::<f64>().ok())
-                                    .unwrap();
+                                    .ok_or("Failed to get 'ask_volume' from fetched data")?
+                                    .as_str()
+                                    .ok_or("Failed to parse 'ask_volume' as string")?
+                                    .parse::<f64>()
+                                    .map_err(|_| "Failed to parse 'ask_volume' as f64")?;
                                 for i in 0..pair_to_assets_vec.len() {
                                     if pair_to_assets_vec[i].contains_key(&pair.to_string()) {
                                         let mut locked_pairs =
