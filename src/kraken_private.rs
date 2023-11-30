@@ -1,10 +1,19 @@
 use base64::{decode_config, encode_config, STANDARD};
+use futures_util::{SinkExt, StreamExt};
 use hmac::{Hmac, Mac, NewMac};
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::Value;
 use sha2::{Digest, Sha256, Sha512};
+use std::collections::HashMap;
 use std::env;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::net::TcpStream;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+
+use crate::kraken::AssetsToPair;
+
+const FIAT_BALANCE: f64 = 1000.0; // TODO: Replace with real number, kept up-to-date
 
 pub async fn get_auth_token() -> Result<String, Box<dyn std::error::Error>> {
     let api_key = env::var("KRAKEN_KEY").expect("KRAKEN_KEY must be set");
@@ -49,4 +58,97 @@ pub async fn get_auth_token() -> Result<String, Box<dyn std::error::Error>> {
     let token = v["result"]["token"].as_str().unwrap().to_string();
 
     Ok(token)
+}
+
+pub async fn execute_trade(
+    path_names: Vec<String>,
+    min_volume: f64,
+    assets_to_pair: &HashMap<(String, String), AssetsToPair>,
+    pair_to_spread: HashMap<String, (f64, f64, f64, f64, f64)>,
+    private_ws: &mut Option<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+    token: &String,
+    fee_pct: f64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut volume = min_volume.min(FIAT_BALANCE); // TODO: Remove hard-coding
+    for i in 0..path_names.len() - 1 {
+        let asset1 = &path_names[i];
+        let asset2 = &path_names[i + 1];
+
+        if let Some(assets_to_pair) = assets_to_pair.get(&(asset1.to_string(), asset2.to_string()))
+        {
+            let pair = &assets_to_pair.pair;
+            let base = &assets_to_pair.base;
+
+            let trade_type = if asset1 == base {
+                "sell"
+            } else if asset2 == base {
+                let ask = pair_to_spread[pair].1;
+                volume = (volume * (1. - fee_pct)) / ask; // In this case, the prior volume was actually the cost
+                "buy"
+            } else {
+                panic!("TRADE FAILED: Neither asset is base in the pair.");
+            };
+            let trade_msg = serde_json::json!({
+                "event": "addOrder",
+                "token": token,
+                "type": trade_type,
+                "ordertype": "market",
+                "volume": volume,
+                "pair": pair,
+            });
+            if let Some(ws) = private_ws {
+                ws.send(Message::Text(trade_msg.to_string())).await?;
+            }
+
+            // Response from `ownTrades`
+            if let Some(ws_stream) = private_ws {
+                while let Some(message) = ws_stream.next().await {
+                    match message {
+                        Ok(msg) => {
+                            let data: serde_json::Value =
+                                serde_json::from_str(&msg.to_string()).unwrap();
+                            if let Some(trades) = data.get("ownTrades") {
+                                for trade in trades.as_object().unwrap() {
+                                    let d = trade.1.as_object().unwrap();
+                                    let received_pair = d.get("pair").unwrap().as_str().unwrap();
+                                    if received_pair == pair {
+                                        let cost = d
+                                            .get("cost")
+                                            .unwrap()
+                                            .as_str()
+                                            .unwrap()
+                                            .parse::<f64>()
+                                            .unwrap();
+                                        let price = d
+                                            .get("price")
+                                            .unwrap()
+                                            .as_str()
+                                            .unwrap()
+                                            .parse::<f64>()
+                                            .unwrap();
+                                        let fee = d
+                                            .get("fee")
+                                            .unwrap()
+                                            .as_str()
+                                            .unwrap()
+                                            .parse::<f64>()
+                                            .unwrap();
+                                        // Get the amount of asset2
+                                        if asset1 == base {
+                                            volume = cost - fee;
+                                        } else if asset2 == base {
+                                            volume = (cost - fee) / price;
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => eprintln!("Error: {}", e),
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
