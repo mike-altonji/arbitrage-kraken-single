@@ -125,14 +125,8 @@ pub async fn fetch_spreads(
     pair_status: Arc<Mutex<HashMap<String, bool>>>,
     public_online: Arc<Mutex<bool>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    dotenv::dotenv().ok();
     const SLEEP_DURATION: Duration = Duration::from_secs(5);
-    let host = std::env::var("INFLUXDB_HOST").expect("INFLUXDB_HOST must be set");
-    let port = std::env::var("INFLUXDB_PORT").expect("INFLUXDB_PORT must be set");
-    let db_name = std::env::var("DB_NAME").expect("DB_NAME must be set");
-    let user = std::env::var("DB_USER").expect("DB_USER must be set");
-    let password = std::env::var("DB_PASSWORD").expect("DB_PASSWORD must be set");
-    let retention_policy_var = Arc::new(std::env::var("RP_NAME").expect("RP_NAME must be set"));
+    let (client, retention_policy, batch_size, mut points) = setup_influx().await;
 
     loop {
         let url = url::Url::parse("wss://ws.kraken.com").expect("Public ws unparseable");
@@ -155,19 +149,6 @@ pub async fn fetch_spreads(
             "Subscribed to asset pairs: {:?}",
             all_pairs.iter().collect::<Vec<&String>>()
         );
-
-        // InfluxDB setup
-        let retention_policy_clone = Arc::clone(&retention_policy_var);
-        let client = Arc::new(
-            Client::new(
-                Url::parse(&format!("http://{}:{}", &host, &port))
-                    .expect("InfluxDB URL unparseable"),
-                &db_name,
-            )
-            .set_authentication(&user, &password),
-        );
-        let batch_size: usize = 500;
-        let mut points = Vec::new();
 
         while let Some(msg) = read.next().await {
             match msg {
@@ -222,8 +203,8 @@ pub async fn fetch_spreads(
                                                 .unwrap_or_default()
                                                 .as_secs_f64();
                                             let client = Arc::clone(&client);
-                                            let retention_policy =
-                                                Arc::clone(&retention_policy_clone);
+                                            let retention_policy_clone =
+                                                Arc::clone(&retention_policy);
                                             let pair_ = pair.clone();
                                             update_points_vector(
                                                 &mut points,
@@ -237,7 +218,7 @@ pub async fn fetch_spreads(
                                                 tokio::spawn(async move {
                                                     spread_latency_to_influx(
                                                         client,
-                                                        &*retention_policy,
+                                                        &*retention_policy_clone,
                                                         points_clone,
                                                     )
                                                     .await;
@@ -263,6 +244,27 @@ pub async fn fetch_spreads(
             }
         }
     }
+}
+
+async fn setup_influx() -> (Arc<Client>, Arc<String>, usize, Vec<Point>) {
+    dotenv::dotenv().ok();
+    let host = std::env::var("INFLUXDB_HOST").expect("INFLUXDB_HOST must be set");
+    let port = std::env::var("INFLUXDB_PORT").expect("INFLUXDB_PORT must be set");
+    let db_name = std::env::var("DB_NAME").expect("DB_NAME must be set");
+    let user = std::env::var("DB_USER").expect("DB_USER must be set");
+    let password = std::env::var("DB_PASSWORD").expect("DB_PASSWORD must be set");
+    let retention_policy = Arc::new(std::env::var("RP_NAME").expect("RP_NAME must be set"));
+    let batch_size: usize = 500;
+    let points = Vec::new();
+    let client = Arc::new(
+        Client::new(
+            Url::parse(&format!("http://{}:{}", &host, &port)).expect("InfluxDB URL unparseable"),
+            &db_name,
+        )
+        .set_authentication(&user, &password),
+    );
+
+    (client, retention_policy, batch_size, points)
 }
 
 fn get_f64_from_array(
