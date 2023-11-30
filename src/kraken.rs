@@ -87,7 +87,7 @@ pub async fn asset_pairs_to_pull(
                 }
             }
             _ => {
-                log::warn!("Altname does not exist for base or quote");
+                log::warn!("Altname does not exist for base {base} or quote {quote}");
             }
         }
     }
