@@ -174,6 +174,8 @@ async fn process_trade_response(
                                     volume = cost - fee;
                                 } else if asset2 == base {
                                     volume = (cost - fee) / price;
+                                } else {
+                                    panic!("TRADE FAILED: Neither asset is base in the pair.");
                                 }
                                 break;
                             }
