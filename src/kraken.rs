@@ -12,6 +12,8 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
+use crate::telegram::send_telegram_message;
+
 #[derive(Clone)]
 pub struct PairToAssets {
     pub base: String,
@@ -149,12 +151,16 @@ pub async fn fetch_spreads(
                     .await?;
                 }
                 Ok(_) => {
-                    log::error!("Websocket connection closed or stopped sending data");
+                    let msg = "Websocket connection closed or stopped sending data";
+                    log::error!("{}", msg);
+                    send_telegram_message(msg).await;
                     tokio::time::sleep(SLEEP_DURATION).await;
                     continue;
                 }
                 Err(e) => {
-                    log::error!("Error during websocket communication: {:?}", e);
+                    let msg = format!("Error during websocket communication: {:?}", e);
+                    log::error!("{}", msg);
+                    send_telegram_message(&msg).await;
                     tokio::time::sleep(SLEEP_DURATION).await;
                     continue;
                 }
