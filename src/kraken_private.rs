@@ -137,48 +137,16 @@ async fn process_trade_response(
     asset1: &String,
     asset2: &String,
 ) -> Result<f64, Box<dyn std::error::Error>> {
-    let mut volume = 0.0;
+    let mut volume: Option<f64> = None;
     if let Some(ws_stream) = private_ws {
         while let Some(message) = ws_stream.next().await {
             match message {
                 Ok(msg) => {
                     let data: serde_json::Value = serde_json::from_str(&msg.to_string()).unwrap();
                     if let Some(trades) = data.get("ownTrades") {
-                        for trade in trades.as_object().unwrap() {
-                            let d = trade.1.as_object().unwrap();
-                            let received_pair = d.get("pair").unwrap().as_str().unwrap();
-                            if received_pair == pair {
-                                let cost = d
-                                    .get("cost")
-                                    .unwrap()
-                                    .as_str()
-                                    .unwrap()
-                                    .parse::<f64>()
-                                    .unwrap();
-                                let price = d
-                                    .get("price")
-                                    .unwrap()
-                                    .as_str()
-                                    .unwrap()
-                                    .parse::<f64>()
-                                    .unwrap();
-                                let fee = d
-                                    .get("fee")
-                                    .unwrap()
-                                    .as_str()
-                                    .unwrap()
-                                    .parse::<f64>()
-                                    .unwrap();
-                                // Get the amount of asset2
-                                if asset1 == base {
-                                    volume = cost - fee;
-                                } else if asset2 == base {
-                                    volume = (cost - fee) / price;
-                                } else {
-                                    panic!("TRADE FAILED: Neither asset is base in the pair.");
-                                }
-                                break;
-                            }
+                        if let Some(vol) = process_trades(trades, pair, base, asset1, asset2)? {
+                            volume = Some(vol);
+                            break;
                         }
                     }
                 }
@@ -186,5 +154,63 @@ async fn process_trade_response(
             }
         }
     }
+    volume.ok_or_else(|| "Did not find a trade response in the allotted time.".into())
+}
+
+fn process_trades(
+    trades: &serde_json::Value,
+    pair: &String,
+    base: &String,
+    asset1: &String,
+    asset2: &String,
+) -> Result<Option<f64>, Box<dyn std::error::Error>> {
+    for trade in trades.as_object().unwrap() {
+        let trade_data = trade.1.as_object().unwrap();
+        let received_pair = trade_data.get("pair").unwrap().as_str().unwrap();
+        if received_pair == pair {
+            if let Some(volume) = calculate_volume(trade_data, base, asset1, asset2)? {
+                return Ok(Some(volume));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn calculate_volume(
+    trade_data: &serde_json::Map<String, serde_json::Value>,
+    base: &String,
+    asset1: &String,
+    asset2: &String,
+) -> Result<Option<f64>, Box<dyn std::error::Error>> {
+    let cost = trade_data
+        .get("cost")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .parse::<f64>()
+        .unwrap();
+    let price = trade_data
+        .get("price")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .parse::<f64>()
+        .unwrap();
+    let fee = trade_data
+        .get("fee")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .parse::<f64>()
+        .unwrap();
+
+    let volume = if asset1 == base {
+        Some(cost - fee)
+    } else if asset2 == base {
+        Some((cost - fee) / price)
+    } else {
+        None
+    };
+
     Ok(volume)
 }
