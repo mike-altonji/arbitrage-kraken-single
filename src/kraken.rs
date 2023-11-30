@@ -135,7 +135,7 @@ pub async fn fetch_spreads(
     let retention_policy_var = Arc::new(std::env::var("RP_NAME").expect("RP_NAME must be set"));
 
     loop {
-        let url = url::Url::parse("wss://ws.kraken.com").map_err(|_| "Public ws unparsable")?;
+        let url = url::Url::parse("wss://ws.kraken.com").expect("Public ws unparseable");
         let ws_stream = match connect_async(url).await {
             Ok((ws_stream, _)) => ws_stream,
             Err(e) => {
@@ -156,15 +156,16 @@ pub async fn fetch_spreads(
             all_pairs.iter().collect::<Vec<&String>>()
         );
 
+        // InfluxDB setup
         let retention_policy_clone = Arc::clone(&retention_policy_var);
         let client = Arc::new(
             Client::new(
-                Url::parse(&format!("http://{}:{}", &host, &port)).unwrap(),
+                Url::parse(&format!("http://{}:{}", &host, &port))
+                    .expect("InfluxDB URL unparseable"),
                 &db_name,
             )
             .set_authentication(&user, &password),
         );
-
         let batch_size: usize = 500;
         let mut points = Vec::new();
 
