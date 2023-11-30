@@ -137,14 +137,12 @@ pub async fn fetch_spreads(
             }
         };
         let (mut write, mut read) = ws_stream.split();
-        let subscription_message = serde_json::json!({
+        let sub_msg = serde_json::json!({
             "event": "subscribe",
             "subscription": {"name": "spread"},
             "pair": all_pairs.clone().into_iter().collect::<Vec<String>>(),
         });
-        write
-            .send(Message::Text(subscription_message.to_string()))
-            .await?;
+        write.send(Message::Text(sub_msg.to_string())).await?;
         log::info!(
             "Subscribed to asset pairs: {:?}",
             all_pairs.iter().collect::<Vec<&String>>()
