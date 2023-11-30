@@ -1,5 +1,6 @@
 use core::sync::atomic::Ordering;
 use csv::ReaderBuilder;
+use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use influx_db_client::{reqwest::Url, Client, Point, Precision, Value};
 use reqwest;
@@ -7,7 +8,9 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::sync::{atomic::AtomicUsize, Arc, Mutex};
 use std::time::Duration;
+use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 #[derive(Clone)]
 pub struct PairToAssets {
@@ -127,29 +130,8 @@ pub async fn fetch_spreads(
 ) -> Result<(), Box<dyn std::error::Error>> {
     const SLEEP_DURATION: Duration = Duration::from_secs(5);
     let (client, retention_policy, batch_size, mut points) = setup_influx().await;
-
+    let (_write, mut read) = setup_websocket(&all_pairs).await;
     loop {
-        let url = url::Url::parse("wss://ws.kraken.com").expect("Public ws unparseable");
-        let ws_stream = match connect_async(url).await {
-            Ok((ws_stream, _)) => ws_stream,
-            Err(e) => {
-                log::error!("Failed to connect to public websocket: {:?}", e);
-                tokio::time::sleep(SLEEP_DURATION).await;
-                continue;
-            }
-        };
-        let (mut write, mut read) = ws_stream.split();
-        let sub_msg = serde_json::json!({
-            "event": "subscribe",
-            "subscription": {"name": "spread"},
-            "pair": all_pairs.clone().into_iter().collect::<Vec<String>>(),
-        });
-        write.send(Message::Text(sub_msg.to_string())).await?;
-        log::info!(
-            "Subscribed to asset pairs: {:?}",
-            all_pairs.iter().collect::<Vec<&String>>()
-        );
-
         while let Some(msg) = read.next().await {
             match msg {
                 Ok(Message::Text(text)) => {
@@ -265,6 +247,34 @@ async fn setup_influx() -> (Arc<Client>, Arc<String>, usize, Vec<Point>) {
     );
 
     (client, retention_policy, batch_size, points)
+}
+
+async fn setup_websocket(
+    all_pairs: &HashSet<String>,
+) -> (
+    SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+    SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+) {
+    let url = url::Url::parse("wss://ws.kraken.com").expect("Public ws unparseable");
+    let (ws_stream, _) = connect_async(url)
+        .await
+        .expect("Failed to connect to public websocket");
+    let (mut write, read) = ws_stream.split();
+    let sub_msg = serde_json::json!({
+        "event": "subscribe",
+        "subscription": {"name": "spread"},
+        "pair": all_pairs.clone().into_iter().collect::<Vec<String>>(),
+    });
+    write
+        .send(Message::Text(sub_msg.to_string()))
+        .await
+        .expect("Failed to send message");
+    log::info!(
+        "Subscribed to asset pairs: {:?}",
+        all_pairs.iter().collect::<Vec<&String>>()
+    );
+
+    (write, read)
 }
 
 fn get_f64_from_array(
