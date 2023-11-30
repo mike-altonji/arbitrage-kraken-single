@@ -172,12 +172,21 @@ fn process_trades(
     asset1: &String,
     asset2: &String,
 ) -> Result<Option<f64>, Box<dyn std::error::Error>> {
-    for trade in trades.as_object().unwrap() {
-        let trade_data = trade.1.as_object().unwrap();
-        let received_pair = trade_data.get("pair").unwrap().as_str().unwrap();
+    let trades_object = trades.as_object().ok_or("Err: trades_object")?;
+
+    for trade in trades_object {
+        let trade_data = trade.1.as_object().ok_or("Err: trade_data")?;
+
+        let received_pair = trade_data
+            .get("pair")
+            .ok_or("Failed to get 'pair' from trade data")?
+            .as_str()
+            .ok_or("Failed to parse 'pair' as string")?;
+
         if received_pair == pair {
-            if let Some(volume) = calculate_volume(trade_data, base, asset1, asset2)? {
-                return Ok(Some(volume));
+            let volume = calculate_volume(trade_data, base, asset1, asset2)?;
+            if volume.is_some() {
+                return Ok(volume);
             }
         }
     }
@@ -192,32 +201,34 @@ fn calculate_volume(
 ) -> Result<Option<f64>, Box<dyn std::error::Error>> {
     let cost = trade_data
         .get("cost")
-        .unwrap()
+        .ok_or("Failed to get 'cost' from trade data")?
         .as_str()
-        .unwrap()
+        .ok_or("Failed to parse 'cost' as string")?
         .parse::<f64>()
-        .unwrap();
+        .map_err(|_| "Failed to parse 'cost' as f64")?;
+
     let price = trade_data
         .get("price")
-        .unwrap()
+        .ok_or("Failed to get 'price' from trade data")?
         .as_str()
-        .unwrap()
+        .ok_or("Failed to parse 'price' as string")?
         .parse::<f64>()
-        .unwrap();
+        .map_err(|_| "Failed to parse 'price' as f64")?;
+
     let fee = trade_data
         .get("fee")
-        .unwrap()
+        .ok_or("Failed to get 'fee' from trade data")?
         .as_str()
-        .unwrap()
+        .ok_or("Failed to parse 'fee' as string")?
         .parse::<f64>()
-        .unwrap();
+        .map_err(|_| "Failed to parse 'fee' as f64")?;
 
     let volume = if asset1 == base {
         Some(cost - fee)
     } else if asset2 == base {
         Some((cost - fee) / price)
     } else {
-        None
+        return Err(format!("Trade failed: Neither {} nor {} is base", asset1, asset2).into());
     };
 
     Ok(volume)
