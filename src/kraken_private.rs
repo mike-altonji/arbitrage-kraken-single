@@ -75,11 +75,11 @@ pub async fn execute_trade(
         let asset2 = &path_names[i + 1];
         let pair_data = assets_to_pair
             .get(&(asset1.to_string(), asset2.to_string()))
-            .ok_or(format!("Asset pair not found for {} & {}", asset1, asset2))?;
+            .ok_or(format!("Trade failed: No {} & {} pair", asset1, asset2))?;
         let pair = &pair_data.pair;
         let base = &pair_data.base;
         let (buy_sell, new_volume) =
-            determine_trade_info(asset1, asset2, base, pair, volume, fee_pct, &pair_to_spread);
+            determine_trade_info(asset1, asset2, base, pair, volume, fee_pct, &pair_to_spread)?;
         volume = new_volume;
         let _ = make_trade(token, &buy_sell, volume, pair, private_ws);
         volume = process_trade_response(private_ws, pair, base, asset1, asset2).await?;
@@ -95,7 +95,7 @@ fn determine_trade_info(
     volume: f64,
     fee_pct: f64,
     pair_to_spread: &HashMap<String, (f64, f64, f64, f64, f64)>,
-) -> (String, f64) {
+) -> Result<(String, f64), Box<dyn std::error::Error>> {
     let trade_type;
     let new_volume = if asset1 == base {
         trade_type = "sell".to_string();
@@ -105,9 +105,10 @@ fn determine_trade_info(
         trade_type = "buy".to_string();
         (volume * (1. - fee_pct)) / ask
     } else {
-        panic!("TRADE FAILED: Neither asset is base in the pair.");
+        let msg = format!("Trade failed: Neither {} nor {} is base", asset1, asset2);
+        return Err(msg.into());
     };
-    (trade_type, new_volume)
+    Ok((trade_type, new_volume))
 }
 
 async fn make_trade(
