@@ -127,10 +127,11 @@ pub async fn fetch_spreads(
 ) -> Result<(), Box<dyn std::error::Error>> {
     const SLEEP_DURATION: Duration = Duration::from_secs(5);
     loop {
-        let url = url::Url::parse("wss://ws.kraken.com").unwrap();
+        let url = url::Url::parse("wss://ws.kraken.com").map_err(|_| "Public ws unparsable")?;
         let ws_stream = match connect_async(url).await {
             Ok((ws_stream, _)) => ws_stream,
-            Err(_) => {
+            Err(e) => {
+                log::error!("Failed to connect to public websocket: {:?}", e);
                 tokio::time::sleep(SLEEP_DURATION).await;
                 continue;
             }
