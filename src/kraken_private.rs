@@ -73,15 +73,16 @@ pub async fn execute_trade(
     for i in 0..path_names.len() - 1 {
         let asset1 = &path_names[i];
         let asset2 = &path_names[i + 1];
-        if let Some(pair_data) = assets_to_pair.get(&(asset1.to_string(), asset2.to_string())) {
-            let pair = &pair_data.pair;
-            let base = &pair_data.base;
-            let (buy_sell, new_volume) =
-                determine_trade_info(asset1, asset2, base, pair, volume, fee_pct, &pair_to_spread);
-            volume = new_volume;
-            let _ = make_trade(token, &buy_sell, volume, pair, private_ws);
-            volume = process_trade_response(private_ws, pair, base, asset1, asset2).await?;
-        }
+        let pair_data = assets_to_pair
+            .get(&(asset1.to_string(), asset2.to_string()))
+            .ok_or(format!("Asset pair not found for {} & {}", asset1, asset2))?;
+        let pair = &pair_data.pair;
+        let base = &pair_data.base;
+        let (buy_sell, new_volume) =
+            determine_trade_info(asset1, asset2, base, pair, volume, fee_pct, &pair_to_spread);
+        volume = new_volume;
+        let _ = make_trade(token, &buy_sell, volume, pair, private_ws);
+        volume = process_trade_response(private_ws, pair, base, asset1, asset2).await?;
     }
     Ok(())
 }
