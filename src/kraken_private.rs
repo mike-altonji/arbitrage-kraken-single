@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::env;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
+use tokio::time::{timeout, Duration};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
@@ -139,21 +140,27 @@ async fn process_trade_response(
     asset2: &String,
 ) -> Result<f64, Box<dyn std::error::Error>> {
     let mut volume: Option<f64> = None;
-    while let Some(message) = private_ws.next().await {
-        match message {
-            Ok(msg) => {
-                let data: serde_json::Value = serde_json::from_str(&msg.to_string()).unwrap();
-                if let Some(trades) = data.get("ownTrades") {
-                    if let Some(vol) = process_trades(trades, pair, base, asset1, asset2)? {
-                        volume = Some(vol);
+    let timeout_duration = Duration::from_secs(10);
+    let result = timeout(timeout_duration, async {
+        while let Some(message) = private_ws.next().await {
+            match message {
+                Ok(msg) => {
+                    let data: serde_json::Value = serde_json::from_str(&msg.to_string())?;
+                    if let Some(trades) = data.get("ownTrades") {
+                        volume = process_trades(trades, pair, base, asset1, asset2)?;
                         break;
                     }
                 }
+                Err(e) => log::error!("Message error on process_trade_response: {}", e),
             }
-            Err(e) => eprintln!("Error: {}", e),
         }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })
+    .await;
+    match result {
+        Ok(_) => volume.ok_or("Could not compute volume".into()),
+        Err(_) => Err(format!("Timeout reached waiting for trade response of {}", pair).into()),
     }
-    volume.ok_or_else(|| "Did not find a trade response in the allotted time.".into())
 }
 
 fn process_trades(
