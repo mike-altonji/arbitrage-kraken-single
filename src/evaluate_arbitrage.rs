@@ -1,7 +1,7 @@
 use crate::graph_algorithms::{bellman_ford_negative_cycle, Edge};
 use crate::kraken::{AssetsToPair, PairToAssets};
-use crate::kraken_private::get_auth_token;
-use futures_util::{SinkExt, StreamExt};
+use crate::kraken_private::{execute_trade, get_auth_token};
+use futures_util::SinkExt;
 use influx_db_client::{reqwest::Url, Client, Point, Precision, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -13,7 +13,6 @@ const TRADEABLE_ASSETS: [&str; 2] = ["USD", "EUR"]; // Cycle must contain one of
 const MIN_ROI: f64 = 1.0025;
 const MIN_PROFIT: f64 = 0.10;
 const MAX_TRADES: usize = 4;
-const FIAT_BALANCE: f64 = 1000.0; // TODO: Replace with real number, kept up-to-date
 
 pub async fn evaluate_arbitrage_opportunities(
     pair_to_assets: HashMap<String, PairToAssets>,
@@ -173,89 +172,19 @@ pub async fn evaluate_arbitrage_opportunities(
                 && end_volume / min_volume > MIN_ROI
                 && end_volume - min_volume > MIN_PROFIT
             {
-                let mut volume = min_volume.min(FIAT_BALANCE); // TODO: Remove hard-coding
-                for i in 0..path_names_clone.len() - 1 {
-                    let asset1 = &path_names_clone[i];
-                    let asset2 = &path_names_clone[i + 1];
-
-                    if let Some(assets_to_pair) =
-                        assets_to_pair.get(&(asset1.to_string(), asset2.to_string()))
-                    {
-                        let pair = &assets_to_pair.pair;
-                        let base = &assets_to_pair.base;
-
-                        let trade_type = if asset1 == base {
-                            "sell"
-                        } else if asset2 == base {
-                            let ask = pair_to_spread[pair].1;
-                            volume = (volume * (1. - FEE)) / ask; // In this case, the prior volume was actually the cost
-                            "buy"
-                        } else {
-                            panic!("TRADE FAILED: Neither asset is base in the pair.");
-                        };
-                        let trade_msg = serde_json::json!({
-                            "event": "addOrder",
-                            "token": token,
-                            "type": trade_type,
-                            "ordertype": "market",
-                            "volume": volume,
-                            "pair": pair,
-                        });
-                        if let Some(ws) = &mut private_ws {
-                            ws.send(Message::Text(trade_msg.to_string())).await?;
-                        }
-
-                        // Response from `ownTrades`
-                        if let Some(ws_stream) = &mut private_ws {
-                            while let Some(message) = ws_stream.next().await {
-                                match message {
-                                    Ok(msg) => {
-                                        let data: serde_json::Value =
-                                            serde_json::from_str(&msg.to_string()).unwrap();
-                                        if let Some(trades) = data.get("ownTrades") {
-                                            for trade in trades.as_object().unwrap() {
-                                                let d = trade.1.as_object().unwrap();
-                                                let received_pair =
-                                                    d.get("pair").unwrap().as_str().unwrap();
-                                                if received_pair == pair {
-                                                    let cost = d
-                                                        .get("cost")
-                                                        .unwrap()
-                                                        .as_str()
-                                                        .unwrap()
-                                                        .parse::<f64>()
-                                                        .unwrap();
-                                                    let price = d
-                                                        .get("price")
-                                                        .unwrap()
-                                                        .as_str()
-                                                        .unwrap()
-                                                        .parse::<f64>()
-                                                        .unwrap();
-                                                    let fee = d
-                                                        .get("fee")
-                                                        .unwrap()
-                                                        .as_str()
-                                                        .unwrap()
-                                                        .parse::<f64>()
-                                                        .unwrap();
-                                                    // Get the amount of asset2
-                                                    if asset1 == base {
-                                                        volume = cost - fee;
-                                                    } else if asset2 == base {
-                                                        volume = (cost - fee) / price;
-                                                    }
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Err(e) => eprintln!("Error: {}", e),
-                                }
-                            }
-                        }
-                    }
-                }
+                let private_ws = private_ws
+                    .as_mut()
+                    .ok_or("Can't execute trades: Private WebSocket does not exist")?;
+                execute_trade(
+                    path_names_clone,
+                    min_volume,
+                    &assets_to_pair,
+                    pair_to_spread,
+                    private_ws,
+                    &token,
+                    FEE,
+                )
+                .await?;
             }
         }
     }
