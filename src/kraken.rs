@@ -193,41 +193,11 @@ pub async fn fetch_spreads(
                         if array.len() >= 4 {
                             let pair = array[3].as_str().unwrap_or_default().to_string();
                             if let Some(inner_array) = array[1].as_array() {
-                                let bid = inner_array
-                                    .get(0)
-                                    .ok_or("Failed to get 'bid' from fetched data")?
-                                    .as_str()
-                                    .ok_or("Failed to parse 'bid' as string")?
-                                    .parse::<f64>()
-                                    .map_err(|_| "Failed to parse 'bid' as f64")?;
-                                let ask = inner_array
-                                    .get(1)
-                                    .ok_or("Failed to get 'ask' from fetched data")?
-                                    .as_str()
-                                    .ok_or("Failed to parse 'ask' as string")?
-                                    .parse::<f64>()
-                                    .map_err(|_| "Failed to parse 'ask as f64")?;
-                                let kraken_ts = inner_array
-                                    .get(2)
-                                    .ok_or("Failed to get 'kraken_ts' from fetched data")?
-                                    .as_str()
-                                    .ok_or("Failed to parse 'kraken_ts' as string")?
-                                    .parse::<f64>()
-                                    .map_err(|_| "Failed to parse 'kraken_ts' as f64")?;
-                                let bid_volume = inner_array
-                                    .get(3)
-                                    .ok_or("Failed to get 'bid_volume' from fetched data")?
-                                    .as_str()
-                                    .ok_or("Failed to parse 'bid_volume' as string")?
-                                    .parse::<f64>()
-                                    .map_err(|_| "Failed to parse 'bid_volume' as f64")?;
-                                let ask_volume = inner_array
-                                    .get(4)
-                                    .ok_or("Failed to get 'ask_volume' from fetched data")?
-                                    .as_str()
-                                    .ok_or("Failed to parse 'ask_volume' as string")?
-                                    .parse::<f64>()
-                                    .map_err(|_| "Failed to parse 'ask_volume' as f64")?;
+                                let bid = get_f64_from_array(&inner_array, 0, "bid")?;
+                                let ask = get_f64_from_array(&inner_array, 1, "ask")?;
+                                let kraken_ts = get_f64_from_array(&inner_array, 2, "kraken_ts")?;
+                                let bid_volume = get_f64_from_array(&inner_array, 3, "bid_volume")?;
+                                let ask_volume = get_f64_from_array(&inner_array, 4, "ask_volume")?;
                                 for i in 0..pair_to_assets_vec.len() {
                                     if pair_to_assets_vec[i].contains_key(&pair.to_string()) {
                                         let mut locked_pairs =
@@ -294,6 +264,20 @@ pub async fn fetch_spreads(
             }
         }
     }
+}
+
+fn get_f64_from_array(
+    array: &[serde_json::Value],
+    index: usize,
+    name: &str,
+) -> Result<f64, Box<dyn std::error::Error>> {
+    array
+        .get(index)
+        .ok_or(format!("Failed to get '{}' from fetched data", name))?
+        .as_str()
+        .ok_or(format!("Failed to parse '{}' as string", name))?
+        .parse::<f64>()
+        .map_err(|_| format!("Failed to parse '{}' as f64", name).into())
 }
 
 fn update_points_vector(
