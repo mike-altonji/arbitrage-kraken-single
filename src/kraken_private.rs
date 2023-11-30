@@ -125,10 +125,9 @@ async fn make_trade(
         "ordertype": "market",
         "volume": volume,
         "pair": pair,
-    });
-    private_ws
-        .send(Message::Text(trade_msg.to_string()))
-        .await?;
+    })
+    .to_string();
+    private_ws.send(Message::Text(trade_msg)).await?;
     Ok(())
 }
 
