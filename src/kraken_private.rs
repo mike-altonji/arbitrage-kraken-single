@@ -65,7 +65,7 @@ pub async fn execute_trade(
     min_volume: f64,
     assets_to_pair: &HashMap<(String, String), AssetsToPair>,
     pair_to_spread: HashMap<String, (f64, f64, f64, f64, f64)>,
-    private_ws: &mut Option<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+    private_ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
     token: &String,
     fee_pct: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -115,7 +115,7 @@ async fn make_trade(
     trade_type: &String,
     volume: f64,
     pair: &String,
-    private_ws: &mut Option<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+    private_ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let trade_msg = serde_json::json!({
         "event": "addOrder",
@@ -125,34 +125,32 @@ async fn make_trade(
         "volume": volume,
         "pair": pair,
     });
-    if let Some(ws) = private_ws {
-        ws.send(Message::Text(trade_msg.to_string())).await?;
-    }
+    private_ws
+        .send(Message::Text(trade_msg.to_string()))
+        .await?;
     Ok(())
 }
 
 async fn process_trade_response(
-    private_ws: &mut Option<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+    private_ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
     pair: &String,
     base: &String,
     asset1: &String,
     asset2: &String,
 ) -> Result<f64, Box<dyn std::error::Error>> {
     let mut volume: Option<f64> = None;
-    if let Some(ws_stream) = private_ws {
-        while let Some(message) = ws_stream.next().await {
-            match message {
-                Ok(msg) => {
-                    let data: serde_json::Value = serde_json::from_str(&msg.to_string()).unwrap();
-                    if let Some(trades) = data.get("ownTrades") {
-                        if let Some(vol) = process_trades(trades, pair, base, asset1, asset2)? {
-                            volume = Some(vol);
-                            break;
-                        }
+    while let Some(message) = private_ws.next().await {
+        match message {
+            Ok(msg) => {
+                let data: serde_json::Value = serde_json::from_str(&msg.to_string()).unwrap();
+                if let Some(trades) = data.get("ownTrades") {
+                    if let Some(vol) = process_trades(trades, pair, base, asset1, asset2)? {
+                        volume = Some(vol);
+                        break;
                     }
                 }
-                Err(e) => eprintln!("Error: {}", e),
             }
+            Err(e) => eprintln!("Error: {}", e),
         }
     }
     volume.ok_or_else(|| "Did not find a trade response in the allotted time.".into())

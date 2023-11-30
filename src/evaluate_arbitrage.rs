@@ -172,12 +172,15 @@ pub async fn evaluate_arbitrage_opportunities(
                 && end_volume / min_volume > MIN_ROI
                 && end_volume - min_volume > MIN_PROFIT
             {
+                let private_ws = private_ws
+                    .as_mut()
+                    .ok_or("Can't execute trades: Private WebSocket does not exist")?;
                 execute_trade(
                     path_names_clone,
                     min_volume,
                     &assets_to_pair,
                     pair_to_spread,
-                    &mut private_ws,
+                    private_ws,
                     &token,
                     FEE,
                 )
