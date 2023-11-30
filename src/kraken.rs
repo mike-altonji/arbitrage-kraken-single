@@ -135,83 +135,18 @@ pub async fn fetch_spreads(
         while let Some(msg) = read.next().await {
             match msg {
                 Ok(Message::Text(text)) => {
-                    let data: serde_json::Value = serde_json::from_str(&text)?;
-                    if let Some(event) = data["event"].as_str() {
-                        match event {
-                            "systemStatus" => {
-                                let status = data["status"].as_str().unwrap_or("") == "online";
-                                let mut public_online_lock = public_online.lock().unwrap();
-                                *public_online_lock = status;
-                            }
-                            "subscriptionStatus" => {
-                                let pair = data["pair"].as_str().unwrap_or("").to_string();
-                                let status = data["status"].as_str().unwrap_or("") == "subscribed";
-                                let mut pair_status = pair_status.lock().unwrap();
-                                pair_status.insert(pair, status);
-                            }
-                            _ => {}
-                        }
-                    } else if let Some(array) = data.as_array() {
-                        if array.len() >= 4 {
-                            let pair = array[3].as_str().unwrap_or_default().to_string();
-                            if let Some(inner_array) = array[1].as_array() {
-                                let bid = get_f64_from_array(&inner_array, 0, "bid")?;
-                                let ask = get_f64_from_array(&inner_array, 1, "ask")?;
-                                let kraken_ts = get_f64_from_array(&inner_array, 2, "kraken_ts")?;
-                                let bid_volume = get_f64_from_array(&inner_array, 3, "bid_volume")?;
-                                let ask_volume = get_f64_from_array(&inner_array, 4, "ask_volume")?;
-                                for i in 0..pair_to_assets_vec.len() {
-                                    if pair_to_assets_vec[i].contains_key(&pair.to_string()) {
-                                        let mut locked_pairs =
-                                            pair_to_spread_vec[i].lock().unwrap();
-                                        let existing_kraken_ts = locked_pairs
-                                            .get(&pair.to_string())
-                                            .map(|spread| spread.kraken_ts)
-                                            .unwrap_or(0.0);
-                                        if kraken_ts > existing_kraken_ts {
-                                            // If data is new, update graph and write to DB (we often get old data from Kraken)
-                                            locked_pairs.insert(
-                                                pair.to_string(),
-                                                Spread {
-                                                    bid,
-                                                    ask,
-                                                    kraken_ts,
-                                                    bid_volume,
-                                                    ask_volume,
-                                                },
-                                            );
-                                            let now = std::time::SystemTime::now()
-                                                .duration_since(std::time::UNIX_EPOCH)
-                                                .unwrap_or_default()
-                                                .as_secs_f64();
-                                            let client = Arc::clone(&client);
-                                            let retention_policy_clone =
-                                                Arc::clone(&retention_policy);
-                                            let pair_ = pair.clone();
-                                            update_points_vector(
-                                                &mut points,
-                                                pair_,
-                                                kraken_ts,
-                                                now,
-                                            );
-                                            if points.len() >= batch_size {
-                                                let points_clone = points.clone();
-                                                points.clear();
-                                                tokio::spawn(async move {
-                                                    spread_latency_to_influx(
-                                                        client,
-                                                        &*retention_policy_clone,
-                                                        points_clone,
-                                                    )
-                                                    .await;
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    handle_message_text(
+                        &text,
+                        &public_online,
+                        &pair_status,
+                        &pair_to_spread_vec,
+                        &pair_to_assets_vec,
+                        &client,
+                        &retention_policy,
+                        batch_size,
+                        &mut points,
+                    )
+                    .await?;
                 }
                 Ok(_) => {
                     log::error!("Websocket connection closed or stopped sending data");
@@ -277,6 +212,154 @@ async fn setup_websocket(
     (write, read)
 }
 
+async fn handle_message_text(
+    text: &str,
+    public_online: &Arc<Mutex<bool>>,
+    pair_status: &Arc<Mutex<HashMap<String, bool>>>,
+    pair_to_spread_vec: &Vec<Arc<Mutex<HashMap<String, Spread>>>>,
+    pair_to_assets_vec: &Vec<HashMap<String, PairToAssets>>,
+    client: &Arc<Client>,
+    retention_policy: &Arc<String>,
+    batch_size: usize,
+    points: &mut Vec<Point>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let data: serde_json::Value = serde_json::from_str(text)?;
+    if let Some(event) = data["event"].as_str() {
+        handle_event(event, &data, public_online, pair_status);
+    } else if let Some(array) = data.as_array() {
+        handle_array(
+            array,
+            pair_to_spread_vec,
+            pair_to_assets_vec,
+            client,
+            retention_policy,
+            batch_size,
+            points,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+fn handle_event(
+    event: &str,
+    data: &serde_json::Value,
+    public_online: &Arc<Mutex<bool>>,
+    pair_status: &Arc<Mutex<HashMap<String, bool>>>,
+) {
+    match event {
+        "systemStatus" => {
+            let status = data["status"].as_str().unwrap_or("") == "online";
+            match public_online.lock() {
+                Ok(mut public_online_lock) => *public_online_lock = status,
+                Err(e) => log::error!("Failed to acquire lock: {:?}", e),
+            }
+        }
+        "subscriptionStatus" => {
+            let pair = data["pair"].as_str().unwrap_or("").to_string();
+            let status = data["status"].as_str().unwrap_or("") == "subscribed";
+            match pair_status.lock() {
+                Ok(mut pair_status_lock) => {
+                    pair_status_lock.insert(pair, status);
+                }
+                Err(e) => {
+                    log::error!("Failed to acquire lock: {:?}", e);
+                }
+            };
+        }
+        _ => {}
+    }
+}
+
+async fn handle_array(
+    array: &Vec<serde_json::Value>,
+    pair_to_spread_vec: &Vec<Arc<Mutex<HashMap<String, Spread>>>>,
+    pair_to_assets_vec: &Vec<HashMap<String, PairToAssets>>,
+    client: &Arc<Client>,
+    retention_policy: &Arc<String>,
+    batch_size: usize,
+    points: &mut Vec<Point>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Spread messages
+    if array.len() >= 4 {
+        let pair = array[3].as_str().unwrap_or_default().to_string();
+        if let Some(inner_array) = array[1].as_array() {
+            let bid = get_f64_from_array(&inner_array, 0, "bid")?;
+            let ask = get_f64_from_array(&inner_array, 1, "ask")?;
+            let kraken_ts = get_f64_from_array(&inner_array, 2, "kraken_ts")?;
+            let bid_volume = get_f64_from_array(&inner_array, 3, "bid_volume")?;
+            let ask_volume = get_f64_from_array(&inner_array, 4, "ask_volume")?;
+            for i in 0..pair_to_assets_vec.len() {
+                if pair_to_assets_vec[i].contains_key(&pair.to_string()) {
+                    handle_pair(
+                        &pair,
+                        bid,
+                        ask,
+                        kraken_ts,
+                        bid_volume,
+                        ask_volume,
+                        &pair_to_spread_vec[i],
+                        client,
+                        retention_policy,
+                        batch_size,
+                        points,
+                    )
+                    .await?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_pair(
+    pair: &str,
+    bid: f64,
+    ask: f64,
+    kraken_ts: f64,
+    bid_volume: f64,
+    ask_volume: f64,
+    pair_to_spread: &Arc<Mutex<HashMap<String, Spread>>>,
+    client: &Arc<Client>,
+    retention_policy: &Arc<String>,
+    batch_size: usize,
+    points: &mut Vec<Point>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut locked_pairs = pair_to_spread.lock().unwrap();
+    let existing_kraken_ts = locked_pairs
+        .get(pair)
+        .map(|spread| spread.kraken_ts)
+        .unwrap_or(0.0);
+    if kraken_ts > existing_kraken_ts {
+        // If data is new, update graph and write to DB (we often get old data from Kraken)
+        locked_pairs.insert(
+            pair.to_string(),
+            Spread {
+                bid,
+                ask,
+                kraken_ts,
+                bid_volume,
+                ask_volume,
+            },
+        );
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        let client = Arc::clone(client);
+        let retention_policy_clone = Arc::clone(retention_policy);
+        update_points_vector(points, pair.clone(), kraken_ts, now);
+        if points.len() >= batch_size {
+            let points_clone = points.clone();
+            points.clear();
+            tokio::spawn(async move {
+                spread_latency_to_influx(client, &*retention_policy_clone, points_clone).await;
+            });
+        }
+    }
+    Ok(())
+}
+
 fn get_f64_from_array(
     array: &[serde_json::Value],
     index: usize,
@@ -291,12 +374,7 @@ fn get_f64_from_array(
         .map_err(|_| format!("Failed to parse '{}' as f64", name).into())
 }
 
-fn update_points_vector(
-    points: &mut Vec<Point>,
-    pair: String,
-    kraken_ts: f64,
-    update_graph_ts: f64,
-) {
+fn update_points_vector(points: &mut Vec<Point>, pair: &str, kraken_ts: f64, update_graph_ts: f64) {
     let latency = update_graph_ts - kraken_ts;
     let point = Point::new("spread_latency")
         .add_tag("pair", Value::String(pair.to_string()))
