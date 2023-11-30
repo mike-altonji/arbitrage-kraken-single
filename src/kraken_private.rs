@@ -148,7 +148,9 @@ async fn process_trade_response(
                     let data: serde_json::Value = serde_json::from_str(&msg.to_string())?;
                     if let Some(trades) = data.get("ownTrades") {
                         volume = process_trades(trades, pair, base, asset1, asset2)?;
-                        break;
+                        if volume.is_some() {
+                            break;
+                        }
                     }
                 }
                 Err(e) => log::error!("Message error on process_trade_response: {}", e),
