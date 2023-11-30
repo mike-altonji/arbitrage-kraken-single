@@ -22,6 +22,15 @@ pub struct AssetsToPair {
     pub pair: String,
 }
 
+#[derive(Clone)]
+pub struct Spread {
+    pub bid: f64,
+    pub ask: f64,
+    pub kraken_ts: f64,
+    pub bid_volume: f64,
+    pub ask_volume: f64,
+}
+
 pub async fn asset_pairs_to_pull(
     fname: &str,
 ) -> Result<
@@ -112,7 +121,7 @@ pub async fn asset_pairs_to_pull(
 
 pub async fn fetch_spreads(
     all_pairs: HashSet<String>,
-    pair_to_spread_vec: Vec<Arc<Mutex<HashMap<String, (f64, f64, f64, f64, f64)>>>>,
+    pair_to_spread_vec: Vec<Arc<Mutex<HashMap<String, Spread>>>>,
     pair_to_assets_vec: Vec<HashMap<String, PairToAssets>>,
     pair_status: Arc<Mutex<HashMap<String, bool>>>,
     public_online: Arc<Mutex<bool>>,
@@ -213,16 +222,21 @@ pub async fn fetch_spreads(
                                     if pair_to_assets_vec[i].contains_key(&pair.to_string()) {
                                         let mut locked_pairs =
                                             pair_to_spread_vec[i].lock().unwrap();
-                                        let existing_kraken_ts =
-                                            match locked_pairs.get(&pair.to_string()) {
-                                                Some(&(_, _, ts, _, _)) => ts,
-                                                None => 0.0,
-                                            };
+                                        let existing_kraken_ts = locked_pairs
+                                            .get(&pair.to_string())
+                                            .map(|spread| spread.kraken_ts)
+                                            .unwrap_or(0.0);
                                         if kraken_ts > existing_kraken_ts {
                                             // If data is new, update graph and write to DB (we often get old data from Kraken)
                                             locked_pairs.insert(
                                                 pair.to_string(),
-                                                (bid, ask, kraken_ts, bid_volume, ask_volume),
+                                                Spread {
+                                                    bid,
+                                                    ask,
+                                                    kraken_ts,
+                                                    bid_volume,
+                                                    ask_volume,
+                                                },
                                             );
                                             let now = std::time::SystemTime::now()
                                                 .duration_since(std::time::UNIX_EPOCH)
