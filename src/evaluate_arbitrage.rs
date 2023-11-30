@@ -1,5 +1,5 @@
 use crate::graph_algorithms::{bellman_ford_negative_cycle, Edge};
-use crate::kraken::{AssetsToPair, PairToAssets};
+use crate::kraken::{AssetsToPair, PairToAssets, Spread};
 use crate::kraken_private::{execute_trade, get_auth_token};
 use futures_util::SinkExt;
 use influx_db_client::{reqwest::Url, Client, Point, Precision, Value};
@@ -17,7 +17,7 @@ const MAX_TRADES: usize = 4;
 pub async fn evaluate_arbitrage_opportunities(
     pair_to_assets: HashMap<String, PairToAssets>,
     assets_to_pair: HashMap<(String, String), AssetsToPair>,
-    pair_to_spread: Arc<Mutex<HashMap<String, (f64, f64, f64, f64, f64)>>>,
+    pair_to_spread: Arc<Mutex<HashMap<String, Spread>>>,
     pair_status: Arc<Mutex<HashMap<String, bool>>>,
     public_online: Arc<Mutex<bool>>,
     allow_trades: bool,
@@ -290,7 +290,7 @@ fn generate_asset_to_index_map(
 }
 
 fn prepare_graph(
-    pair_to_spread: &HashMap<String, (f64, f64, f64, f64, f64)>,
+    pair_to_spread: &HashMap<String, Spread>,
     pair_to_assets: &HashMap<String, PairToAssets>,
     asset_to_index: &HashMap<String, usize>,
     pair_status: &HashMap<String, bool>,
@@ -302,7 +302,17 @@ fn prepare_graph(
     let mut exchange_rates = vec![];
     let mut rates_map = HashMap::new();
     let mut volumes_map = HashMap::new();
-    for (pair, (bid, ask, _, bid_volume, ask_volume)) in pair_to_spread {
+    for (
+        pair,
+        Spread {
+            bid,
+            ask,
+            bid_volume,
+            ask_volume,
+            ..
+        },
+    ) in pair_to_spread
+    {
         if let Some(PairToAssets {
             base: asset1,
             quote: asset2,
@@ -446,8 +456,26 @@ mod tests {
     #[test]
     fn test_prepare_graph() {
         let mut pair_to_spread = HashMap::new();
-        pair_to_spread.insert("pair1".to_string(), (1.0, 2.0, 123., 0.0, 0.0));
-        pair_to_spread.insert("pair2".to_string(), (3.0, 4.0, 123., 0.0, 0.0));
+        pair_to_spread.insert(
+            "pair1".to_string(),
+            Spread {
+                bid: 1.0,
+                ask: 2.0,
+                kraken_ts: 123.0,
+                bid_volume: 0.0,
+                ask_volume: 0.0,
+            },
+        );
+        pair_to_spread.insert(
+            "pair2".to_string(),
+            Spread {
+                bid: 3.0,
+                ask: 4.0,
+                kraken_ts: 123.0,
+                bid_volume: 0.0,
+                ask_volume: 0.0,
+            },
+        );
 
         let mut pair_to_assets = HashMap::new();
         pair_to_assets.insert(

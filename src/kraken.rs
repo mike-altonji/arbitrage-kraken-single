@@ -1,5 +1,6 @@
 use core::sync::atomic::Ordering;
 use csv::ReaderBuilder;
+use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use influx_db_client::{reqwest::Url, Client, Point, Precision, Value};
 use reqwest;
@@ -7,7 +8,9 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::sync::{atomic::AtomicUsize, Arc, Mutex};
 use std::time::Duration;
+use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 #[derive(Clone)]
 pub struct PairToAssets {
@@ -20,6 +23,15 @@ pub struct AssetsToPair {
     pub base: String,
     pub quote: String,
     pub pair: String,
+}
+
+#[derive(Clone)]
+pub struct Spread {
+    pub bid: f64,
+    pub ask: f64,
+    pub kraken_ts: f64,
+    pub bid_volume: f64,
+    pub ask_volume: f64,
 }
 
 pub async fn asset_pairs_to_pull(
@@ -53,33 +65,32 @@ pub async fn asset_pairs_to_pull(
 
     // Create the {pair: (base, quote)} HashMap
     let mut pair_to_assets = HashMap::new();
-    if let Some(pairs) = data_asset_pairs["result"].as_object() {
-        for (_pair, details) in pairs {
-            let status = details["status"].as_str().unwrap_or("").to_string();
-            let pair_ws = details["wsname"].as_str().unwrap_or("").to_string();
-            let base = details["base"].as_str().unwrap_or("").to_string();
-            let quote = details["quote"].as_str().unwrap_or("").to_string();
+    let pairs = data_asset_pairs["result"].as_object().ok_or("No pairs")?;
+    for (_pair, details) in pairs {
+        let status = details["status"].as_str().unwrap_or("").to_string();
+        let pair_ws = details["wsname"].as_str().unwrap_or("").to_string();
+        let base = details["base"].as_str().unwrap_or("").to_string();
+        let quote = details["quote"].as_str().unwrap_or("").to_string();
 
-            // Convert base/quote to ws_name format
-            let base_ws = data_assets["result"][&base]["altname"].as_str();
-            let quote_ws = data_assets["result"][&quote]["altname"].as_str();
+        // Convert base/quote to ws_name format
+        let base_ws = data_assets["result"][&base]["altname"].as_str();
+        let quote_ws = data_assets["result"][&quote]["altname"].as_str();
 
-            // Only insert pair: (base, quote) if their values are not missing
-            match (base_ws, quote_ws) {
-                (Some(base_ws), Some(quote_ws)) => {
-                    if input_asset_pairs.contains(&pair_ws) && status == "online" {
-                        pair_to_assets.insert(
-                            pair_ws.to_string(),
-                            PairToAssets {
-                                base: base_ws.to_string(),
-                                quote: quote_ws.to_string(),
-                            },
-                        );
-                    }
+        // Only insert pair: (base, quote) if their values are not missing
+        match (base_ws, quote_ws) {
+            (Some(base_ws), Some(quote_ws)) => {
+                if input_asset_pairs.contains(&pair_ws) && status == "online" {
+                    pair_to_assets.insert(
+                        pair_ws.to_string(),
+                        PairToAssets {
+                            base: base_ws.to_string(),
+                            quote: quote_ws.to_string(),
+                        },
+                    );
                 }
-                _ => {
-                    log::warn!("Altname does not exist for base or quote");
-                }
+            }
+            _ => {
+                log::warn!("Altname does not exist for base {base} or quote {quote}");
             }
         }
     }
@@ -112,150 +123,30 @@ pub async fn asset_pairs_to_pull(
 
 pub async fn fetch_spreads(
     all_pairs: HashSet<String>,
-    pair_to_spread_vec: Vec<Arc<Mutex<HashMap<String, (f64, f64, f64, f64, f64)>>>>,
+    pair_to_spread_vec: Vec<Arc<Mutex<HashMap<String, Spread>>>>,
     pair_to_assets_vec: Vec<HashMap<String, PairToAssets>>,
     pair_status: Arc<Mutex<HashMap<String, bool>>>,
     public_online: Arc<Mutex<bool>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     const SLEEP_DURATION: Duration = Duration::from_secs(5);
+    let (client, retention_policy, batch_size, mut points) = setup_influx().await;
+    let (_write, mut read) = setup_websocket(&all_pairs).await;
     loop {
-        let url = url::Url::parse("wss://ws.kraken.com").unwrap();
-        let ws_stream = match connect_async(url).await {
-            Ok((ws_stream, _)) => ws_stream,
-            Err(_) => {
-                tokio::time::sleep(SLEEP_DURATION).await;
-                continue;
-            }
-        };
-        let (mut write, mut read) = ws_stream.split();
-        let subscription_message = serde_json::json!({
-            "event": "subscribe",
-            "subscription": {"name": "spread"},
-            "pair": all_pairs.clone().into_iter().collect::<Vec<String>>(),
-        });
-        write
-            .send(Message::Text(subscription_message.to_string()))
-            .await?;
-        log::info!(
-            "Subscribed to asset pairs: {:?}",
-            all_pairs.iter().collect::<Vec<&String>>()
-        );
-
-        // Set up InfluxDB client
-        dotenv::dotenv().ok();
-        let host = std::env::var("INFLUXDB_HOST").expect("INFLUXDB_HOST must be set");
-        let port = std::env::var("INFLUXDB_PORT").expect("INFLUXDB_PORT must be set");
-        let db_name = std::env::var("DB_NAME").expect("DB_NAME must be set");
-        let user = std::env::var("DB_USER").expect("DB_USER must be set");
-        let password = std::env::var("DB_PASSWORD").expect("DB_PASSWORD must be set");
-        let retention_policy_var = Arc::new(std::env::var("RP_NAME").expect("RP_NAME must be set"));
-        let retention_policy_clone = Arc::clone(&retention_policy_var);
-        let client = Arc::new(
-            Client::new(
-                Url::parse(&format!("http://{}:{}", &host, &port)).unwrap(),
-                &db_name,
-            )
-            .set_authentication(&user, &password),
-        );
-
-        let batch_size: usize = 500;
-        let mut points = Vec::new();
-
         while let Some(msg) = read.next().await {
             match msg {
                 Ok(Message::Text(text)) => {
-                    let data: serde_json::Value = serde_json::from_str(&text)?;
-                    if let Some(event) = data["event"].as_str() {
-                        match event {
-                            "systemStatus" => {
-                                let status = data["status"].as_str().unwrap_or("") == "online";
-                                let mut public_online_lock = public_online.lock().unwrap();
-                                *public_online_lock = status;
-                            }
-                            "subscriptionStatus" => {
-                                let pair = data["pair"].as_str().unwrap_or("").to_string();
-                                let status = data["status"].as_str().unwrap_or("") == "subscribed";
-                                let mut pair_status = pair_status.lock().unwrap();
-                                pair_status.insert(pair, status);
-                            }
-                            _ => {}
-                        }
-                    } else if let Some(array) = data.as_array() {
-                        if array.len() >= 4 {
-                            let pair = array[3].as_str().unwrap_or_default().to_string();
-                            if let Some(inner_array) = array[1].as_array() {
-                                let bid = inner_array
-                                    .get(0)
-                                    .and_then(|s| s.as_str())
-                                    .and_then(|s| s.parse::<f64>().ok())
-                                    .unwrap();
-                                let ask = inner_array
-                                    .get(1)
-                                    .and_then(|s| s.as_str())
-                                    .and_then(|s| s.parse::<f64>().ok())
-                                    .unwrap();
-                                let kraken_ts = inner_array
-                                    .get(2)
-                                    .and_then(|s| s.as_str())
-                                    .and_then(|s| s.parse::<f64>().ok())
-                                    .unwrap();
-                                let bid_volume = inner_array
-                                    .get(3)
-                                    .and_then(|s| s.as_str())
-                                    .and_then(|s| s.parse::<f64>().ok())
-                                    .unwrap();
-                                let ask_volume = inner_array
-                                    .get(4)
-                                    .and_then(|s| s.as_str())
-                                    .and_then(|s| s.parse::<f64>().ok())
-                                    .unwrap();
-                                for i in 0..pair_to_assets_vec.len() {
-                                    if pair_to_assets_vec[i].contains_key(&pair.to_string()) {
-                                        let mut locked_pairs =
-                                            pair_to_spread_vec[i].lock().unwrap();
-                                        let existing_kraken_ts =
-                                            match locked_pairs.get(&pair.to_string()) {
-                                                Some(&(_, _, ts, _, _)) => ts,
-                                                None => 0.0,
-                                            };
-                                        if kraken_ts > existing_kraken_ts {
-                                            // If data is new, update graph and write to DB (we often get old data from Kraken)
-                                            locked_pairs.insert(
-                                                pair.to_string(),
-                                                (bid, ask, kraken_ts, bid_volume, ask_volume),
-                                            );
-                                            let now = std::time::SystemTime::now()
-                                                .duration_since(std::time::UNIX_EPOCH)
-                                                .unwrap_or_default()
-                                                .as_secs_f64();
-                                            let client = Arc::clone(&client);
-                                            let retention_policy =
-                                                Arc::clone(&retention_policy_clone);
-                                            let pair_ = pair.clone();
-                                            update_points_vector(
-                                                &mut points,
-                                                pair_,
-                                                kraken_ts,
-                                                now,
-                                            );
-                                            if points.len() >= batch_size {
-                                                let points_clone = points.clone();
-                                                points.clear();
-                                                tokio::spawn(async move {
-                                                    spread_latency_to_influx(
-                                                        client,
-                                                        &*retention_policy,
-                                                        points_clone,
-                                                    )
-                                                    .await;
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    handle_message_text(
+                        &text,
+                        &public_online,
+                        &pair_status,
+                        &pair_to_spread_vec,
+                        &pair_to_assets_vec,
+                        &client,
+                        &retention_policy,
+                        batch_size,
+                        &mut points,
+                    )
+                    .await?;
                 }
                 Ok(_) => {
                     log::error!("Websocket connection closed or stopped sending data");
@@ -272,12 +163,218 @@ pub async fn fetch_spreads(
     }
 }
 
-fn update_points_vector(
-    points: &mut Vec<Point>,
-    pair: String,
-    kraken_ts: f64,
-    update_graph_ts: f64,
+async fn setup_influx() -> (Arc<Client>, Arc<String>, usize, Vec<Point>) {
+    dotenv::dotenv().ok();
+    let host = std::env::var("INFLUXDB_HOST").expect("INFLUXDB_HOST must be set");
+    let port = std::env::var("INFLUXDB_PORT").expect("INFLUXDB_PORT must be set");
+    let db_name = std::env::var("DB_NAME").expect("DB_NAME must be set");
+    let user = std::env::var("DB_USER").expect("DB_USER must be set");
+    let password = std::env::var("DB_PASSWORD").expect("DB_PASSWORD must be set");
+    let retention_policy = Arc::new(std::env::var("RP_NAME").expect("RP_NAME must be set"));
+    let batch_size: usize = 500;
+    let points = Vec::new();
+    let client = Arc::new(
+        Client::new(
+            Url::parse(&format!("http://{}:{}", &host, &port)).expect("InfluxDB URL unparseable"),
+            &db_name,
+        )
+        .set_authentication(&user, &password),
+    );
+
+    (client, retention_policy, batch_size, points)
+}
+
+async fn setup_websocket(
+    all_pairs: &HashSet<String>,
+) -> (
+    SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+    SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
 ) {
+    let url = url::Url::parse("wss://ws.kraken.com").expect("Public ws unparseable");
+    let (ws_stream, _) = connect_async(url)
+        .await
+        .expect("Failed to connect to public websocket");
+    let (mut write, read) = ws_stream.split();
+    let sub_msg = serde_json::json!({
+        "event": "subscribe",
+        "subscription": {"name": "spread"},
+        "pair": all_pairs.clone().into_iter().collect::<Vec<String>>(),
+    });
+    write
+        .send(Message::Text(sub_msg.to_string()))
+        .await
+        .expect("Failed to send message");
+    log::info!(
+        "Subscribed to asset pairs: {:?}",
+        all_pairs.iter().collect::<Vec<&String>>()
+    );
+
+    (write, read)
+}
+
+async fn handle_message_text(
+    text: &str,
+    public_online: &Arc<Mutex<bool>>,
+    pair_status: &Arc<Mutex<HashMap<String, bool>>>,
+    pair_to_spread_vec: &Vec<Arc<Mutex<HashMap<String, Spread>>>>,
+    pair_to_assets_vec: &Vec<HashMap<String, PairToAssets>>,
+    client: &Arc<Client>,
+    retention_policy: &Arc<String>,
+    batch_size: usize,
+    points: &mut Vec<Point>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let data: serde_json::Value = serde_json::from_str(text)?;
+    if let Some(event) = data["event"].as_str() {
+        handle_event(event, &data, public_online, pair_status);
+    } else if let Some(array) = data.as_array() {
+        handle_array(
+            array,
+            pair_to_spread_vec,
+            pair_to_assets_vec,
+            client,
+            retention_policy,
+            batch_size,
+            points,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+fn handle_event(
+    event: &str,
+    data: &serde_json::Value,
+    public_online: &Arc<Mutex<bool>>,
+    pair_status: &Arc<Mutex<HashMap<String, bool>>>,
+) {
+    match event {
+        "systemStatus" => {
+            let status = data["status"].as_str().unwrap_or("") == "online";
+            match public_online.lock() {
+                Ok(mut public_online_lock) => *public_online_lock = status,
+                Err(e) => log::error!("Failed to acquire lock: {:?}", e),
+            }
+        }
+        "subscriptionStatus" => {
+            let pair = data["pair"].as_str().unwrap_or("").to_string();
+            let status = data["status"].as_str().unwrap_or("") == "subscribed";
+            match pair_status.lock() {
+                Ok(mut pair_status_lock) => {
+                    pair_status_lock.insert(pair, status);
+                }
+                Err(e) => {
+                    log::error!("Failed to acquire lock: {:?}", e);
+                }
+            };
+        }
+        _ => {}
+    }
+}
+
+async fn handle_array(
+    array: &Vec<serde_json::Value>,
+    pair_to_spread_vec: &Vec<Arc<Mutex<HashMap<String, Spread>>>>,
+    pair_to_assets_vec: &Vec<HashMap<String, PairToAssets>>,
+    client: &Arc<Client>,
+    retention_policy: &Arc<String>,
+    batch_size: usize,
+    points: &mut Vec<Point>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Spread messages
+    if array.len() >= 4 {
+        let pair = array[3].as_str().unwrap_or_default().to_string();
+        if let Some(inner_array) = array[1].as_array() {
+            let bid = get_f64_from_array(&inner_array, 0, "bid")?;
+            let ask = get_f64_from_array(&inner_array, 1, "ask")?;
+            let kraken_ts = get_f64_from_array(&inner_array, 2, "kraken_ts")?;
+            let bid_volume = get_f64_from_array(&inner_array, 3, "bid_volume")?;
+            let ask_volume = get_f64_from_array(&inner_array, 4, "ask_volume")?;
+            for i in 0..pair_to_assets_vec.len() {
+                if pair_to_assets_vec[i].contains_key(&pair.to_string()) {
+                    handle_pair(
+                        &pair,
+                        bid,
+                        ask,
+                        kraken_ts,
+                        bid_volume,
+                        ask_volume,
+                        &pair_to_spread_vec[i],
+                        client,
+                        retention_policy,
+                        batch_size,
+                        points,
+                    )
+                    .await?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_pair(
+    pair: &str,
+    bid: f64,
+    ask: f64,
+    kraken_ts: f64,
+    bid_volume: f64,
+    ask_volume: f64,
+    pair_to_spread: &Arc<Mutex<HashMap<String, Spread>>>,
+    client: &Arc<Client>,
+    retention_policy: &Arc<String>,
+    batch_size: usize,
+    points: &mut Vec<Point>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut locked_pairs = pair_to_spread.lock().unwrap();
+    let existing_kraken_ts = locked_pairs
+        .get(pair)
+        .map(|spread| spread.kraken_ts)
+        .unwrap_or(0.0);
+    if kraken_ts > existing_kraken_ts {
+        // If data is new, update graph and write to DB (we often get old data from Kraken)
+        locked_pairs.insert(
+            pair.to_string(),
+            Spread {
+                bid,
+                ask,
+                kraken_ts,
+                bid_volume,
+                ask_volume,
+            },
+        );
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        let client = Arc::clone(client);
+        let retention_policy_clone = Arc::clone(retention_policy);
+        update_points_vector(points, pair.clone(), kraken_ts, now);
+        if points.len() >= batch_size {
+            let points_clone = points.clone();
+            points.clear();
+            tokio::spawn(async move {
+                spread_latency_to_influx(client, &*retention_policy_clone, points_clone).await;
+            });
+        }
+    }
+    Ok(())
+}
+
+fn get_f64_from_array(
+    array: &[serde_json::Value],
+    index: usize,
+    name: &str,
+) -> Result<f64, Box<dyn std::error::Error>> {
+    array
+        .get(index)
+        .ok_or(format!("Failed to get '{}' from fetched data", name))?
+        .as_str()
+        .ok_or(format!("Failed to parse '{}' as string", name))?
+        .parse::<f64>()
+        .map_err(|_| format!("Failed to parse '{}' as f64", name).into())
+}
+
+fn update_points_vector(points: &mut Vec<Point>, pair: &str, kraken_ts: f64, update_graph_ts: f64) {
     let latency = update_graph_ts - kraken_ts;
     let point = Point::new("spread_latency")
         .add_tag("pair", Value::String(pair.to_string()))
