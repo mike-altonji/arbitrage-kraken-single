@@ -79,8 +79,7 @@ pub async fn execute_trade(
             let (buy_sell, new_volume) =
                 determine_trade_info(asset1, asset2, base, pair, volume, fee_pct, &pair_to_spread);
             volume = new_volume;
-            let trade_msg = create_trade_msg(token, &buy_sell, volume, pair);
-            let _ = send_trade_msg(private_ws, trade_msg); // Don't need to await completion
+            let _ = make_trade(token, &buy_sell, volume, pair, private_ws);
             volume = process_trade_response(private_ws, pair, base, asset1, asset2).await?;
         }
     }
@@ -110,26 +109,21 @@ fn determine_trade_info(
     (trade_type, new_volume)
 }
 
-fn create_trade_msg(
+async fn make_trade(
     token: &String,
     trade_type: &String,
     volume: f64,
     pair: &String,
-) -> serde_json::Value {
-    serde_json::json!({
+    private_ws: &mut Option<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let trade_msg = serde_json::json!({
         "event": "addOrder",
         "token": token,
         "type": trade_type,
         "ordertype": "market",
         "volume": volume,
         "pair": pair,
-    })
-}
-
-async fn send_trade_msg(
-    private_ws: &mut Option<WebSocketStream<MaybeTlsStream<TcpStream>>>,
-    trade_msg: serde_json::Value,
-) -> Result<(), Box<dyn std::error::Error>> {
+    });
     if let Some(ws) = private_ws {
         ws.send(Message::Text(trade_msg.to_string())).await?;
     }
