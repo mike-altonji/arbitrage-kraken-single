@@ -62,33 +62,32 @@ pub async fn asset_pairs_to_pull(
 
     // Create the {pair: (base, quote)} HashMap
     let mut pair_to_assets = HashMap::new();
-    if let Some(pairs) = data_asset_pairs["result"].as_object() {
-        for (_pair, details) in pairs {
-            let status = details["status"].as_str().unwrap_or("").to_string();
-            let pair_ws = details["wsname"].as_str().unwrap_or("").to_string();
-            let base = details["base"].as_str().unwrap_or("").to_string();
-            let quote = details["quote"].as_str().unwrap_or("").to_string();
+    let pairs = data_asset_pairs["result"].as_object().ok_or("No pairs")?;
+    for (_pair, details) in pairs {
+        let status = details["status"].as_str().unwrap_or("").to_string();
+        let pair_ws = details["wsname"].as_str().unwrap_or("").to_string();
+        let base = details["base"].as_str().unwrap_or("").to_string();
+        let quote = details["quote"].as_str().unwrap_or("").to_string();
 
-            // Convert base/quote to ws_name format
-            let base_ws = data_assets["result"][&base]["altname"].as_str();
-            let quote_ws = data_assets["result"][&quote]["altname"].as_str();
+        // Convert base/quote to ws_name format
+        let base_ws = data_assets["result"][&base]["altname"].as_str();
+        let quote_ws = data_assets["result"][&quote]["altname"].as_str();
 
-            // Only insert pair: (base, quote) if their values are not missing
-            match (base_ws, quote_ws) {
-                (Some(base_ws), Some(quote_ws)) => {
-                    if input_asset_pairs.contains(&pair_ws) && status == "online" {
-                        pair_to_assets.insert(
-                            pair_ws.to_string(),
-                            PairToAssets {
-                                base: base_ws.to_string(),
-                                quote: quote_ws.to_string(),
-                            },
-                        );
-                    }
+        // Only insert pair: (base, quote) if their values are not missing
+        match (base_ws, quote_ws) {
+            (Some(base_ws), Some(quote_ws)) => {
+                if input_asset_pairs.contains(&pair_ws) && status == "online" {
+                    pair_to_assets.insert(
+                        pair_ws.to_string(),
+                        PairToAssets {
+                            base: base_ws.to_string(),
+                            quote: quote_ws.to_string(),
+                        },
+                    );
                 }
-                _ => {
-                    log::warn!("Altname does not exist for base or quote");
-                }
+            }
+            _ => {
+                log::warn!("Altname does not exist for base or quote");
             }
         }
     }
