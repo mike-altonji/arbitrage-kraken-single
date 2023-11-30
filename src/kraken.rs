@@ -125,7 +125,15 @@ pub async fn fetch_spreads(
     pair_status: Arc<Mutex<HashMap<String, bool>>>,
     public_online: Arc<Mutex<bool>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    dotenv::dotenv().ok();
     const SLEEP_DURATION: Duration = Duration::from_secs(5);
+    let host = std::env::var("INFLUXDB_HOST").expect("INFLUXDB_HOST must be set");
+    let port = std::env::var("INFLUXDB_PORT").expect("INFLUXDB_PORT must be set");
+    let db_name = std::env::var("DB_NAME").expect("DB_NAME must be set");
+    let user = std::env::var("DB_USER").expect("DB_USER must be set");
+    let password = std::env::var("DB_PASSWORD").expect("DB_PASSWORD must be set");
+    let retention_policy_var = Arc::new(std::env::var("RP_NAME").expect("RP_NAME must be set"));
+
     loop {
         let url = url::Url::parse("wss://ws.kraken.com").map_err(|_| "Public ws unparsable")?;
         let ws_stream = match connect_async(url).await {
@@ -148,14 +156,6 @@ pub async fn fetch_spreads(
             all_pairs.iter().collect::<Vec<&String>>()
         );
 
-        // Set up InfluxDB client
-        dotenv::dotenv().ok();
-        let host = std::env::var("INFLUXDB_HOST").expect("INFLUXDB_HOST must be set");
-        let port = std::env::var("INFLUXDB_PORT").expect("INFLUXDB_PORT must be set");
-        let db_name = std::env::var("DB_NAME").expect("DB_NAME must be set");
-        let user = std::env::var("DB_USER").expect("DB_USER must be set");
-        let password = std::env::var("DB_PASSWORD").expect("DB_PASSWORD must be set");
-        let retention_policy_var = Arc::new(std::env::var("RP_NAME").expect("RP_NAME must be set"));
         let retention_policy_clone = Arc::clone(&retention_policy_var);
         let client = Arc::new(
             Client::new(
