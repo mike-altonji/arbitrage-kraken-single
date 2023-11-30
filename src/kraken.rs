@@ -129,9 +129,9 @@ pub async fn fetch_spreads(
     public_online: Arc<Mutex<bool>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     const SLEEP_DURATION: Duration = Duration::from_secs(5);
-    let (client, retention_policy, batch_size, mut points) = setup_influx().await;
-    let (_write, mut read) = setup_websocket(&all_pairs).await;
     loop {
+        let (client, retention_policy, batch_size, mut points) = setup_influx().await;
+        let (_write, mut read) = setup_websocket(&all_pairs).await;
         while let Some(msg) = read.next().await {
             match msg {
                 Ok(Message::Text(text)) => {
