@@ -13,6 +13,7 @@ const TRADEABLE_ASSETS: [&str; 2] = ["USD", "EUR"]; // Cycle must contain one of
 const MIN_ROI: f64 = 1.0025;
 const MIN_PROFIT: f64 = 0.10;
 const MAX_TRADES: usize = 4;
+const MAX_LATENCY: f64 = 0.100;
 
 pub async fn evaluate_arbitrage_opportunities(
     pair_to_assets: HashMap<String, PairToAssets>,
@@ -20,6 +21,7 @@ pub async fn evaluate_arbitrage_opportunities(
     pair_to_spread: Arc<Mutex<HashMap<String, Spread>>>,
     pair_status: Arc<Mutex<HashMap<String, bool>>>,
     public_online: Arc<Mutex<bool>>,
+    p90_latency: Arc<Mutex<f64>>,
     allow_trades: bool,
     graph_id: i64,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -40,6 +42,7 @@ pub async fn evaluate_arbitrage_opportunities(
         .set_authentication(&user, &password),
     );
     let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+    let p90_latency_value = p90_latency.lock().unwrap().clone();
 
     // Set up websocket connection to private Kraken endpoint if trading & subscribe to `ownTrades`
     let token = get_auth_token().await?;
@@ -171,6 +174,7 @@ pub async fn evaluate_arbitrage_opportunities(
                 && path_names_clone.len() <= MAX_TRADES + 1
                 && end_volume / min_volume > MIN_ROI
                 && end_volume - min_volume > MIN_PROFIT
+                && p90_latency_value < MAX_LATENCY
             {
                 let private_ws = private_ws
                     .as_mut()

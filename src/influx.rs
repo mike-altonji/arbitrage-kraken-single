@@ -22,3 +22,25 @@ pub async fn setup_influx() -> (Arc<Client>, Arc<String>, usize, Vec<Point>) {
     (client, retention_policy, batch_size, points)
 }
 
+pub async fn spread_latency_from_influx(
+    p90_latency: Arc<Mutex<f64>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (client, retention_policy, _, _) = setup_influx().await;
+    let query = format!(
+        "SELECT last(latency) FROM \"{}\".\"recent_latency\"",
+        *retention_policy
+    );
+    let result = client.query(&query, None).await?;
+    let res2 = result.ok_or_else(|| "No Vec<Node> found")?;
+    let series = res2[0].series.as_ref().ok_or_else(|| "No series found")?;
+    let values = series[0].values.as_ref().ok_or_else(|| "No values found")?;
+    let value = values.get(0).ok_or_else(|| "No value found")?;
+    let latency = value.get(1).ok_or_else(|| "No latency found")?;
+    let latency_value = latency.as_f64().ok_or_else(|| "Latency is not a float")?;
+    match p90_latency.lock() {
+        Ok(mut p90_latency_lock) => *p90_latency_lock = latency_value,
+        Err(e) => log::error!("Failed to acquire lock: {:?}", e),
+    }
+
+    Ok(())
+}

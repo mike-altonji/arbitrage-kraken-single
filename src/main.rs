@@ -3,6 +3,7 @@ use futures::future::select_all;
 use log4rs::{append::file::FileAppender, config};
 use std::collections::{HashMap, HashSet};
 use std::env;
+use std::f64::INFINITY;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
@@ -61,6 +62,7 @@ async fn main() {
         let mut pair_to_spread_vec = Vec::new();
         let pair_status: Arc<Mutex<HashMap<String, bool>>> = Arc::new(Mutex::new(HashMap::new()));
         let public_online = Arc::new(Mutex::new(false));
+        let p90_latency = Arc::new(Mutex::new(INFINITY));
 
         for csv_file in csv_files {
             let (pair_to_assets, assets_to_pair) = kraken::asset_pairs_to_pull(&csv_file)
@@ -100,6 +102,19 @@ async fn main() {
             })
         };
 
+        // Task dedicated to knowing the p90 latency of spread fetches
+        let latency_handle = {
+            let p90_latency_clone = p90_latency.clone();
+            tokio::spawn(async move {
+                loop {
+                    influx::spread_latency_from_influx(p90_latency_clone.clone())
+                        .await
+                        .expect("Failed to fetch latency from InfluxDB.");
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+            })
+        };
+
         // Search for arbitrage opportunities, for each graph
         let mut evaluate_handles = Vec::new();
         for i in 0..pair_to_assets_vec.len() {
@@ -109,6 +124,7 @@ async fn main() {
                 let pair_to_spread_clone = pair_to_spread_vec[i].clone();
                 let pair_status_clone = pair_status.clone();
                 let public_online_clone = public_online.clone();
+                let p90_latency_clone = p90_latency.clone();
                 tokio::spawn(async move {
                     let _ = evaluate_arbitrage::evaluate_arbitrage_opportunities(
                         pair_to_assets_clone,
@@ -116,6 +132,7 @@ async fn main() {
                         pair_to_spread_clone,
                         pair_status_clone,
                         public_online_clone,
+                        p90_latency_clone,
                         allow_trades,
                         i as i64,
                     )
@@ -127,6 +144,7 @@ async fn main() {
 
         // Wait for both tasks to complete (this will likely never happen given the current logic)
         let mut all_handles = vec![Box::pin(fetch_handle)];
+        all_handles.push(Box::pin(latency_handle));
         for handle in evaluate_handles {
             all_handles.push(Box::pin(handle));
         }
