@@ -1,5 +1,6 @@
 use dotenv::dotenv;
 use futures::future::select_all;
+use kraken_private::get_auth_token;
 use log4rs::{append::file::FileAppender, config};
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -43,6 +44,11 @@ async fn main() {
     } else {
         send_telegram_message("🚀 Launching Kraken arbitrage: Evaluation-only mode").await;
     }
+    let token = if allow_trades {
+        get_auth_token().await.expect("Could not pull auth token.")
+    } else {
+        "".to_string()
+    };
 
     // Loop allows retries
     let mut retry = 0;
@@ -124,6 +130,7 @@ async fn main() {
                 let pair_to_spread_clone = pair_to_spread_vec[i].clone();
                 let pair_status_clone = pair_status.clone();
                 let public_online_clone = public_online.clone();
+                let token = token.clone();
                 let p90_latency_clone = p90_latency.clone();
                 tokio::spawn(async move {
                     let _ = evaluate_arbitrage::evaluate_arbitrage_opportunities(
@@ -134,6 +141,7 @@ async fn main() {
                         public_online_clone,
                         p90_latency_clone,
                         allow_trades,
+                        token.as_str(),
                         i as i64,
                     )
                     .await;

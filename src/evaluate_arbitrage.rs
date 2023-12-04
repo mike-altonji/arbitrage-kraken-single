@@ -1,6 +1,6 @@
 use crate::graph_algorithms::{bellman_ford_negative_cycle, Edge};
 use crate::kraken::{AssetsToPair, PairToAssets, Spread};
-use crate::kraken_private::{execute_trade, get_auth_token};
+use crate::kraken_private::execute_trade;
 use futures_util::SinkExt;
 use influx_db_client::{reqwest::Url, Client, Point, Precision, Value};
 use std::collections::HashMap;
@@ -23,6 +23,7 @@ pub async fn evaluate_arbitrage_opportunities(
     public_online: Arc<Mutex<bool>>,
     p90_latency: Arc<Mutex<f64>>,
     allow_trades: bool,
+    token: &str,
     graph_id: i64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Set up InfluxDB client
@@ -45,7 +46,6 @@ pub async fn evaluate_arbitrage_opportunities(
     let p90_latency_value = p90_latency.lock().unwrap().clone();
 
     // Set up websocket connection to private Kraken endpoint if trading & subscribe to `ownTrades`
-    let token = get_auth_token().await?;
     let mut private_ws = None;
     if allow_trades {
         let (ws, _) = connect_async("wss://ws-auth.kraken.com").await?;
@@ -54,7 +54,7 @@ pub async fn evaluate_arbitrage_opportunities(
             "event": "subscribe",
             "subscription": {
                 "name": "ownTrades",
-                "token": token.to_string()
+                "token": token
             }
         });
         if let Some(ws) = &mut private_ws {
@@ -185,7 +185,7 @@ pub async fn evaluate_arbitrage_opportunities(
                     &assets_to_pair,
                     pair_to_spread,
                     private_ws,
-                    &token,
+                    token,
                     FEE,
                 )
                 .await?;
