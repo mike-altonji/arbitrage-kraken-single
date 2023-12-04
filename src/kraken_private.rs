@@ -58,7 +58,7 @@ pub async fn get_auth_token() -> Result<String, Box<dyn std::error::Error>> {
     let v: Value = serde_json::from_str(&response_text)?;
     let token = v["result"]["token"].as_str().unwrap().to_string();
 
-    Ok(token)
+    Ok(token.to_string())
 }
 
 pub async fn execute_trade(
@@ -67,7 +67,7 @@ pub async fn execute_trade(
     assets_to_pair: &HashMap<(String, String), AssetsToPair>,
     pair_to_spread: HashMap<String, Spread>,
     private_ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
-    token: &String,
+    token: &str,
     fee_pct: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut volume = min_volume.min(FIAT_BALANCE); // TODO: Remove hard-coding
@@ -113,7 +113,7 @@ fn determine_trade_info(
 }
 
 async fn make_trade(
-    token: &String,
+    token: &str,
     trade_type: &String,
     volume: f64,
     pair: &String,
