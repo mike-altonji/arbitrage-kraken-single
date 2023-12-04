@@ -9,6 +9,7 @@ use tokio::time::sleep;
 
 mod evaluate_arbitrage;
 mod graph_algorithms;
+mod influx;
 mod kraken;
 mod kraken_private;
 mod telegram;
