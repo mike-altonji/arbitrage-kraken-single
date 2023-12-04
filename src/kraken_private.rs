@@ -56,10 +56,7 @@ pub async fn get_auth_token() -> Result<String, Box<dyn std::error::Error>> {
 
     let response_text = res.text().await?;
     let v: Value = serde_json::from_str(&response_text)?;
-    let token = v["result"]["token"]
-        .as_str()
-        .unwrap_or("no_token")
-        .to_string();
+    let token = v["result"]["token"].as_str().unwrap().to_string();
 
     Ok(token.to_string())
 }
