@@ -2,7 +2,7 @@ use core::sync::atomic::Ordering;
 use csv::ReaderBuilder;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
-use influx_db_client::{reqwest::Url, Client, Point, Precision, Value};
+use influx_db_client::{Client, Point, Precision, Value};
 use reqwest;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -12,6 +12,7 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
+use crate::influx::setup_influx;
 use crate::telegram::send_telegram_message;
 
 #[derive(Clone)]
@@ -167,27 +168,6 @@ pub async fn fetch_spreads(
             }
         }
     }
-}
-
-async fn setup_influx() -> (Arc<Client>, Arc<String>, usize, Vec<Point>) {
-    dotenv::dotenv().ok();
-    let host = std::env::var("INFLUXDB_HOST").expect("INFLUXDB_HOST must be set");
-    let port = std::env::var("INFLUXDB_PORT").expect("INFLUXDB_PORT must be set");
-    let db_name = std::env::var("DB_NAME").expect("DB_NAME must be set");
-    let user = std::env::var("DB_USER").expect("DB_USER must be set");
-    let password = std::env::var("DB_PASSWORD").expect("DB_PASSWORD must be set");
-    let retention_policy = Arc::new(std::env::var("RP_NAME").expect("RP_NAME must be set"));
-    let batch_size: usize = 500;
-    let points = Vec::new();
-    let client = Arc::new(
-        Client::new(
-            Url::parse(&format!("http://{}:{}", &host, &port)).expect("InfluxDB URL unparseable"),
-            &db_name,
-        )
-        .set_authentication(&user, &password),
-    );
-
-    (client, retention_policy, batch_size, points)
 }
 
 async fn setup_websocket(
