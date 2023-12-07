@@ -116,7 +116,7 @@ pub async fn execute_trade(
     pair_to_spread: HashMap<String, Spread>,
     private_ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
     token: &str,
-    fee_pct: f64,
+    fees: &HashMap<String, f64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut volume = min_volume.min(FIAT_BALANCE); // TODO: Remove hard-coding
     for i in 0..path_names.len() - 1 {
@@ -127,8 +127,15 @@ pub async fn execute_trade(
             .ok_or(format!("Trade failed: No {} & {} pair", asset1, asset2))?;
         let pair = &pair_data.pair;
         let base = &pair_data.base;
-        let (buy_sell, new_volume) =
-            determine_trade_info(asset1, asset2, base, pair, volume, fee_pct, &pair_to_spread)?;
+        let (buy_sell, new_volume) = determine_trade_info(
+            asset1,
+            asset2,
+            base,
+            pair,
+            volume,
+            fees[pair],
+            &pair_to_spread,
+        )?;
         volume = new_volume;
         let _ = make_trade(token, &buy_sell, volume, pair, private_ws);
         volume = process_trade_response(private_ws, pair, base, asset1, asset2).await?;

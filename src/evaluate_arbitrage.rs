@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 use tokio::time::{sleep, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-const FEE: f64 = 0.0026;
 const TRADEABLE_ASSETS: [&str; 2] = ["USD", "EUR"]; // Cycle must contain one of these to execute a trade.
 const MIN_ROI: f64 = 1.0025;
 const MIN_PROFIT: f64 = 0.10;
@@ -19,6 +18,7 @@ pub async fn evaluate_arbitrage_opportunities(
     pair_to_assets: HashMap<String, PairToAssets>,
     assets_to_pair: HashMap<(String, String), AssetsToPair>,
     pair_to_spread: Arc<Mutex<HashMap<String, Spread>>>,
+    fees: Arc<Mutex<HashMap<String, f64>>>,
     pair_status: Arc<Mutex<HashMap<String, bool>>>,
     public_online: Arc<Mutex<bool>>,
     p90_latency: Arc<Mutex<f64>>,
@@ -92,10 +92,12 @@ pub async fn evaluate_arbitrage_opportunities(
 
         let pair_to_spread = pair_to_spread.lock().unwrap().clone();
         let pair_status_clone = pair_status.lock().unwrap().clone();
+        let fees_clone = fees.lock().unwrap().clone();
         let (rate_edges, rate_map, volume_map) = prepare_graph(
             &pair_to_spread,
             &pair_to_assets,
             &asset_to_index,
+            &fees_clone,
             &pair_status_clone,
         );
         let path = bellman_ford_negative_cycle(n, &rate_edges, 0);
@@ -176,6 +178,7 @@ pub async fn evaluate_arbitrage_opportunities(
                 && end_volume - min_volume > MIN_PROFIT
                 && p90_latency_value < MAX_LATENCY
             {
+                let fees_clone = &fees.lock().unwrap().clone();
                 let private_ws = private_ws
                     .as_mut()
                     .ok_or("Can't execute trades: Private WebSocket does not exist")?;
@@ -186,7 +189,7 @@ pub async fn evaluate_arbitrage_opportunities(
                     pair_to_spread,
                     private_ws,
                     token,
-                    FEE,
+                    fees_clone,
                 )
                 .await?;
             }
@@ -297,6 +300,7 @@ fn prepare_graph(
     pair_to_spread: &HashMap<String, Spread>,
     pair_to_assets: &HashMap<String, PairToAssets>,
     asset_to_index: &HashMap<String, usize>,
+    fees: &HashMap<String, f64>,
     pair_status: &HashMap<String, bool>,
 ) -> (
     Vec<Edge>,
@@ -330,8 +334,8 @@ fn prepare_graph(
                     let index2 = *asset_to_index
                         .get(asset2)
                         .expect(&format!("Expected {} in asset_to_index", asset2));
-                    let bid_rate = bid * (1.0 - FEE);
-                    let ask_rate = 1.0 / (ask * (1.0 + FEE));
+                    let bid_rate = bid * (1.0 - fees[pair]);
+                    let ask_rate = 1.0 / (ask * (1.0 + fees[pair]));
                     exchange_rates.push(Edge {
                         src: index1,
                         dest: index2,
@@ -497,6 +501,10 @@ mod tests {
             },
         );
 
+        let mut fees = HashMap::new();
+        fees.insert("pair1".to_string(), 0.0026);
+        fees.insert("pair2".to_string(), 0.0026);
+
         let mut pair_status = HashMap::new();
         pair_status.insert("pair1".to_string(), true);
         pair_status.insert("pair2".to_string(), true);
@@ -507,6 +515,7 @@ mod tests {
             &pair_to_spread,
             &pair_to_assets,
             &asset_to_index,
+            &fees,
             &pair_status,
         );
 
@@ -521,7 +530,7 @@ mod tests {
             "Expected an edge from asset1 to asset2"
         );
         let edge = edge_from_asset1_to_asset2.unwrap();
-        assert_eq!(edge.weight, -(1.0 * (1.0 - FEE)).ln(), "Expected the weight of the edge from asset1 to asset2 to be the natural logarithm of the negative bid rate");
+        assert_eq!(edge.weight, -((1.0 * (1.0 - 0.0026)) as f64).ln(), "Expected the weight of the edge from asset1 to asset2 to be the natural logarithm of the negative bid rate");
     }
 
     #[test]

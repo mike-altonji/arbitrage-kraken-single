@@ -164,6 +164,7 @@ async fn main() {
                 let pair_to_assets_clone = pair_to_assets_vec[i].clone();
                 let assets_to_pair_clone = assets_to_pair_vec[i].clone();
                 let pair_to_spread_clone = pair_to_spread_vec[i].clone();
+                let fees_clone = fees.clone();
                 let pair_status_clone = pair_status.clone();
                 let public_online_clone = public_online.clone();
                 let token = token.clone();
@@ -173,6 +174,7 @@ async fn main() {
                         pair_to_assets_clone,
                         assets_to_pair_clone,
                         pair_to_spread_clone,
+                        fees_clone,
                         pair_status_clone,
                         public_online_clone,
                         p90_latency_clone,
