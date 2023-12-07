@@ -43,6 +43,7 @@ pub async fn asset_pairs_to_pull(
     (
         HashMap<String, PairToAssets>,
         HashMap<(String, String), AssetsToPair>,
+        HashMap<String, Vec<Vec<f64>>>,
     ),
     Box<dyn std::error::Error>,
 > {
@@ -65,6 +66,7 @@ pub async fn asset_pairs_to_pull(
     let resp = reqwest::get(assets_url).await?;
     let text = resp.text().await?;
     let data_assets: serde_json::Value = serde_json::from_str(&text)?;
+    let mut pair_to_fee = HashMap::new();
 
     // Create the {pair: (base, quote)} HashMap
     let mut pair_to_assets = HashMap::new();
@@ -74,6 +76,20 @@ pub async fn asset_pairs_to_pull(
         let pair_ws = details["wsname"].as_str().unwrap_or("").to_string();
         let base = details["base"].as_str().unwrap_or("").to_string();
         let quote = details["quote"].as_str().unwrap_or("").to_string();
+        let fee_schedule = details["fees"]
+            .as_array()
+            .ok_or("Fees not an array")?
+            .iter()
+            .map(|fee| {
+                fee.as_array().ok_or("Fee not an array").and_then(|fee| {
+                    let volume_level = fee[0].as_f64().ok_or("Volume level not a float")?;
+                    let fee_percentage = fee[1].as_f64().ok_or("Fee percentage not a float")?;
+                    Ok(vec![volume_level, fee_percentage])
+                })
+            })
+            .map(|res| res.map_err(|e| e.into())) // Map the error type
+            .collect::<Result<Vec<Vec<f64>>, Box<dyn std::error::Error>>>()?;
+        pair_to_fee.insert(pair_ws.clone(), fee_schedule);
 
         // Convert base/quote to ws_name format
         let base_ws = data_assets["result"][&base]["altname"].as_str();
@@ -121,7 +137,24 @@ pub async fn asset_pairs_to_pull(
         );
     }
 
-    Ok((pair_to_assets, assets_to_pair))
+    Ok((pair_to_assets, assets_to_pair, pair_to_fee))
+}
+
+pub fn update_fees_based_on_volume(
+    fees: &mut HashMap<String, f64>,
+    schedules: &HashMap<String, Vec<Vec<f64>>>,
+    vol_30day: f64,
+) {
+    for (key, schedule) in schedules.iter() {
+        let mut fee = 0.0026; // default fee
+        for pair in schedule {
+            if vol_30day < pair[0] {
+                break;
+            }
+            fee = pair[1] / 100.; // Formatted in pct in Kraken
+        }
+        fees.insert(key.clone(), fee);
+    }
 }
 
 pub async fn fetch_spreads(
@@ -394,10 +427,11 @@ mod tests {
             .unwrap()
             .block_on(asset_pairs_to_pull("resources/asset_pairs_a1.csv"));
         assert!(result.is_ok());
-        let (pair_to_assets, assets_to_pair) = result.unwrap();
+        let (pair_to_assets, assets_to_pair, pair_to_fee) = result.unwrap();
         assert!(pair_to_assets.contains_key("EUR/USD"));
         assert_eq!(pair_to_assets["EUR/USD"].base, "EUR");
         assert_eq!(pair_to_assets["EUR/USD"].quote, "USD");
+        assert_eq!(pair_to_fee["EUR/USD"][0], vec![0.0, 0.20]);
 
         let usd_eur = ("USD".to_string(), "EUR".to_string());
         let eur_usd = ("EUR".to_string(), "USD".to_string());
@@ -409,5 +443,39 @@ mod tests {
         assert_eq!(assets_to_pair[&usd_eur].quote, "USD");
         assert_eq!(assets_to_pair[&eur_usd].pair, "EUR/USD");
         assert_eq!(assets_to_pair[&usd_eur].pair, "EUR/USD");
+    }
+
+    #[test]
+    fn test_update_fees_based_on_volume() {
+        let mut fees = HashMap::new();
+        fees.insert("BTC".to_string(), 0.0);
+        fees.insert("ETH".to_string(), 0.0);
+
+        let mut schedules = HashMap::new();
+        schedules.insert(
+            "ABC/USD".to_string(),
+            vec![vec![1000.0, 0.25], vec![2000.0, 0.20]],
+        );
+        schedules.insert(
+            "XYZ/USD".to_string(),
+            vec![vec![500.0, 0.30], vec![1500.0, 0.25]],
+        );
+        schedules.insert(
+            "CAT/USD".to_string(),
+            vec![vec![1500.0, 0.20], vec![2000.0, 0.10]],
+        );
+        schedules.insert(
+            "DOG/USD".to_string(),
+            vec![vec![500.0, 0.35], vec![1000.0, 0.12]],
+        );
+
+        let vol_30day = 1200.0;
+
+        update_fees_based_on_volume(&mut fees, &schedules, vol_30day);
+
+        assert_eq!(fees.get("ABC/USD").unwrap(), &0.0025);
+        assert_eq!(fees.get("XYZ/USD").unwrap(), &0.0030);
+        assert_eq!(fees.get("CAT/USD").unwrap(), &0.0026);
+        assert_eq!(fees.get("DOG/USD").unwrap(), &0.0012);
     }
 }

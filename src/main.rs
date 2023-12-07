@@ -16,6 +16,8 @@ mod kraken;
 mod kraken_private;
 mod telegram;
 
+use crate::kraken::update_fees_based_on_volume;
+use crate::kraken_private::get_30d_trade_volume;
 use crate::telegram::send_telegram_message;
 
 #[tokio::main]
@@ -69,15 +71,20 @@ async fn main() {
         let pair_status: Arc<Mutex<HashMap<String, bool>>> = Arc::new(Mutex::new(HashMap::new()));
         let public_online = Arc::new(Mutex::new(false));
         let p90_latency = Arc::new(Mutex::new(INFINITY));
+        let mut all_fee_schedules = HashMap::new();
 
         for csv_file in csv_files {
-            let (pair_to_assets, assets_to_pair) = kraken::asset_pairs_to_pull(&csv_file)
-                .await
-                .expect("Failed to get asset pairs");
+            let (pair_to_assets, assets_to_pair, fee_schedules) =
+                kraken::asset_pairs_to_pull(&csv_file)
+                    .await
+                    .expect("Failed to get asset pairs");
             let pair_to_spread = Arc::new(Mutex::new(HashMap::new()));
             pair_to_assets_vec.push(pair_to_assets);
             assets_to_pair_vec.push(assets_to_pair);
             pair_to_spread_vec.push(pair_to_spread);
+            for (key, value) in fee_schedules {
+                all_fee_schedules.insert(key, value);
+            }
         }
 
         // Unique set of all pairs, so we just have 1 subscription to the Kraken websocket
@@ -108,6 +115,35 @@ async fn main() {
             })
         };
 
+        // Task dedicated to grabbing the most recent fee
+        let fees: Arc<Mutex<HashMap<String, f64>>> = Arc::new(Mutex::new(
+            all_fee_schedules
+                .keys()
+                .map(|key| (key.clone(), 0.0026))
+                .collect(),
+        ));
+        let fees_handle = {
+            let fees_clone = fees.clone();
+            let schedules_clone = all_fee_schedules.clone();
+            tokio::spawn(async move {
+                loop {
+                    let vol = match get_30d_trade_volume().await {
+                        Ok(volume) => volume,
+                        Err(_) => {
+                            log::error!("Error: Defaulting volume to 0.0");
+                            0.0
+                        }
+                    };
+                    // Lock the mutex only when updating the fees
+                    {
+                        let mut fees = fees_clone.lock().unwrap();
+                        update_fees_based_on_volume(&mut *fees, &schedules_clone, vol);
+                    }
+                    sleep(Duration::from_secs(10)).await;
+                }
+            })
+        };
+
         // Task dedicated to knowing the p90 latency of spread fetches
         let latency_handle = {
             let p90_latency_clone = p90_latency.clone();
@@ -128,6 +164,7 @@ async fn main() {
                 let pair_to_assets_clone = pair_to_assets_vec[i].clone();
                 let assets_to_pair_clone = assets_to_pair_vec[i].clone();
                 let pair_to_spread_clone = pair_to_spread_vec[i].clone();
+                let fees_clone = fees.clone();
                 let pair_status_clone = pair_status.clone();
                 let public_online_clone = public_online.clone();
                 let token = token.clone();
@@ -137,6 +174,7 @@ async fn main() {
                         pair_to_assets_clone,
                         assets_to_pair_clone,
                         pair_to_spread_clone,
+                        fees_clone,
                         pair_status_clone,
                         public_online_clone,
                         p90_latency_clone,
@@ -152,6 +190,7 @@ async fn main() {
 
         // Wait for both tasks to complete (this will likely never happen given the current logic)
         let mut all_handles = vec![Box::pin(fetch_handle)];
+        all_handles.push(Box::pin(fees_handle));
         all_handles.push(Box::pin(latency_handle));
         for handle in evaluate_handles {
             all_handles.push(Box::pin(handle));
