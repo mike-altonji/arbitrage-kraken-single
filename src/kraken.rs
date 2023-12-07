@@ -151,7 +151,7 @@ pub fn update_fees_based_on_volume(
             if vol_30day < pair[0] {
                 break;
             }
-            fee = pair[1];
+            fee = pair[1] / 100.; // Formatted in pct in Kraken
         }
         fees.insert(key.clone(), fee);
     }
