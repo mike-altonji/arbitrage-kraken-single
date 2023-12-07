@@ -431,6 +431,7 @@ mod tests {
         assert!(pair_to_assets.contains_key("EUR/USD"));
         assert_eq!(pair_to_assets["EUR/USD"].base, "EUR");
         assert_eq!(pair_to_assets["EUR/USD"].quote, "USD");
+        assert_eq!(pair_to_fee["EUR/USD"][0], vec![0.0, 0.20]);
 
         let usd_eur = ("USD".to_string(), "EUR".to_string());
         let eur_usd = ("EUR".to_string(), "USD".to_string());
@@ -442,5 +443,39 @@ mod tests {
         assert_eq!(assets_to_pair[&usd_eur].quote, "USD");
         assert_eq!(assets_to_pair[&eur_usd].pair, "EUR/USD");
         assert_eq!(assets_to_pair[&usd_eur].pair, "EUR/USD");
+    }
+
+    #[test]
+    fn test_update_fees_based_on_volume() {
+        let mut fees = HashMap::new();
+        fees.insert("BTC".to_string(), 0.0);
+        fees.insert("ETH".to_string(), 0.0);
+
+        let mut schedules = HashMap::new();
+        schedules.insert(
+            "ABC/USD".to_string(),
+            vec![vec![1000.0, 0.25], vec![2000.0, 0.20]],
+        );
+        schedules.insert(
+            "XYZ/USD".to_string(),
+            vec![vec![500.0, 0.30], vec![1500.0, 0.25]],
+        );
+        schedules.insert(
+            "CAT/USD".to_string(),
+            vec![vec![1500.0, 0.20], vec![2000.0, 0.10]],
+        );
+        schedules.insert(
+            "DOG/USD".to_string(),
+            vec![vec![500.0, 0.35], vec![1000.0, 0.12]],
+        );
+
+        let vol_30day = 1200.0;
+
+        update_fees_based_on_volume(&mut fees, &schedules, vol_30day);
+
+        assert_eq!(fees.get("ABC/USD").unwrap(), &0.0025);
+        assert_eq!(fees.get("XYZ/USD").unwrap(), &0.0030);
+        assert_eq!(fees.get("CAT/USD").unwrap(), &0.0026);
+        assert_eq!(fees.get("DOG/USD").unwrap(), &0.0012);
     }
 }
