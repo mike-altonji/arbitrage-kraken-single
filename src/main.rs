@@ -139,7 +139,6 @@ async fn main() {
                         let mut fees = fees_clone.lock().unwrap();
                         update_fees_based_on_volume(&mut *fees, &schedules_clone, vol);
                     }
-                    println!("{:?}", fees);
                     sleep(Duration::from_secs(10)).await;
                 }
             })
