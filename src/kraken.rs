@@ -1,6 +1,7 @@
 use crate::influx::setup_influx;
 use crate::structs::{
-    AssetNameConverter, AssetsToPair, BaseQuote, BaseQuotePair, PairToAssets, PairToSpread, Spread,
+    AssetNameConverter, AssetsToPair, BaseQuote, BaseQuotePair, PairToAssets, PairToSpread,
+    PairToVolatility, Spread,
 };
 use crate::telegram::send_telegram_message;
 use core::sync::atomic::Ordering;
@@ -9,6 +10,7 @@ use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use influx_db_client::{Client, Point, Precision, Value};
 use reqwest;
+use reqwest::Error;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::sync::{atomic::AtomicUsize, Arc, Mutex};
@@ -145,6 +147,38 @@ pub fn update_fees_based_on_volume(
         }
         fees.insert(key.clone(), fee);
     }
+}
+
+pub async fn update_volatility(
+    pair_to_volatility: Arc<Mutex<PairToVolatility>>,
+    asset_name_converter: &AssetNameConverter,
+) -> Result<(), Error> {
+    let client = reqwest::Client::new();
+
+    let pairs: Vec<String> = pair_to_volatility.lock().unwrap().keys().cloned().collect();
+    for ws in pairs {
+        let rest = asset_name_converter.ws_to_rest(&ws).unwrap().clone();
+        let url =
+            format!("https://api.kraken.com/0/public/OHLC?pair={rest}&interval=1&since=1702012751");
+
+        let resp = client.get(&url).send().await?;
+        let ohlc_data: serde_json::Value = resp.json().await?;
+        let data = ohlc_data["result"][rest].as_array().unwrap();
+
+        // Calculate the variance over the prior 12 hours (1m interval * 720 points)
+        let mut values: Vec<f64> = data
+            .iter()
+            .map(|x| x[1].as_str().unwrap().parse::<f64>().unwrap())
+            .collect();
+        let sum: f64 = values.iter().sum();
+        let mean = sum / (values.len() as f64);
+        values = values.iter().map(|&x| (x - mean).powi(2)).collect();
+        let variance: f64 = values.iter().sum::<f64>() / (values.len() as f64);
+        let mut pair_to_volatility = pair_to_volatility.lock().unwrap();
+        pair_to_volatility.insert(ws.clone(), variance);
+    }
+
+    Ok(())
 }
 
 pub async fn fetch_spreads(

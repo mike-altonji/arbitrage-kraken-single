@@ -25,6 +25,8 @@ pub struct Spread {
 }
 pub type PairToSpread = HashMap<String, Spread>;
 
+pub type PairToVolatility = HashMap<String, f64>;
+
 pub struct Edge {
     pub src: usize,
     pub dest: usize,
@@ -32,9 +34,10 @@ pub struct Edge {
 }
 
 /// Holds 2 dictionaries: One to convert from Web Socket to REST format, and vice versa
+#[derive(Clone)]
 pub struct AssetNameConverter {
-    ws_to_rest_map: HashMap<String, String>,
-    rest_to_ws_map: HashMap<String, String>,
+    pub ws_to_rest_map: HashMap<String, String>,
+    pub rest_to_ws_map: HashMap<String, String>,
 }
 
 impl AssetNameConverter {
@@ -70,7 +73,7 @@ impl IntoIterator for AssetNameConverter {
     fn into_iter(self) -> Self::IntoIter {
         let mut vec = Vec::new();
         for (ws, rest) in self.ws_to_rest_map {
-            vec.push((rest, ws));
+            vec.push((ws, rest));
         }
         vec.into_iter()
     }

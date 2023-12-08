@@ -1,5 +1,6 @@
 use dotenv::dotenv;
 use futures::future::select_all;
+use kraken::update_volatility;
 use kraken_private::get_auth_token;
 use log4rs::{append::file::FileAppender, config};
 use std::collections::{HashMap, HashSet};
@@ -7,7 +8,7 @@ use std::env;
 use std::f64::INFINITY;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use structs::AssetNameConverter;
+use structs::{AssetNameConverter, PairToVolatility};
 use tokio::time::sleep;
 
 mod evaluate_arbitrage;
@@ -151,6 +152,29 @@ async fn main() {
             })
         };
 
+        // Task dedicated to keeping volatility up to date
+        let volatility: Arc<Mutex<PairToVolatility>> = Arc::new(Mutex::new(
+            all_asset_name_conversion
+                .ws_to_rest_map
+                .keys()
+                .map(|key| (key.clone(), INFINITY))
+                .collect(),
+        ));
+        let volatility_handle = {
+            let asset_name_conversion = all_asset_name_conversion.clone();
+            tokio::spawn(async move {
+                loop {
+                    {
+                        let volatility_clone = volatility.clone();
+                        update_volatility(volatility_clone, &asset_name_conversion)
+                            .await
+                            .expect("Volatility pull failed");
+                    }
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                }
+            })
+        };
+
         // Task dedicated to knowing the p90 latency of spread fetches
         let latency_handle = {
             let p90_latency_clone = p90_latency.clone();
@@ -198,6 +222,7 @@ async fn main() {
         // Wait for both tasks to complete (this will likely never happen given the current logic)
         let mut all_handles = vec![Box::pin(fetch_handle)];
         all_handles.push(Box::pin(fees_handle));
+        all_handles.push(Box::pin(volatility_handle));
         all_handles.push(Box::pin(latency_handle));
         for handle in evaluate_handles {
             all_handles.push(Box::pin(handle));
