@@ -7,6 +7,7 @@ use std::env;
 use std::f64::INFINITY;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use structs::AssetNameConverter;
 use tokio::time::sleep;
 
 mod evaluate_arbitrage;
@@ -74,9 +75,10 @@ async fn main() {
         let public_online = Arc::new(Mutex::new(false));
         let p90_latency = Arc::new(Mutex::new(INFINITY));
         let mut all_fee_schedules = HashMap::new();
+        let mut all_asset_name_conversion = AssetNameConverter::new();
 
         for csv_file in csv_files {
-            let (pair_to_assets, assets_to_pair, fee_schedules) =
+            let (pair_to_assets, assets_to_pair, asset_name_conversion, fee_schedules) =
                 kraken::asset_pairs_to_pull(&csv_file)
                     .await
                     .expect("Failed to get asset pairs");
@@ -86,6 +88,9 @@ async fn main() {
             pair_to_spread_vec.push(pair_to_spread);
             for (key, value) in fee_schedules {
                 all_fee_schedules.insert(key, value);
+            }
+            for (ws, rest) in asset_name_conversion {
+                all_asset_name_conversion.insert(ws, rest);
             }
         }
 

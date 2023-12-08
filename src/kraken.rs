@@ -19,8 +19,15 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 pub async fn asset_pairs_to_pull(
     fname: &str,
-) -> Result<(PairToAssets, AssetsToPair, HashMap<String, Vec<Vec<f64>>>), Box<dyn std::error::Error>>
-{
+) -> Result<
+    (
+        PairToAssets,
+        AssetsToPair,
+        AssetNameConverter,
+        HashMap<String, Vec<Vec<f64>>>,
+    ),
+    Box<dyn std::error::Error>,
+> {
     // Define the set of valid bases and quotes
     let mut rdr = ReaderBuilder::new().from_reader(File::open(fname)?);
     let mut input_asset_pairs = HashSet::new();
@@ -115,7 +122,12 @@ pub async fn asset_pairs_to_pull(
         );
     }
 
-    Ok((pair_to_assets, assets_to_pair, pair_to_fee))
+    Ok((
+        pair_to_assets,
+        assets_to_pair,
+        asset_name_conversion,
+        pair_to_fee,
+    ))
 }
 
 pub fn update_fees_based_on_volume(
@@ -405,7 +417,7 @@ mod tests {
             .unwrap()
             .block_on(asset_pairs_to_pull("resources/asset_pairs_a1.csv"));
         assert!(result.is_ok());
-        let (pair_to_assets, assets_to_pair, pair_to_fee) = result.unwrap();
+        let (pair_to_assets, assets_to_pair, _asset_name_conversion, pair_to_fee) = result.unwrap();
         assert!(pair_to_assets.contains_key("EUR/USD"));
         assert_eq!(pair_to_assets["EUR/USD"].base, "EUR");
         assert_eq!(pair_to_assets["EUR/USD"].quote, "USD");

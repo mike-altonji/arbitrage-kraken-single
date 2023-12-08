@@ -62,3 +62,16 @@ impl AssetNameConverter {
         self.rest_to_ws_map.get(rest)
     }
 }
+
+impl IntoIterator for AssetNameConverter {
+    type Item = (String, String);
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let mut vec = Vec::new();
+        for (ws, rest) in self.ws_to_rest_map {
+            vec.push((rest, ws));
+        }
+        vec.into_iter()
+    }
+}
