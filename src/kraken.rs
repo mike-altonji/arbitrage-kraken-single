@@ -1,5 +1,5 @@
 use crate::influx::setup_influx;
-use crate::structs::{AssetsToPair, BaseQuote, PairToAssets, Spread};
+use crate::structs::{AssetsToPair, BaseQuote, BaseQuotePair, PairToAssets, Spread};
 use crate::telegram::send_telegram_message;
 use core::sync::atomic::Ordering;
 use csv::ReaderBuilder;
@@ -17,14 +17,8 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 pub async fn asset_pairs_to_pull(
     fname: &str,
-) -> Result<
-    (
-        PairToAssets,
-        HashMap<(String, String), AssetsToPair>,
-        HashMap<String, Vec<Vec<f64>>>,
-    ),
-    Box<dyn std::error::Error>,
-> {
+) -> Result<(PairToAssets, AssetsToPair, HashMap<String, Vec<Vec<f64>>>), Box<dyn std::error::Error>>
+{
     // Define the set of valid bases and quotes
     let mut rdr = ReaderBuilder::new().from_reader(File::open(fname)?);
     let mut input_asset_pairs = HashSet::new();
@@ -99,7 +93,7 @@ pub async fn asset_pairs_to_pull(
         let quote = assets.quote;
         assets_to_pair.insert(
             (base.clone(), quote.clone()),
-            AssetsToPair {
+            BaseQuotePair {
                 base: base.clone(),
                 quote: quote.clone(),
                 pair: pair.clone(),
@@ -107,7 +101,7 @@ pub async fn asset_pairs_to_pull(
         );
         assets_to_pair.insert(
             (quote.clone(), base.clone()),
-            AssetsToPair {
+            BaseQuotePair {
                 base: base.clone(),
                 quote: quote.clone(),
                 pair: pair.clone(),

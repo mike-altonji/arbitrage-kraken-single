@@ -8,7 +8,7 @@ pub fn rotate_trading_path(
     path: &mut Vec<String>,
     starters: &HashSet<String>,
     asset_pair_volatility: &HashMap<String, f64>,
-    assets_to_pair: &HashMap<(String, String), AssetsToPair>,
+    assets_to_pair: &AssetsToPair,
 ) {
     path.pop(); // Pop the final asset, breaking the cycle
     if let Some((index, _)) = path
@@ -35,6 +35,7 @@ pub fn rotate_trading_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::structs::BaseQuotePair;
     use std::collections::{HashMap, HashSet};
 
     #[test]
@@ -44,7 +45,7 @@ mod tests {
         let assets_to_pair = HashMap::from([
             (
                 ("USD".to_string(), "EUR".to_string()),
-                AssetsToPair {
+                BaseQuotePair {
                     base: "EUR".to_string(),
                     quote: "USD".to_string(),
                     pair: "EUR/USD".to_string(),
@@ -52,7 +53,7 @@ mod tests {
             ),
             (
                 ("EUR".to_string(), "USD".to_string()),
-                AssetsToPair {
+                BaseQuotePair {
                     base: "EUR".to_string(),
                     quote: "USD".to_string(),
                     pair: "EUR/USD".to_string(),
@@ -60,7 +61,7 @@ mod tests {
             ),
             (
                 ("DOGE".to_string(), "EUR".to_string()),
-                AssetsToPair {
+                BaseQuotePair {
                     base: "DOGE".to_string(),
                     quote: "EUR".to_string(),
                     pair: "DOGE/EUR".to_string(),
@@ -68,7 +69,7 @@ mod tests {
             ),
             (
                 ("EUR".to_string(), "DOGE".to_string()),
-                AssetsToPair {
+                BaseQuotePair {
                     base: "DOGE".to_string(),
                     quote: "EUR".to_string(),
                     pair: "DOGE/EUR".to_string(),
@@ -76,7 +77,7 @@ mod tests {
             ),
             (
                 ("USD".to_string(), "DOGE".to_string()),
-                AssetsToPair {
+                BaseQuotePair {
                     base: "DOGE".to_string(),
                     quote: "USD".to_string(),
                     pair: "DOGE/USD".to_string(),
@@ -84,7 +85,7 @@ mod tests {
             ),
             (
                 ("DOGE".to_string(), "USD".to_string()),
-                AssetsToPair {
+                BaseQuotePair {
                     base: "DOGE".to_string(),
                     quote: "USD".to_string(),
                     pair: "DOGE/USD".to_string(),
@@ -92,7 +93,7 @@ mod tests {
             ),
             (
                 ("BTC".to_string(), "EUR".to_string()),
-                AssetsToPair {
+                BaseQuotePair {
                     base: "BTC".to_string(),
                     quote: "EUR".to_string(),
                     pair: "BTC/EUR".to_string(),
@@ -100,7 +101,7 @@ mod tests {
             ),
             (
                 ("EUR".to_string(), "BTC".to_string()),
-                AssetsToPair {
+                BaseQuotePair {
                     base: "BTC".to_string(),
                     quote: "EUR".to_string(),
                     pair: "BTC/EUR".to_string(),
@@ -108,7 +109,7 @@ mod tests {
             ),
             (
                 ("USD".to_string(), "BTC".to_string()),
-                AssetsToPair {
+                BaseQuotePair {
                     base: "BTC".to_string(),
                     quote: "USD".to_string(),
                     pair: "BTC/USD".to_string(),
@@ -116,7 +117,7 @@ mod tests {
             ),
             (
                 ("BTC".to_string(), "USD".to_string()),
-                AssetsToPair {
+                BaseQuotePair {
                     base: "BTC".to_string(),
                     quote: "USD".to_string(),
                     pair: "BTC/USD".to_string(),

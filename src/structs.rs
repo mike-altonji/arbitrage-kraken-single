@@ -8,11 +8,12 @@ pub struct BaseQuote {
 pub type PairToAssets = HashMap<String, BaseQuote>;
 
 #[derive(Clone)]
-pub struct AssetsToPair {
+pub struct BaseQuotePair {
     pub base: String,
     pub quote: String,
     pub pair: String,
 }
+pub type AssetsToPair = HashMap<(String, String), BaseQuotePair>;
 
 #[derive(Clone)]
 pub struct Spread {

@@ -112,7 +112,7 @@ pub async fn get_30d_trade_volume() -> Result<f64, Box<dyn std::error::Error>> {
 pub async fn execute_trade(
     path_names: Vec<String>,
     min_volume: f64,
-    assets_to_pair: &HashMap<(String, String), AssetsToPair>,
+    assets_to_pair: &AssetsToPair,
     pair_to_spread: HashMap<String, Spread>,
     private_ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
     token: &str,

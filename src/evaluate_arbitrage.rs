@@ -17,7 +17,7 @@ const MAX_LATENCY: f64 = 0.100;
 
 pub async fn evaluate_arbitrage_opportunities(
     pair_to_assets: PairToAssets,
-    assets_to_pair: HashMap<(String, String), AssetsToPair>,
+    assets_to_pair: AssetsToPair,
     pair_to_spread: Arc<Mutex<HashMap<String, Spread>>>,
     fees: Arc<Mutex<HashMap<String, f64>>>,
     pair_status: Arc<Mutex<HashMap<String, bool>>>,
