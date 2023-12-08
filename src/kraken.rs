@@ -158,8 +158,7 @@ pub async fn update_volatility(
     let pairs: Vec<String> = pair_to_volatility.lock().unwrap().keys().cloned().collect();
     for ws in pairs {
         let rest = asset_name_converter.ws_to_rest(&ws).unwrap().clone();
-        let url =
-            format!("https://api.kraken.com/0/public/OHLC?pair={rest}&interval=1&since=1702012751");
+        let url = format!("https://api.kraken.com/0/public/OHLC?pair={rest}&interval=1");
 
         let resp = client.get(&url).send().await?;
         let ohlc_data: serde_json::Value = resp.json().await?;

@@ -170,7 +170,7 @@ async fn main() {
                             .await
                             .expect("Volatility pull failed");
                     }
-                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    tokio::time::sleep(Duration::from_secs(10)).await;
                 }
             })
         };
