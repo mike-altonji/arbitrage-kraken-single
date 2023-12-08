@@ -1,7 +1,7 @@
 use crate::graph_algorithms::bellman_ford_negative_cycle;
 use crate::kraken_private::execute_trade;
 use crate::structs::Edge;
-use crate::structs::{AssetsToPair, PairToAssets, Spread};
+use crate::structs::{AssetsToPair, BaseQuote, PairToAssets, Spread};
 use futures_util::SinkExt;
 use influx_db_client::{reqwest::Url, Client, Point, Precision, Value};
 use std::collections::HashMap;
@@ -16,7 +16,7 @@ const MAX_TRADES: usize = 4;
 const MAX_LATENCY: f64 = 0.100;
 
 pub async fn evaluate_arbitrage_opportunities(
-    pair_to_assets: HashMap<String, PairToAssets>,
+    pair_to_assets: PairToAssets,
     assets_to_pair: HashMap<(String, String), AssetsToPair>,
     pair_to_spread: Arc<Mutex<HashMap<String, Spread>>>,
     fees: Arc<Mutex<HashMap<String, f64>>>,
@@ -272,14 +272,12 @@ fn rotate_path(
     negative_cycle.push(*negative_cycle.first().unwrap()); // Add the first asset to the end of the path
 }
 
-fn generate_asset_to_index_map(
-    pair_to_assets: &HashMap<String, PairToAssets>,
-) -> HashMap<String, usize> {
+fn generate_asset_to_index_map(pair_to_assets: &PairToAssets) -> HashMap<String, usize> {
     let mut asset_to_index = HashMap::new();
     let mut index = 0;
     for (
         _,
-        PairToAssets {
+        BaseQuote {
             base: asset1,
             quote: asset2,
         },
@@ -299,7 +297,7 @@ fn generate_asset_to_index_map(
 
 fn prepare_graph(
     pair_to_spread: &HashMap<String, Spread>,
-    pair_to_assets: &HashMap<String, PairToAssets>,
+    pair_to_assets: &PairToAssets,
     asset_to_index: &HashMap<String, usize>,
     fees: &HashMap<String, f64>,
     pair_status: &HashMap<String, bool>,
@@ -322,7 +320,7 @@ fn prepare_graph(
         },
     ) in pair_to_spread
     {
-        if let Some(PairToAssets {
+        if let Some(BaseQuote {
             base: asset1,
             quote: asset2,
         }) = pair_to_assets.get(pair)
@@ -433,14 +431,14 @@ mod tests {
         let mut pair_to_assets = HashMap::new();
         pair_to_assets.insert(
             "pair1".to_string(),
-            PairToAssets {
+            BaseQuote {
                 base: "asset1".to_string(),
                 quote: "asset2".to_string(),
             },
         );
         pair_to_assets.insert(
             "pair2".to_string(),
-            PairToAssets {
+            BaseQuote {
                 base: "asset2".to_string(),
                 quote: "asset3".to_string(),
             },
@@ -489,14 +487,14 @@ mod tests {
         let mut pair_to_assets = HashMap::new();
         pair_to_assets.insert(
             "pair1".to_string(),
-            PairToAssets {
+            BaseQuote {
                 base: "asset1".to_string(),
                 quote: "asset2".to_string(),
             },
         );
         pair_to_assets.insert(
             "pair2".to_string(),
-            PairToAssets {
+            BaseQuote {
                 base: "asset2".to_string(),
                 quote: "asset3".to_string(),
             },

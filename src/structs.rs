@@ -1,8 +1,11 @@
+use std::collections::HashMap;
+
 #[derive(Clone)]
-pub struct PairToAssets {
+pub struct BaseQuote {
     pub base: String,
     pub quote: String,
 }
+pub type PairToAssets = HashMap<String, BaseQuote>;
 
 #[derive(Clone)]
 pub struct AssetsToPair {

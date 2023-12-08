@@ -1,5 +1,5 @@
 use crate::influx::setup_influx;
-use crate::structs::{AssetsToPair, PairToAssets, Spread};
+use crate::structs::{AssetsToPair, BaseQuote, PairToAssets, Spread};
 use crate::telegram::send_telegram_message;
 use core::sync::atomic::Ordering;
 use csv::ReaderBuilder;
@@ -19,7 +19,7 @@ pub async fn asset_pairs_to_pull(
     fname: &str,
 ) -> Result<
     (
-        HashMap<String, PairToAssets>,
+        PairToAssets,
         HashMap<(String, String), AssetsToPair>,
         HashMap<String, Vec<Vec<f64>>>,
     ),
@@ -47,7 +47,7 @@ pub async fn asset_pairs_to_pull(
     let mut pair_to_fee = HashMap::new();
 
     // Create the {pair: (base, quote)} HashMap
-    let mut pair_to_assets = HashMap::new();
+    let mut pair_to_assets = PairToAssets::new();
     let pairs = data_asset_pairs["result"].as_object().ok_or("No pairs")?;
     for (_pair, details) in pairs {
         let status = details["status"].as_str().unwrap_or("").to_string();
@@ -79,7 +79,7 @@ pub async fn asset_pairs_to_pull(
                 if input_asset_pairs.contains(&pair_ws) && status == "online" {
                     pair_to_assets.insert(
                         pair_ws.to_string(),
-                        PairToAssets {
+                        BaseQuote {
                             base: base_ws.to_string(),
                             quote: quote_ws.to_string(),
                         },
@@ -138,7 +138,7 @@ pub fn update_fees_based_on_volume(
 pub async fn fetch_spreads(
     all_pairs: HashSet<String>,
     pair_to_spread_vec: Vec<Arc<Mutex<HashMap<String, Spread>>>>,
-    pair_to_assets_vec: Vec<HashMap<String, PairToAssets>>,
+    pair_to_assets_vec: Vec<PairToAssets>,
     pair_status: Arc<Mutex<HashMap<String, bool>>>,
     public_online: Arc<Mutex<bool>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -214,7 +214,7 @@ async fn handle_message_text(
     public_online: &Arc<Mutex<bool>>,
     pair_status: &Arc<Mutex<HashMap<String, bool>>>,
     pair_to_spread_vec: &Vec<Arc<Mutex<HashMap<String, Spread>>>>,
-    pair_to_assets_vec: &Vec<HashMap<String, PairToAssets>>,
+    pair_to_assets_vec: &Vec<PairToAssets>,
     client: &Arc<Client>,
     retention_policy: &Arc<String>,
     batch_size: usize,
@@ -271,7 +271,7 @@ fn handle_event(
 async fn handle_array(
     array: &Vec<serde_json::Value>,
     pair_to_spread_vec: &Vec<Arc<Mutex<HashMap<String, Spread>>>>,
-    pair_to_assets_vec: &Vec<HashMap<String, PairToAssets>>,
+    pair_to_assets_vec: &Vec<PairToAssets>,
     client: &Arc<Client>,
     retention_policy: &Arc<String>,
     batch_size: usize,
