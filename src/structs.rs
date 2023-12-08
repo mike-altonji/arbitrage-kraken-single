@@ -23,6 +23,7 @@ pub struct Spread {
     pub bid_volume: f64,
     pub ask_volume: f64,
 }
+pub type PairToSpread = HashMap<String, Spread>;
 
 pub struct Edge {
     pub src: usize,

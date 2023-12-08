@@ -1,5 +1,5 @@
 use crate::influx::setup_influx;
-use crate::structs::{AssetsToPair, BaseQuote, BaseQuotePair, PairToAssets, Spread};
+use crate::structs::{AssetsToPair, BaseQuote, BaseQuotePair, PairToAssets, PairToSpread, Spread};
 use crate::telegram::send_telegram_message;
 use core::sync::atomic::Ordering;
 use csv::ReaderBuilder;
@@ -131,7 +131,7 @@ pub fn update_fees_based_on_volume(
 
 pub async fn fetch_spreads(
     all_pairs: HashSet<String>,
-    pair_to_spread_vec: Vec<Arc<Mutex<HashMap<String, Spread>>>>,
+    pair_to_spread_vec: Vec<Arc<Mutex<PairToSpread>>>,
     pair_to_assets_vec: Vec<PairToAssets>,
     pair_status: Arc<Mutex<HashMap<String, bool>>>,
     public_online: Arc<Mutex<bool>>,
@@ -207,7 +207,7 @@ async fn handle_message_text(
     text: &str,
     public_online: &Arc<Mutex<bool>>,
     pair_status: &Arc<Mutex<HashMap<String, bool>>>,
-    pair_to_spread_vec: &Vec<Arc<Mutex<HashMap<String, Spread>>>>,
+    pair_to_spread_vec: &Vec<Arc<Mutex<PairToSpread>>>,
     pair_to_assets_vec: &Vec<PairToAssets>,
     client: &Arc<Client>,
     retention_policy: &Arc<String>,
@@ -264,7 +264,7 @@ fn handle_event(
 
 async fn handle_array(
     array: &Vec<serde_json::Value>,
-    pair_to_spread_vec: &Vec<Arc<Mutex<HashMap<String, Spread>>>>,
+    pair_to_spread_vec: &Vec<Arc<Mutex<PairToSpread>>>,
     pair_to_assets_vec: &Vec<PairToAssets>,
     client: &Arc<Client>,
     retention_policy: &Arc<String>,
@@ -310,7 +310,7 @@ async fn handle_pair(
     kraken_ts: f64,
     bid_volume: f64,
     ask_volume: f64,
-    pair_to_spread: &Arc<Mutex<HashMap<String, Spread>>>,
+    pair_to_spread: &Arc<Mutex<PairToSpread>>,
     client: &Arc<Client>,
     retention_policy: &Arc<String>,
     batch_size: usize,

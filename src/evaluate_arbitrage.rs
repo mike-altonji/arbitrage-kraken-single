@@ -1,7 +1,7 @@
 use crate::graph_algorithms::bellman_ford_negative_cycle;
 use crate::kraken_private::execute_trade;
-use crate::structs::Edge;
 use crate::structs::{AssetsToPair, BaseQuote, PairToAssets, Spread};
+use crate::structs::{Edge, PairToSpread};
 use futures_util::SinkExt;
 use influx_db_client::{reqwest::Url, Client, Point, Precision, Value};
 use std::collections::HashMap;
@@ -18,7 +18,7 @@ const MAX_LATENCY: f64 = 0.100;
 pub async fn evaluate_arbitrage_opportunities(
     pair_to_assets: PairToAssets,
     assets_to_pair: AssetsToPair,
-    pair_to_spread: Arc<Mutex<HashMap<String, Spread>>>,
+    pair_to_spread: Arc<Mutex<PairToSpread>>,
     fees: Arc<Mutex<HashMap<String, f64>>>,
     pair_status: Arc<Mutex<HashMap<String, bool>>>,
     public_online: Arc<Mutex<bool>>,
@@ -296,7 +296,7 @@ fn generate_asset_to_index_map(pair_to_assets: &PairToAssets) -> HashMap<String,
 }
 
 fn prepare_graph(
-    pair_to_spread: &HashMap<String, Spread>,
+    pair_to_spread: &PairToSpread,
     pair_to_assets: &PairToAssets,
     asset_to_index: &HashMap<String, usize>,
     fees: &HashMap<String, f64>,
