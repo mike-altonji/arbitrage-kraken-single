@@ -1,5 +1,7 @@
 use crate::influx::setup_influx;
-use crate::structs::{AssetsToPair, BaseQuote, BaseQuotePair, PairToAssets, PairToSpread, Spread};
+use crate::structs::{
+    AssetNameConverter, AssetsToPair, BaseQuote, BaseQuotePair, PairToAssets, PairToSpread, Spread,
+};
 use crate::telegram::send_telegram_message;
 use core::sync::atomic::Ordering;
 use csv::ReaderBuilder;
@@ -41,9 +43,10 @@ pub async fn asset_pairs_to_pull(
     let mut pair_to_fee = HashMap::new();
 
     // Create the {pair: (base, quote)} HashMap
+    let mut asset_name_conversion = AssetNameConverter::new();
     let mut pair_to_assets = PairToAssets::new();
     let pairs = data_asset_pairs["result"].as_object().ok_or("No pairs")?;
-    for (_pair, details) in pairs {
+    for (pair, details) in pairs {
         let status = details["status"].as_str().unwrap_or("").to_string();
         let pair_ws = details["wsname"].as_str().unwrap_or("").to_string();
         let base = details["base"].as_str().unwrap_or("").to_string();
@@ -62,6 +65,9 @@ pub async fn asset_pairs_to_pull(
             .map(|res| res.map_err(|e| e.into())) // Map the error type
             .collect::<Result<Vec<Vec<f64>>, Box<dyn std::error::Error>>>()?;
         pair_to_fee.insert(pair_ws.clone(), fee_schedule);
+
+        // Update name conversion
+        asset_name_conversion.insert(pair_ws.clone(), pair.to_string());
 
         // Convert base/quote to ws_name format
         let base_ws = data_assets["result"][&base]["altname"].as_str();
