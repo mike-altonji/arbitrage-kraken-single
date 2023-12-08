@@ -1,3 +1,6 @@
+use crate::influx::setup_influx;
+use crate::structs::{AssetsToPair, PairToAssets, Spread};
+use crate::telegram::send_telegram_message;
 use core::sync::atomic::Ordering;
 use csv::ReaderBuilder;
 use futures_util::stream::{SplitSink, SplitStream};
@@ -11,31 +14,6 @@ use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-
-use crate::influx::setup_influx;
-use crate::telegram::send_telegram_message;
-
-#[derive(Clone)]
-pub struct PairToAssets {
-    pub base: String,
-    pub quote: String,
-}
-
-#[derive(Clone)]
-pub struct AssetsToPair {
-    pub base: String,
-    pub quote: String,
-    pub pair: String,
-}
-
-#[derive(Clone)]
-pub struct Spread {
-    pub bid: f64,
-    pub ask: f64,
-    pub kraken_ts: f64,
-    pub bid_volume: f64,
-    pub ask_volume: f64,
-}
 
 pub async fn asset_pairs_to_pull(
     fname: &str,

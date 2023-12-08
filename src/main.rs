@@ -14,6 +14,7 @@ mod graph_algorithms;
 mod influx;
 mod kraken;
 mod kraken_private;
+mod structs;
 mod telegram;
 mod trade;
 

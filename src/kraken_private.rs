@@ -12,7 +12,7 @@ use tokio::time::{timeout, Duration};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use crate::kraken::{AssetsToPair, Spread};
+use crate::structs::{AssetsToPair, Spread};
 
 const FIAT_BALANCE: f64 = 1000.0; // TODO: Replace with real number, kept up-to-date
 

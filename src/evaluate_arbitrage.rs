@@ -1,6 +1,7 @@
-use crate::graph_algorithms::{bellman_ford_negative_cycle, Edge};
-use crate::kraken::{AssetsToPair, PairToAssets, Spread};
+use crate::graph_algorithms::bellman_ford_negative_cycle;
 use crate::kraken_private::execute_trade;
+use crate::structs::Edge;
+use crate::structs::{AssetsToPair, PairToAssets, Spread};
 use futures_util::SinkExt;
 use influx_db_client::{reqwest::Url, Client, Point, Precision, Value};
 use std::collections::HashMap;

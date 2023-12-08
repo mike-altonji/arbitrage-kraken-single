@@ -1,4 +1,4 @@
-use crate::kraken::AssetsToPair;
+use crate::structs::AssetsToPair;
 use std::collections::{HashMap, HashSet};
 
 /// Rotate the cycle-path such that it starts at a `starter`.
