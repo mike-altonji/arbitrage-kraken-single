@@ -161,13 +161,14 @@ async fn main() {
                 .map(|key| (key.clone(), INFINITY))
                 .collect(),
         ));
+        let volatility_clone = volatility.clone();
         let volatility_handle = {
             let asset_name_conversion = all_asset_name_conversion.clone();
             tokio::spawn(async move {
                 loop {
                     {
-                        let volatility_clone = volatility.clone();
-                        update_volatility(volatility_clone, &asset_name_conversion)
+                        let volatility_clone2 = volatility.clone();
+                        update_volatility(volatility_clone2, &asset_name_conversion)
                             .await
                             .expect("Volatility pull failed");
                     }
@@ -201,6 +202,7 @@ async fn main() {
                 let public_online_clone = public_online.clone();
                 let token = token.clone();
                 let p90_latency_clone = p90_latency.clone();
+                let volatility_clone = volatility_clone.clone();
                 tokio::spawn(async move {
                     let _ = evaluate_arbitrage::evaluate_arbitrage_opportunities(
                         pair_to_assets_clone,
@@ -213,6 +215,7 @@ async fn main() {
                         allow_trades,
                         token.as_str(),
                         i as i64,
+                        volatility_clone,
                     )
                     .await;
                 })

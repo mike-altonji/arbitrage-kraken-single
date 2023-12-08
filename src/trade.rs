@@ -1,13 +1,13 @@
-use crate::structs::AssetsToPair;
-use std::collections::{HashMap, HashSet};
+use crate::structs::{AssetsToPair, PairToVolatility};
+use std::collections::HashSet;
 
 /// Rotate the cycle-path such that it starts at a `starter`.
 /// If multiple starters, do the higher-volatility trade first.
 /// If no starters, do nothing.
-pub fn rotate_trading_path(
+pub fn rotate_path(
     path: &mut Vec<String>,
     starters: &HashSet<String>,
-    asset_pair_volatility: &HashMap<String, f64>,
+    asset_pair_volatility: &PairToVolatility,
     assets_to_pair: &AssetsToPair,
 ) {
     path.pop(); // Pop the final asset, breaking the cycle
@@ -39,7 +39,7 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     #[test]
-    fn test_rotate_trading_path() {
+    fn test_rotate_path() {
         let starters = HashSet::from(["USD".to_string(), "EUR".to_string()]);
 
         let assets_to_pair = HashMap::from([
@@ -141,7 +141,7 @@ mod tests {
             "USD".to_string(),
         ];
 
-        rotate_trading_path(
+        rotate_path(
             &mut path1,
             &starters,
             &asset_pair_volatility,
@@ -150,7 +150,7 @@ mod tests {
 
         let mut path2 = vec!["BTC".to_string(), "DOGE".to_string(), "BTC".to_string()];
 
-        rotate_trading_path(
+        rotate_path(
             &mut path2,
             &starters,
             &asset_pair_volatility,
