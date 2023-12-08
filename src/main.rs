@@ -19,6 +19,7 @@ mod kraken_private;
 mod structs;
 mod telegram;
 mod trade;
+mod utils;
 
 use crate::kraken::update_fees_based_on_volume;
 use crate::kraken_private::get_30d_trade_volume;

@@ -4,6 +4,7 @@ use crate::structs::{
     PairToVolatility, Spread,
 };
 use crate::telegram::send_telegram_message;
+use crate::utils::compute_variance;
 use core::sync::atomic::Ordering;
 use csv::ReaderBuilder;
 use futures_util::stream::{SplitSink, SplitStream};
@@ -164,17 +165,19 @@ pub async fn update_volatility(
         let ohlc_data: serde_json::Value = resp.json().await?;
         let data = ohlc_data["result"][rest].as_array().unwrap();
 
-        // Calculate the variance over the prior 12 hours (1m interval * 720 points)
+        // Calculate the variance of the % change over the prior 12 hours (1m interval * 720 points)
         let mut values: Vec<f64> = data
             .iter()
             .map(|x| x[1].as_str().unwrap().parse::<f64>().unwrap())
             .collect();
-        let sum: f64 = values.iter().sum();
-        let mean = sum / (values.len() as f64);
-        values = values.iter().map(|&x| (x - mean).powi(2)).collect();
-        let variance: f64 = values.iter().sum::<f64>() / (values.len() as f64);
+        values = values.windows(2).map(|x| (x[1] - x[0]) / x[0]).collect();
+        let variance = compute_variance(values);
         let mut pair_to_volatility = pair_to_volatility.lock().unwrap();
-        pair_to_volatility.insert(ws.clone(), variance);
+        if variance.is_nan() {
+            pair_to_volatility.insert(ws.clone(), f64::INFINITY);
+        } else {
+            pair_to_volatility.insert(ws.clone(), variance);
+        }
     }
 
     Ok(())
