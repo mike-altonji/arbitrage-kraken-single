@@ -1,23 +1,24 @@
-use crate::graph_algorithms::{bellman_ford_negative_cycle, Edge};
-use crate::kraken::{AssetsToPair, PairToAssets, Spread};
+use crate::graph_algorithms::bellman_ford_negative_cycle;
 use crate::kraken_private::execute_trade;
+use crate::structs::{AssetsToPair, BaseQuote, PairToAssets, PairToVolatility, Spread};
+use crate::structs::{Edge, PairToSpread};
+use crate::trade::rotate_path;
 use futures_util::SinkExt;
 use influx_db_client::{reqwest::Url, Client, Point, Precision, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::time::{sleep, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-const TRADEABLE_ASSETS: [&str; 2] = ["USD", "EUR"]; // Cycle must contain one of these to execute a trade.
 const MIN_ROI: f64 = 1.0025;
 const MIN_PROFIT: f64 = 0.10;
 const MAX_TRADES: usize = 4;
 const MAX_LATENCY: f64 = 0.100;
 
 pub async fn evaluate_arbitrage_opportunities(
-    pair_to_assets: HashMap<String, PairToAssets>,
-    assets_to_pair: HashMap<(String, String), AssetsToPair>,
-    pair_to_spread: Arc<Mutex<HashMap<String, Spread>>>,
+    pair_to_assets: PairToAssets,
+    assets_to_pair: AssetsToPair,
+    pair_to_spread: Arc<Mutex<PairToSpread>>,
     fees: Arc<Mutex<HashMap<String, f64>>>,
     pair_status: Arc<Mutex<HashMap<String, bool>>>,
     public_online: Arc<Mutex<bool>>,
@@ -25,6 +26,7 @@ pub async fn evaluate_arbitrage_opportunities(
     allow_trades: bool,
     token: &str,
     graph_id: i64,
+    volatility: Arc<Mutex<PairToVolatility>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Set up InfluxDB client
     dotenv::dotenv().ok();
@@ -44,6 +46,8 @@ pub async fn evaluate_arbitrage_opportunities(
     );
     let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
     let p90_latency_value = p90_latency.lock().unwrap().clone();
+
+    let starters = HashSet::from(["USD".to_string(), "EUR".to_string()]);
 
     // Set up websocket connection to private Kraken endpoint if trading & subscribe to `ownTrades`
     let mut private_ws = None;
@@ -125,10 +129,8 @@ pub async fn evaluate_arbitrage_opportunities(
         counter += 1;
 
         // Arbitrage opportunity found
-        if let Some(mut path) = path {
-            rotate_path(&mut path, &asset_to_index, &Vec::from(TRADEABLE_ASSETS));
-            let (min_volume, end_volume, rates) = limiting_volume(&path, &rate_map, &volume_map);
-            let path_names: Vec<String> = path
+        if let Some(path) = path {
+            let mut path_names: Vec<String> = path
                 .iter()
                 .map(|&i| {
                     asset_to_index
@@ -139,6 +141,14 @@ pub async fn evaluate_arbitrage_opportunities(
                         .clone()
                 })
                 .collect();
+            rotate_path(
+                &mut path_names,
+                &starters,
+                &volatility.lock().unwrap().clone(),
+                &assets_to_pair,
+            );
+            let (min_volume, end_volume, rates) =
+                limiting_volume(&path_names, &rate_map, &volume_map);
 
             // Log and send message at most every 5 seconds
             let path_names_clone = path_names.clone();
@@ -171,7 +181,7 @@ pub async fn evaluate_arbitrage_opportunities(
 
             // Execute Trade, given conditions
             // TODO: Also only execute if have enough `FIAT_BALANCE`
-            if TRADEABLE_ASSETS.contains(&path_names_clone[0].as_str())
+            if starters.contains(path_names_clone[0].as_str())
                 && allow_trades
                 && path_names_clone.len() <= MAX_TRADES + 1
                 && end_volume / min_volume > MIN_ROI
@@ -198,20 +208,20 @@ pub async fn evaluate_arbitrage_opportunities(
 }
 
 fn limiting_volume(
-    path: &[usize],
-    rates: &HashMap<(usize, usize), f64>,
-    volumes: &HashMap<(usize, usize), f64>,
+    path: &[String],
+    rates: &HashMap<(String, String), f64>,
+    volumes: &HashMap<(String, String), f64>,
 ) -> (f64, f64, Vec<f64>) {
     let mut min_volume = std::f64::MAX;
     let mut ending_volume = 1.;
     let mut rate_vec = Vec::new();
 
     for i in 0..path.len() - 1 {
-        let asset1 = path[i];
-        let asset2 = path[i + 1];
+        let asset1 = &path[i];
+        let asset2 = &path[i + 1];
 
         // Find the volume for the current asset pair, in terms of the 1st asset
-        let rate = match rates.get(&(asset1, asset2)) {
+        let rate = match rates.get(&(asset1.clone(), asset2.clone())) {
             Some(rate) => rate,
             None => {
                 let msg = format!(
@@ -222,7 +232,7 @@ fn limiting_volume(
                 panic!("{}", msg);
             }
         };
-        let volume2 = match volumes.get(&(asset1, asset2)) {
+        let volume2 = match volumes.get(&(asset1.clone(), asset2.clone())) {
             Some(volume) => volume,
             None => {
                 let msg = format!(
@@ -247,38 +257,12 @@ fn limiting_volume(
     (min_volume, ending_volume, rate_vec)
 }
 
-fn rotate_path(
-    negative_cycle: &mut Vec<usize>,
-    asset_to_index: &HashMap<String, usize>,
-    prioritized_assets: &Vec<&str>,
-) {
-    negative_cycle.pop(); // Remove the last element in the path
-                          // Rotate the path until one of the `prioritized_assets` is first
-    for asset in prioritized_assets {
-        if let Some(asset_index) = negative_cycle.iter().position(|&i| {
-            asset_to_index
-                .iter()
-                .find(|&(_, &v)| v == i)
-                .unwrap()
-                .0
-                .as_str()
-                == *asset
-        }) {
-            negative_cycle.rotate_left(asset_index);
-            break;
-        }
-    }
-    negative_cycle.push(*negative_cycle.first().unwrap()); // Add the first asset to the end of the path
-}
-
-fn generate_asset_to_index_map(
-    pair_to_assets: &HashMap<String, PairToAssets>,
-) -> HashMap<String, usize> {
+fn generate_asset_to_index_map(pair_to_assets: &PairToAssets) -> HashMap<String, usize> {
     let mut asset_to_index = HashMap::new();
     let mut index = 0;
     for (
         _,
-        PairToAssets {
+        BaseQuote {
             base: asset1,
             quote: asset2,
         },
@@ -297,15 +281,15 @@ fn generate_asset_to_index_map(
 }
 
 fn prepare_graph(
-    pair_to_spread: &HashMap<String, Spread>,
-    pair_to_assets: &HashMap<String, PairToAssets>,
+    pair_to_spread: &PairToSpread,
+    pair_to_assets: &PairToAssets,
     asset_to_index: &HashMap<String, usize>,
     fees: &HashMap<String, f64>,
     pair_status: &HashMap<String, bool>,
 ) -> (
     Vec<Edge>,
-    HashMap<(usize, usize), f64>,
-    HashMap<(usize, usize), f64>,
+    HashMap<(String, String), f64>,
+    HashMap<(String, String), f64>,
 ) {
     let mut exchange_rates = vec![];
     let mut rates_map = HashMap::new();
@@ -321,7 +305,7 @@ fn prepare_graph(
         },
     ) in pair_to_spread
     {
-        if let Some(PairToAssets {
+        if let Some(BaseQuote {
             base: asset1,
             quote: asset2,
         }) = pair_to_assets.get(pair)
@@ -346,10 +330,10 @@ fn prepare_graph(
                         dest: index1,
                         weight: -(ask_rate).ln(),
                     });
-                    rates_map.insert((index1, index2), bid_rate);
-                    rates_map.insert((index2, index1), ask_rate);
-                    volumes_map.insert((index1, index2), bid_volume * bid);
-                    volumes_map.insert((index2, index1), *ask_volume);
+                    rates_map.insert((asset1.clone(), asset2.clone()), bid_rate);
+                    rates_map.insert((asset2.clone(), asset1.clone()), ask_rate);
+                    volumes_map.insert((asset1.clone(), asset2.clone()), bid_volume * bid);
+                    volumes_map.insert((asset2.clone(), asset1.clone()), *ask_volume);
                 }
             }
         }
@@ -432,14 +416,14 @@ mod tests {
         let mut pair_to_assets = HashMap::new();
         pair_to_assets.insert(
             "pair1".to_string(),
-            PairToAssets {
+            BaseQuote {
                 base: "asset1".to_string(),
                 quote: "asset2".to_string(),
             },
         );
         pair_to_assets.insert(
             "pair2".to_string(),
-            PairToAssets {
+            BaseQuote {
                 base: "asset2".to_string(),
                 quote: "asset3".to_string(),
             },
@@ -488,14 +472,14 @@ mod tests {
         let mut pair_to_assets = HashMap::new();
         pair_to_assets.insert(
             "pair1".to_string(),
-            PairToAssets {
+            BaseQuote {
                 base: "asset1".to_string(),
                 quote: "asset2".to_string(),
             },
         );
         pair_to_assets.insert(
             "pair2".to_string(),
-            PairToAssets {
+            BaseQuote {
                 base: "asset2".to_string(),
                 quote: "asset3".to_string(),
             },
@@ -535,37 +519,23 @@ mod tests {
 
     #[test]
     fn test_minimum_volume_for_each_asset() {
-        let path = vec![0, 1, 2, 0];
+        let path = vec![
+            "ABC".to_string(),
+            "DEF".to_string(),
+            "GEH".to_string(),
+            "ABC".to_string(),
+        ];
         let mut rates = HashMap::new();
-        rates.insert((0, 1), 0.5);
-        rates.insert((1, 2), 2.0);
-        rates.insert((2, 0), 2.0);
+        rates.insert(("ABC".to_string(), "DEF".to_string()), 0.5);
+        rates.insert(("DEF".to_string(), "GEH".to_string()), 2.0);
+        rates.insert(("GEH".to_string(), "ABC".to_string()), 2.0);
         let mut volumes = HashMap::new();
-        volumes.insert((0, 1), 3.0);
-        volumes.insert((1, 2), 1.0);
-        volumes.insert((2, 0), 4.0);
+        volumes.insert(("ABC".to_string(), "DEF".to_string()), 3.0);
+        volumes.insert(("DEF".to_string(), "GEH".to_string()), 1.0);
+        volumes.insert(("GEH".to_string(), "ABC".to_string()), 4.0);
 
         let (min_volume, ending_volume, _) = limiting_volume(&path, &rates, &volumes);
         assert_eq!(min_volume, 2.0); // Expected minimum volume is 1.0
         assert_eq!(ending_volume, 4.0); // Putting in $2 yields $4
-    }
-
-    #[test]
-    fn test_rotate_path() {
-        let mut negative_cycle = vec![0, 1, 2, 3, 4, 0];
-        let mut asset_to_index = HashMap::new();
-        asset_to_index.insert("asset0".to_string(), 0);
-        asset_to_index.insert("asset1".to_string(), 1);
-        asset_to_index.insert("asset2".to_string(), 2);
-        asset_to_index.insert("asset3".to_string(), 3);
-        asset_to_index.insert("asset4".to_string(), 4);
-
-        rotate_path(
-            &mut negative_cycle,
-            &asset_to_index,
-            &vec!["asset999", "asset2"],
-        );
-
-        assert_eq!(negative_cycle, vec![2, 3, 4, 0, 1, 2]);
     }
 }

@@ -1,5 +1,6 @@
 use dotenv::dotenv;
 use futures::future::select_all;
+use kraken::update_volatility;
 use kraken_private::get_auth_token;
 use log4rs::{append::file::FileAppender, config};
 use std::collections::{HashMap, HashSet};
@@ -7,6 +8,7 @@ use std::env;
 use std::f64::INFINITY;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use structs::{AssetNameConverter, PairToVolatility};
 use tokio::time::sleep;
 
 mod evaluate_arbitrage;
@@ -14,7 +16,10 @@ mod graph_algorithms;
 mod influx;
 mod kraken;
 mod kraken_private;
+mod structs;
 mod telegram;
+mod trade;
+mod utils;
 
 use crate::kraken::update_fees_based_on_volume;
 use crate::kraken_private::get_30d_trade_volume;
@@ -72,9 +77,10 @@ async fn main() {
         let public_online = Arc::new(Mutex::new(false));
         let p90_latency = Arc::new(Mutex::new(INFINITY));
         let mut all_fee_schedules = HashMap::new();
+        let mut all_asset_name_conversion = AssetNameConverter::new();
 
         for csv_file in csv_files {
-            let (pair_to_assets, assets_to_pair, fee_schedules) =
+            let (pair_to_assets, assets_to_pair, asset_name_conversion, fee_schedules) =
                 kraken::asset_pairs_to_pull(&csv_file)
                     .await
                     .expect("Failed to get asset pairs");
@@ -84,6 +90,9 @@ async fn main() {
             pair_to_spread_vec.push(pair_to_spread);
             for (key, value) in fee_schedules {
                 all_fee_schedules.insert(key, value);
+            }
+            for (ws, rest) in asset_name_conversion {
+                all_asset_name_conversion.insert(ws, rest);
             }
         }
 
@@ -130,7 +139,7 @@ async fn main() {
                     let vol = match get_30d_trade_volume().await {
                         Ok(volume) => volume,
                         Err(_) => {
-                            log::error!("Error: Defaulting volume to 0.0");
+                            log::warn!("Unable to fetch 30 day trading volume: Defaulting to 0.");
                             0.0
                         }
                     };
@@ -140,6 +149,30 @@ async fn main() {
                         update_fees_based_on_volume(&mut *fees, &schedules_clone, vol);
                     }
                     sleep(Duration::from_secs(10)).await;
+                }
+            })
+        };
+
+        // Task dedicated to keeping volatility up to date
+        let volatility: Arc<Mutex<PairToVolatility>> = Arc::new(Mutex::new(
+            all_asset_name_conversion
+                .ws_to_rest_map
+                .keys()
+                .map(|key| (key.clone(), INFINITY))
+                .collect(),
+        ));
+        let volatility_clone = volatility.clone();
+        let volatility_handle = {
+            let asset_name_conversion = all_asset_name_conversion.clone();
+            tokio::spawn(async move {
+                loop {
+                    {
+                        let volatility_clone2 = volatility.clone();
+                        update_volatility(volatility_clone2, &asset_name_conversion)
+                            .await
+                            .expect("Volatility pull failed");
+                    }
+                    tokio::time::sleep(Duration::from_secs(10)).await;
                 }
             })
         };
@@ -169,6 +202,7 @@ async fn main() {
                 let public_online_clone = public_online.clone();
                 let token = token.clone();
                 let p90_latency_clone = p90_latency.clone();
+                let volatility_clone = volatility_clone.clone();
                 tokio::spawn(async move {
                     let _ = evaluate_arbitrage::evaluate_arbitrage_opportunities(
                         pair_to_assets_clone,
@@ -181,6 +215,7 @@ async fn main() {
                         allow_trades,
                         token.as_str(),
                         i as i64,
+                        volatility_clone,
                     )
                     .await;
                 })
@@ -188,28 +223,28 @@ async fn main() {
             evaluate_handles.push(evaluate_handle);
         }
 
-        // Wait for both tasks to complete (this will likely never happen given the current logic)
+        // Wait for all tasks to complete. Only happens on failure, since infinite loops
         let mut all_handles = vec![Box::pin(fetch_handle)];
         all_handles.push(Box::pin(fees_handle));
+        all_handles.push(Box::pin(volatility_handle));
         all_handles.push(Box::pin(latency_handle));
         for handle in evaluate_handles {
             all_handles.push(Box::pin(handle));
         }
 
         let (result, _index, remaining) = select_all(all_handles).await;
-
-        // Abort tasks upon failure or completion
-        for (_i, handle) in remaining.into_iter().enumerate() {
-            handle.abort();
-        }
-
         match result {
             Ok(_) => send_telegram_message("Code died: Waiting 10 seconds, then restarting.").await,
-            Err(e) => {
-                let error_message = format!("A task failed with error: {:?}", e);
-                log::info!("{}", error_message);
-                send_telegram_message(&error_message).await;
+            Err(_e) => {
+                let message = format!("Join error - Retry # {retry}");
+                log::error!("{}", message);
+                send_telegram_message(&message).await;
             }
+        }
+
+        // Abort tasks upon failure or completion before restarting
+        for (_i, handle) in remaining.into_iter().enumerate() {
+            handle.abort();
         }
     }
     send_telegram_message("Too many retries: Exiting the program.").await;

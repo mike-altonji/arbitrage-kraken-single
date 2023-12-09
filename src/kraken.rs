@@ -1,48 +1,33 @@
+use crate::influx::setup_influx;
+use crate::structs::{
+    AssetNameConverter, AssetsToPair, BaseQuote, BaseQuotePair, PairToAssets, PairToSpread,
+    PairToVolatility, Spread,
+};
+use crate::telegram::send_telegram_message;
+use crate::utils::compute_variance;
 use core::sync::atomic::Ordering;
 use csv::ReaderBuilder;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use influx_db_client::{Client, Point, Precision, Value};
 use reqwest;
+use reqwest::Error;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::sync::{atomic::AtomicUsize, Arc, Mutex};
 use std::time::Duration;
 use tokio::net::TcpStream;
+use tokio_tungstenite::tungstenite::error::ProtocolError;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-
-use crate::influx::setup_influx;
-use crate::telegram::send_telegram_message;
-
-#[derive(Clone)]
-pub struct PairToAssets {
-    pub base: String,
-    pub quote: String,
-}
-
-#[derive(Clone)]
-pub struct AssetsToPair {
-    pub base: String,
-    pub quote: String,
-    pub pair: String,
-}
-
-#[derive(Clone)]
-pub struct Spread {
-    pub bid: f64,
-    pub ask: f64,
-    pub kraken_ts: f64,
-    pub bid_volume: f64,
-    pub ask_volume: f64,
-}
+use tokio_tungstenite::{tungstenite::Error::Protocol, MaybeTlsStream, WebSocketStream};
 
 pub async fn asset_pairs_to_pull(
     fname: &str,
 ) -> Result<
     (
-        HashMap<String, PairToAssets>,
-        HashMap<(String, String), AssetsToPair>,
+        PairToAssets,
+        AssetsToPair,
+        AssetNameConverter,
         HashMap<String, Vec<Vec<f64>>>,
     ),
     Box<dyn std::error::Error>,
@@ -69,9 +54,10 @@ pub async fn asset_pairs_to_pull(
     let mut pair_to_fee = HashMap::new();
 
     // Create the {pair: (base, quote)} HashMap
-    let mut pair_to_assets = HashMap::new();
+    let mut asset_name_conversion = AssetNameConverter::new();
+    let mut pair_to_assets = PairToAssets::new();
     let pairs = data_asset_pairs["result"].as_object().ok_or("No pairs")?;
-    for (_pair, details) in pairs {
+    for (pair, details) in pairs {
         let status = details["status"].as_str().unwrap_or("").to_string();
         let pair_ws = details["wsname"].as_str().unwrap_or("").to_string();
         let base = details["base"].as_str().unwrap_or("").to_string();
@@ -91,6 +77,9 @@ pub async fn asset_pairs_to_pull(
             .collect::<Result<Vec<Vec<f64>>, Box<dyn std::error::Error>>>()?;
         pair_to_fee.insert(pair_ws.clone(), fee_schedule);
 
+        // Update name conversion
+        asset_name_conversion.insert(pair_ws.clone(), pair.to_string());
+
         // Convert base/quote to ws_name format
         let base_ws = data_assets["result"][&base]["altname"].as_str();
         let quote_ws = data_assets["result"][&quote]["altname"].as_str();
@@ -101,7 +90,7 @@ pub async fn asset_pairs_to_pull(
                 if input_asset_pairs.contains(&pair_ws) && status == "online" {
                     pair_to_assets.insert(
                         pair_ws.to_string(),
-                        PairToAssets {
+                        BaseQuote {
                             base: base_ws.to_string(),
                             quote: quote_ws.to_string(),
                         },
@@ -121,7 +110,7 @@ pub async fn asset_pairs_to_pull(
         let quote = assets.quote;
         assets_to_pair.insert(
             (base.clone(), quote.clone()),
-            AssetsToPair {
+            BaseQuotePair {
                 base: base.clone(),
                 quote: quote.clone(),
                 pair: pair.clone(),
@@ -129,7 +118,7 @@ pub async fn asset_pairs_to_pull(
         );
         assets_to_pair.insert(
             (quote.clone(), base.clone()),
-            AssetsToPair {
+            BaseQuotePair {
                 base: base.clone(),
                 quote: quote.clone(),
                 pair: pair.clone(),
@@ -137,7 +126,12 @@ pub async fn asset_pairs_to_pull(
         );
     }
 
-    Ok((pair_to_assets, assets_to_pair, pair_to_fee))
+    Ok((
+        pair_to_assets,
+        assets_to_pair,
+        asset_name_conversion,
+        pair_to_fee,
+    ))
 }
 
 pub fn update_fees_based_on_volume(
@@ -157,10 +151,56 @@ pub fn update_fees_based_on_volume(
     }
 }
 
+pub async fn update_volatility(
+    pair_to_volatility: Arc<Mutex<PairToVolatility>>,
+    asset_name_converter: &AssetNameConverter,
+) -> Result<(), Error> {
+    let client = reqwest::Client::new();
+    let pairs: Vec<String> = pair_to_volatility.lock().unwrap().keys().cloned().collect();
+    for ws in pairs {
+        let rest = asset_name_converter.ws_to_rest(&ws).unwrap().clone();
+        let url = format!("https://api.kraken.com/0/public/OHLC?pair={rest}&interval=1");
+        let resp = match client.get(&url).send().await {
+            Ok(response) => response,
+            Err(e) => {
+                log::warn!("Failed to retrieve OHLC response from {}: {}", url, e);
+                continue;
+            }
+        };
+        let ohlc_data: serde_json::Value = match resp.json().await {
+            Ok(data) => data,
+            Err(e) => {
+                log::warn!("Failed to parse OHLC response from {}: {}", url, e);
+                continue;
+            }
+        };
+        if let Some(data) = ohlc_data["result"][&rest].as_array() {
+            // Calculate the variance of the % change over the prior 12 hours (1m interval * 720 points)
+            let mut values: Vec<f64> = data
+                .iter()
+                .map(|x| x[1].as_str().unwrap().parse::<f64>().unwrap())
+                .collect();
+            values = values.windows(2).map(|x| (x[1] - x[0]) / x[0]).collect();
+            let variance = compute_variance(values);
+            let mut pair_to_volatility = pair_to_volatility.lock().unwrap();
+            if variance.is_nan() {
+                pair_to_volatility.insert(ws.clone(), f64::INFINITY);
+            } else {
+                pair_to_volatility.insert(ws.clone(), variance);
+            }
+        } else {
+            log::warn!("No OHLC data for {}", rest.clone());
+            continue;
+        }
+    }
+
+    Ok(())
+}
+
 pub async fn fetch_spreads(
     all_pairs: HashSet<String>,
-    pair_to_spread_vec: Vec<Arc<Mutex<HashMap<String, Spread>>>>,
-    pair_to_assets_vec: Vec<HashMap<String, PairToAssets>>,
+    pair_to_spread_vec: Vec<Arc<Mutex<PairToSpread>>>,
+    pair_to_assets_vec: Vec<PairToAssets>,
     pair_status: Arc<Mutex<HashMap<String, bool>>>,
     public_online: Arc<Mutex<bool>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -186,15 +226,25 @@ pub async fn fetch_spreads(
                 }
                 Ok(_) => {
                     let msg = "Websocket connection closed or stopped sending data";
-                    log::error!("{}", msg);
+                    log::warn!("{}", msg);
                     send_telegram_message(msg).await;
                     tokio::time::sleep(SLEEP_DURATION).await;
                     continue;
                 }
                 Err(e) => {
-                    let msg = format!("Error during websocket communication: {:?}", e);
-                    log::error!("{}", msg);
-                    send_telegram_message(&msg).await;
+                    match e {
+                        Protocol(ProtocolError::ResetWithoutClosingHandshake) => {
+                            log::warn!(
+                                "Exchange server closed connection without a closing handshake. {:?}",
+                                e
+                            );
+                        }
+                        _ => {
+                            let msg = format!("Error during websocket communication: {:?}", e);
+                            log::error!("{}", msg);
+                            send_telegram_message(&msg).await;
+                        }
+                    }
                     tokio::time::sleep(SLEEP_DURATION).await;
                     continue;
                 }
@@ -235,8 +285,8 @@ async fn handle_message_text(
     text: &str,
     public_online: &Arc<Mutex<bool>>,
     pair_status: &Arc<Mutex<HashMap<String, bool>>>,
-    pair_to_spread_vec: &Vec<Arc<Mutex<HashMap<String, Spread>>>>,
-    pair_to_assets_vec: &Vec<HashMap<String, PairToAssets>>,
+    pair_to_spread_vec: &Vec<Arc<Mutex<PairToSpread>>>,
+    pair_to_assets_vec: &Vec<PairToAssets>,
     client: &Arc<Client>,
     retention_policy: &Arc<String>,
     batch_size: usize,
@@ -271,7 +321,7 @@ fn handle_event(
             let status = data["status"].as_str().unwrap_or("") == "online";
             match public_online.lock() {
                 Ok(mut public_online_lock) => *public_online_lock = status,
-                Err(e) => log::error!("Failed to acquire lock: {:?}", e),
+                Err(e) => log::error!("Failed to acquire public_online lock: {:?}", e),
             }
         }
         "subscriptionStatus" => {
@@ -282,7 +332,7 @@ fn handle_event(
                     pair_status_lock.insert(pair, status);
                 }
                 Err(e) => {
-                    log::error!("Failed to acquire lock: {:?}", e);
+                    log::error!("Failed to acquire pair_status lock: {:?}", e);
                 }
             };
         }
@@ -292,8 +342,8 @@ fn handle_event(
 
 async fn handle_array(
     array: &Vec<serde_json::Value>,
-    pair_to_spread_vec: &Vec<Arc<Mutex<HashMap<String, Spread>>>>,
-    pair_to_assets_vec: &Vec<HashMap<String, PairToAssets>>,
+    pair_to_spread_vec: &Vec<Arc<Mutex<PairToSpread>>>,
+    pair_to_assets_vec: &Vec<PairToAssets>,
     client: &Arc<Client>,
     retention_policy: &Arc<String>,
     batch_size: usize,
@@ -338,7 +388,7 @@ async fn handle_pair(
     kraken_ts: f64,
     bid_volume: f64,
     ask_volume: f64,
-    pair_to_spread: &Arc<Mutex<HashMap<String, Spread>>>,
+    pair_to_spread: &Arc<Mutex<PairToSpread>>,
     client: &Arc<Client>,
     retention_policy: &Arc<String>,
     batch_size: usize,
@@ -427,7 +477,7 @@ mod tests {
             .unwrap()
             .block_on(asset_pairs_to_pull("resources/asset_pairs_a1.csv"));
         assert!(result.is_ok());
-        let (pair_to_assets, assets_to_pair, pair_to_fee) = result.unwrap();
+        let (pair_to_assets, assets_to_pair, _asset_name_conversion, pair_to_fee) = result.unwrap();
         assert!(pair_to_assets.contains_key("EUR/USD"));
         assert_eq!(pair_to_assets["EUR/USD"].base, "EUR");
         assert_eq!(pair_to_assets["EUR/USD"].quote, "USD");

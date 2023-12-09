@@ -12,7 +12,7 @@ use tokio::time::{timeout, Duration};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use crate::kraken::{AssetsToPair, Spread};
+use crate::structs::{AssetsToPair, PairToSpread};
 
 const FIAT_BALANCE: f64 = 1000.0; // TODO: Replace with real number, kept up-to-date
 
@@ -112,8 +112,8 @@ pub async fn get_30d_trade_volume() -> Result<f64, Box<dyn std::error::Error>> {
 pub async fn execute_trade(
     path_names: Vec<String>,
     min_volume: f64,
-    assets_to_pair: &HashMap<(String, String), AssetsToPair>,
-    pair_to_spread: HashMap<String, Spread>,
+    assets_to_pair: &AssetsToPair,
+    pair_to_spread: PairToSpread,
     private_ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
     token: &str,
     fees: &HashMap<String, f64>,
@@ -150,7 +150,7 @@ fn determine_trade_info(
     pair: &String,
     volume: f64,
     fee_pct: f64,
-    pair_to_spread: &HashMap<String, Spread>,
+    pair_to_spread: &PairToSpread,
 ) -> Result<(String, f64), Box<dyn std::error::Error>> {
     let trade_type;
     let new_volume = if asset1 == base {

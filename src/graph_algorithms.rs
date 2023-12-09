@@ -1,13 +1,7 @@
-const INF: f64 = std::f64::INFINITY;
-
-pub struct Edge {
-    pub src: usize,
-    pub dest: usize,
-    pub weight: f64,
-}
+use crate::structs::Edge;
 
 pub fn bellman_ford_negative_cycle(n: usize, edges: &[Edge], source: usize) -> Option<Vec<usize>> {
-    let mut dist = vec![INF; n];
+    let mut dist = vec![std::f64::INFINITY; n];
     let mut pred = vec![None; n];
     dist[source] = 0.0;
 
