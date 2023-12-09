@@ -4,10 +4,14 @@ USD and EUR are considered separately, avoiding unit conversions.
 In Influx, will OVERWRITE the prior 3 days of values per hour, by design. 
 Allows for overwriting `max` values for arbitrage opportunities spanning multiple hours.
 In InfluxQL, can create a cumulative chart as well.
+
+Need both clients because:
+- DataFrameClient doesn't allow us to properly infer the format of our timestamps
+- InfluxDBClient requires a lot of boilerplate to write points from a df
 """
 
 from dotenv import load_dotenv
-from influxdb import DataFrameClient
+from influxdb import InfluxDBClient, DataFrameClient
 import os
 import pandas as pd
 
@@ -28,8 +32,10 @@ MIN_TIME_SINCE_LAST_ARBITRAGE = "1H"
 
 # Connect to InfluxDB
 try:
-    client = DataFrameClient("localhost", 8086, DB_USER, DB_PASSWORD, DB_NAME)
+    client = InfluxDBClient("localhost", 8086, DB_USER, DB_PASSWORD, DB_NAME)
+    client_df = DataFrameClient("localhost", 8086, DB_USER, DB_PASSWORD, DB_NAME)
     client.ping()
+    client_df.ping()
     print("Client successfully created and connected to the server.")
 except Exception as e:
     print("Failed to create client or connect to the server.")
@@ -44,8 +50,8 @@ WHERE
     AND (volume_units = 'USD' OR volume_units = 'EUR')
 """
 try:
-    df = client.query(query=query)
-    df = df[INPUT_TABLE]
+    result = client.query(query=query)
+    df = pd.DataFrame(result.get_points())
     if not isinstance(df, pd.DataFrame):
         raise ValueError(f"The fetched data is not a DataFrame: {type(df)}")
 except Exception as e:
@@ -53,8 +59,6 @@ except Exception as e:
     print("Error: ", e)
 
 # Compute winnings
-df.reset_index(drop=False, inplace=True)
-df.rename(columns={"index": "timestamp"}, inplace=True)
 df["winnings"] = df["ending_volume"] - df["limiting_volume"]
 df["roi"] = df["ending_volume"] / df["limiting_volume"] - 1
 
@@ -66,8 +70,9 @@ def limit_winnings_by_available_cash(row, limiter):
     return row
 
 def calculate_time_diff(df):
-    df = df.sort_values(by=["timestamp"])  # Ensure the data is sorted by time
-    df['time_diff'] = df["timestamp"].diff()  # Calculate the time difference between rows
+    df['time'] = pd.to_datetime(df['time'], format="ISO8601")
+    df = df.sort_values(by=["time"])  # Ensure the data is sorted by time
+    df['time_diff'] = df["time"].diff()  # Calculate the time difference between rows
     df['group'] = (df['time_diff'] > pd.Timedelta(MIN_TIME_SINCE_LAST_ARBITRAGE)).cumsum()
     return df
 
@@ -87,13 +92,13 @@ for starter in STARTER_LIST:
                 df_high_roi = df_high_roi[df_high_roi["limiting_volume"] > min_vol]  # Do after calculating time diff
 
                 # Grab the first, max winnings per opportunity group
-                df_first = df_high_roi.groupby(['group', 'path']).first()[['winnings', 'timestamp']]
+                df_first = df_high_roi.groupby(['group', 'path']).first()[['winnings', 'time']]
                 idx_max = df_high_roi.groupby(['group', 'path'])['winnings'].idxmax()
-                df_max = df_high_roi.loc[idx_max, ['winnings', 'timestamp']]
+                df_max = df_high_roi.loc[idx_max, ['winnings', 'time']]
 
                 # Resample the data to hourly intervals and sum the winnings
-                df_first.set_index('timestamp', inplace=True)
-                df_max.set_index('timestamp', inplace=True)
+                df_first.set_index('time', inplace=True)
+                df_max.set_index('time', inplace=True)
                 df_first_hourly = df_first.resample('H').sum()
                 df_max_hourly = df_max.resample('H').sum()
 
@@ -108,6 +113,7 @@ for starter in STARTER_LIST:
                 df_hourly_winnings["min_roi"] = min_roi
 
                 # Write these results to InfluxDB
-                client.write_points(df_hourly_winnings, OUTPUT_TABLE, tag_columns=["starter", "min_volume", "available_cash", "min_roi"])
+                client_df.write_points(df_hourly_winnings, OUTPUT_TABLE, tag_columns=["starter", "min_volume", "available_cash", "min_roi"])
 
 client.close()
+client_df.close()
