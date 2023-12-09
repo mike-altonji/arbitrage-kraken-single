@@ -51,7 +51,7 @@ pub async fn spread_latency_from_influx(
     }
 
     if latency_value.is_infinite() {
-        log::error!("Couldn't find a recent latency value: Setting to inf.");
+        log::warn!("Couldn't find a recent latency value: Setting to inf.");
     }
 
     Ok(())
