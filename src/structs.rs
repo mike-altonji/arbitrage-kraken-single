@@ -61,7 +61,7 @@ impl AssetNameConverter {
     }
 
     // Find ws by rest
-    pub fn rest_to_ws(&self, rest: &str) -> Option<&String> {
+    pub fn _rest_to_ws(&self, rest: &str) -> Option<&String> {
         self.rest_to_ws_map.get(rest)
     }
 }
