@@ -160,8 +160,20 @@ pub async fn update_volatility(
     for ws in pairs {
         let rest = asset_name_converter.ws_to_rest(&ws).unwrap().clone();
         let url = format!("https://api.kraken.com/0/public/OHLC?pair={rest}&interval=1");
-        let resp = client.get(&url).send().await?;
-        let ohlc_data: serde_json::Value = resp.json().await?;
+        let resp = match client.get(&url).send().await {
+            Ok(response) => response,
+            Err(e) => {
+                log::warn!("Failed to retrieve response from {}: {}", url, e);
+                continue;
+            }
+        };
+        let ohlc_data: serde_json::Value = match resp.json().await {
+            Ok(data) => data,
+            Err(e) => {
+                log::warn!("Failed to parse response from {}: {}", url, e);
+                continue;
+            }
+        };
         if let Some(data) = ohlc_data["result"][&rest].as_array() {
             // Calculate the variance of the % change over the prior 12 hours (1m interval * 720 points)
             let mut values: Vec<f64> = data
