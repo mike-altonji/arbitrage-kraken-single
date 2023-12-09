@@ -17,8 +17,9 @@ use std::fs::File;
 use std::sync::{atomic::AtomicUsize, Arc, Mutex};
 use std::time::Duration;
 use tokio::net::TcpStream;
+use tokio_tungstenite::tungstenite::error::ProtocolError;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{tungstenite::Error::Protocol, MaybeTlsStream, WebSocketStream};
 
 pub async fn asset_pairs_to_pull(
     fname: &str,
@@ -218,9 +219,19 @@ pub async fn fetch_spreads(
                     continue;
                 }
                 Err(e) => {
-                    let msg = format!("Error during websocket communication: {:?}", e);
-                    log::error!("{}", msg);
-                    send_telegram_message(&msg).await;
+                    match e {
+                        Protocol(ProtocolError::ResetWithoutClosingHandshake) => {
+                            log::warn!(
+                                "Exchange server closed connection without a closing handshake. {:?}",
+                                e
+                            );
+                        }
+                        _ => {
+                            let msg = format!("Error during websocket communication: {:?}", e);
+                            log::error!("{}", msg);
+                            send_telegram_message(&msg).await;
+                        }
+                    }
                     tokio::time::sleep(SLEEP_DURATION).await;
                     continue;
                 }
