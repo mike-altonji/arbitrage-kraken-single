@@ -47,7 +47,7 @@ pub async fn spread_latency_from_influx(
 
     match p90_latency.lock() {
         Ok(mut p90_latency_lock) => *p90_latency_lock = latency_value,
-        Err(e) => log::error!("Failed to acquire lock: {:?}", e),
+        Err(e) => log::error!("Failed to acquire p90 latency lock: {:?}", e),
     }
 
     if latency_value.is_infinite() {

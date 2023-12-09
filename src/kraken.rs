@@ -163,14 +163,14 @@ pub async fn update_volatility(
         let resp = match client.get(&url).send().await {
             Ok(response) => response,
             Err(e) => {
-                log::warn!("Failed to retrieve response from {}: {}", url, e);
+                log::warn!("Failed to retrieve OHLC response from {}: {}", url, e);
                 continue;
             }
         };
         let ohlc_data: serde_json::Value = match resp.json().await {
             Ok(data) => data,
             Err(e) => {
-                log::warn!("Failed to parse response from {}: {}", url, e);
+                log::warn!("Failed to parse OHLC response from {}: {}", url, e);
                 continue;
             }
         };
@@ -189,7 +189,7 @@ pub async fn update_volatility(
                 pair_to_volatility.insert(ws.clone(), variance);
             }
         } else {
-            log::warn!("No data for {}", rest.clone());
+            log::warn!("No OHLC data for {}", rest.clone());
             continue;
         }
     }
@@ -226,7 +226,7 @@ pub async fn fetch_spreads(
                 }
                 Ok(_) => {
                     let msg = "Websocket connection closed or stopped sending data";
-                    log::error!("{}", msg);
+                    log::warn!("{}", msg);
                     send_telegram_message(msg).await;
                     tokio::time::sleep(SLEEP_DURATION).await;
                     continue;
@@ -321,7 +321,7 @@ fn handle_event(
             let status = data["status"].as_str().unwrap_or("") == "online";
             match public_online.lock() {
                 Ok(mut public_online_lock) => *public_online_lock = status,
-                Err(e) => log::error!("Failed to acquire lock: {:?}", e),
+                Err(e) => log::error!("Failed to acquire public_online lock: {:?}", e),
             }
         }
         "subscriptionStatus" => {
@@ -332,7 +332,7 @@ fn handle_event(
                     pair_status_lock.insert(pair, status);
                 }
                 Err(e) => {
-                    log::error!("Failed to acquire lock: {:?}", e);
+                    log::error!("Failed to acquire pair_status lock: {:?}", e);
                 }
             };
         }

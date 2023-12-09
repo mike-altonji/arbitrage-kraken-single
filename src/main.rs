@@ -139,7 +139,7 @@ async fn main() {
                     let vol = match get_30d_trade_volume().await {
                         Ok(volume) => volume,
                         Err(_) => {
-                            log::error!("Error: Defaulting volume to 0.0");
+                            log::warn!("Unable to fetch 30 day trading volume: Defaulting to 0.");
                             0.0
                         }
                     };
