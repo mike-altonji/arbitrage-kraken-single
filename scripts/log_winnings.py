@@ -46,7 +46,7 @@ FROM {INPUT_TABLE}
 WHERE volume_units = 'USD' OR volume_units = 'EUR'
 """
 try:
-    df = client.query(query=query)
+    df = client.query(query=query, epoch="s")
     df = df[INPUT_TABLE]
     if not isinstance(df, pd.DataFrame):
         raise ValueError(f"The fetched data is not a DataFrame: {type(df)}")
