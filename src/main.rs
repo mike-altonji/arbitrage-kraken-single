@@ -241,10 +241,10 @@ async fn main() {
 
         match result {
             Ok(_) => send_telegram_message("Code died: Waiting 10 seconds, then restarting.").await,
-            Err(e) => {
-                let error_message = format!("A task failed with error: {:?}", e);
-                log::info!("{}", error_message);
-                send_telegram_message(&error_message).await;
+            Err(_e) => {
+                let message = format!("Join error - Retry # {retry}");
+                log::error!("{}", message);
+                send_telegram_message(&message).await;
             }
         }
     }
