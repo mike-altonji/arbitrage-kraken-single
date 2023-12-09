@@ -223,7 +223,7 @@ async fn main() {
             evaluate_handles.push(evaluate_handle);
         }
 
-        // Wait for both tasks to complete (this will likely never happen given the current logic)
+        // Wait for all tasks to complete. Only happens on failure, since infinite loops
         let mut all_handles = vec![Box::pin(fetch_handle)];
         all_handles.push(Box::pin(fees_handle));
         all_handles.push(Box::pin(volatility_handle));
@@ -233,12 +233,6 @@ async fn main() {
         }
 
         let (result, _index, remaining) = select_all(all_handles).await;
-
-        // Abort tasks upon failure or completion
-        for (_i, handle) in remaining.into_iter().enumerate() {
-            handle.abort();
-        }
-
         match result {
             Ok(_) => send_telegram_message("Code died: Waiting 10 seconds, then restarting.").await,
             Err(_e) => {
@@ -246,6 +240,11 @@ async fn main() {
                 log::error!("{}", message);
                 send_telegram_message(&message).await;
             }
+        }
+
+        // Abort tasks upon failure or completion before restarting
+        for (_i, handle) in remaining.into_iter().enumerate() {
+            handle.abort();
         }
     }
     send_telegram_message("Too many retries: Exiting the program.").await;
