@@ -17,8 +17,9 @@ use std::fs::File;
 use std::sync::{atomic::AtomicUsize, Arc, Mutex};
 use std::time::Duration;
 use tokio::net::TcpStream;
+use tokio_tungstenite::tungstenite::error::ProtocolError;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{tungstenite::Error::Protocol, MaybeTlsStream, WebSocketStream};
 
 pub async fn asset_pairs_to_pull(
     fname: &str,
@@ -155,28 +156,41 @@ pub async fn update_volatility(
     asset_name_converter: &AssetNameConverter,
 ) -> Result<(), Error> {
     let client = reqwest::Client::new();
-
     let pairs: Vec<String> = pair_to_volatility.lock().unwrap().keys().cloned().collect();
     for ws in pairs {
         let rest = asset_name_converter.ws_to_rest(&ws).unwrap().clone();
         let url = format!("https://api.kraken.com/0/public/OHLC?pair={rest}&interval=1");
-
-        let resp = client.get(&url).send().await?;
-        let ohlc_data: serde_json::Value = resp.json().await?;
-        let data = ohlc_data["result"][rest].as_array().unwrap();
-
-        // Calculate the variance of the % change over the prior 12 hours (1m interval * 720 points)
-        let mut values: Vec<f64> = data
-            .iter()
-            .map(|x| x[1].as_str().unwrap().parse::<f64>().unwrap())
-            .collect();
-        values = values.windows(2).map(|x| (x[1] - x[0]) / x[0]).collect();
-        let variance = compute_variance(values);
-        let mut pair_to_volatility = pair_to_volatility.lock().unwrap();
-        if variance.is_nan() {
-            pair_to_volatility.insert(ws.clone(), f64::INFINITY);
+        let resp = match client.get(&url).send().await {
+            Ok(response) => response,
+            Err(e) => {
+                log::warn!("Failed to retrieve OHLC response from {}: {}", url, e);
+                continue;
+            }
+        };
+        let ohlc_data: serde_json::Value = match resp.json().await {
+            Ok(data) => data,
+            Err(e) => {
+                log::warn!("Failed to parse OHLC response from {}: {}", url, e);
+                continue;
+            }
+        };
+        if let Some(data) = ohlc_data["result"][&rest].as_array() {
+            // Calculate the variance of the % change over the prior 12 hours (1m interval * 720 points)
+            let mut values: Vec<f64> = data
+                .iter()
+                .map(|x| x[1].as_str().unwrap().parse::<f64>().unwrap())
+                .collect();
+            values = values.windows(2).map(|x| (x[1] - x[0]) / x[0]).collect();
+            let variance = compute_variance(values);
+            let mut pair_to_volatility = pair_to_volatility.lock().unwrap();
+            if variance.is_nan() {
+                pair_to_volatility.insert(ws.clone(), f64::INFINITY);
+            } else {
+                pair_to_volatility.insert(ws.clone(), variance);
+            }
         } else {
-            pair_to_volatility.insert(ws.clone(), variance);
+            log::warn!("No OHLC data for {}", rest.clone());
+            continue;
         }
     }
 
@@ -212,15 +226,25 @@ pub async fn fetch_spreads(
                 }
                 Ok(_) => {
                     let msg = "Websocket connection closed or stopped sending data";
-                    log::error!("{}", msg);
+                    log::warn!("{}", msg);
                     send_telegram_message(msg).await;
                     tokio::time::sleep(SLEEP_DURATION).await;
                     continue;
                 }
                 Err(e) => {
-                    let msg = format!("Error during websocket communication: {:?}", e);
-                    log::error!("{}", msg);
-                    send_telegram_message(&msg).await;
+                    match e {
+                        Protocol(ProtocolError::ResetWithoutClosingHandshake) => {
+                            log::warn!(
+                                "Exchange server closed connection without a closing handshake. {:?}",
+                                e
+                            );
+                        }
+                        _ => {
+                            let msg = format!("Error during websocket communication: {:?}", e);
+                            log::error!("{}", msg);
+                            send_telegram_message(&msg).await;
+                        }
+                    }
                     tokio::time::sleep(SLEEP_DURATION).await;
                     continue;
                 }
@@ -297,7 +321,7 @@ fn handle_event(
             let status = data["status"].as_str().unwrap_or("") == "online";
             match public_online.lock() {
                 Ok(mut public_online_lock) => *public_online_lock = status,
-                Err(e) => log::error!("Failed to acquire lock: {:?}", e),
+                Err(e) => log::error!("Failed to acquire public_online lock: {:?}", e),
             }
         }
         "subscriptionStatus" => {
@@ -308,7 +332,7 @@ fn handle_event(
                     pair_status_lock.insert(pair, status);
                 }
                 Err(e) => {
-                    log::error!("Failed to acquire lock: {:?}", e);
+                    log::error!("Failed to acquire pair_status lock: {:?}", e);
                 }
             };
         }

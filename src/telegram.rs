@@ -1,4 +1,3 @@
-use log::error;
 use std::env;
 
 pub async fn send_telegram_message(message: &str) {
@@ -11,6 +10,6 @@ pub async fn send_telegram_message(message: &str) {
     );
 
     if let Err(e) = reqwest::Client::new().post(&url).send().await {
-        error!("Failed to send Telegram message: {:?}", e);
+        log::error!("Failed to send Telegram message: {:?}", e);
     }
 }
