@@ -108,7 +108,7 @@ async fn handle_message_text(
                                 if let Some(status) =
                                     order_data.get("status").and_then(|v| v.as_str())
                                 {
-                                    if status == "closed" || status == "cancelled" {
+                                    if status == "closed" || status == "canceled" {
                                         let userref =
                                             order_data["userref"].as_i64().unwrap() as i32;
                                         let lastupdated = order_data["lastupdated"]
