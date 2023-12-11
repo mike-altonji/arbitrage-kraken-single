@@ -1,18 +1,19 @@
 use base64::{decode_config, encode_config, STANDARD};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
 use hmac::{Hmac, Mac, NewMac};
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::Value;
 use sha2::{Digest, Sha256, Sha512};
 use std::collections::HashMap;
 use std::env;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
-use tokio::time::{timeout, Duration};
+use tokio::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use crate::structs::{AssetsToPair, PairToSpread};
+use crate::structs::{AssetsToPair, OrderMap, PairToSpread};
 
 const FIAT_BALANCE: f64 = 1000.0; // TODO: Replace with real number, kept up-to-date
 
@@ -111,14 +112,19 @@ pub async fn get_30d_trade_volume() -> Result<f64, Box<dyn std::error::Error>> {
 
 pub async fn execute_trade(
     path_names: Vec<String>,
+    rates_expect: &Vec<f64>,
     min_volume: f64,
     assets_to_pair: &AssetsToPair,
     pair_to_spread: PairToSpread,
     private_ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
     token: &str,
     fees: &HashMap<String, f64>,
+    orders: &Arc<Mutex<OrderMap>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut volume = min_volume.min(FIAT_BALANCE); // TODO: Remove hard-coding
+    let mut asset1_volume = min_volume.min(FIAT_BALANCE); // In terms of asset1. TODO: Remove hard-coding
+    let mut remaining_asset1_volume: f64; // For determing how much to "sell back to starter"
+
+    let mut rates_act = Vec::<f64>::new();
     for i in 0..path_names.len() - 1 {
         let asset1 = &path_names[i];
         let asset2 = &path_names[i + 1];
@@ -127,20 +133,101 @@ pub async fn execute_trade(
             .ok_or(format!("Trade failed: No {} & {} pair", asset1, asset2))?;
         let pair = &pair_data.pair;
         let base = &pair_data.base;
-        let (buy_sell, new_volume) = determine_trade_info(
+        let (buy_sell, trade_volume) = determine_trade_info(
             asset1,
             asset2,
             base,
             pair,
-            volume,
+            asset1_volume,
             fees[pair],
             &pair_to_spread,
         )?;
-        volume = new_volume;
-        let _ = make_trade(token, &buy_sell, volume, pair, private_ws);
-        volume = process_trade_response(private_ws, pair, base, asset1, asset2).await?;
+
+        // Allow limit orders beyond expectations based on remaining ROI
+        let remaining_roi = compute_roi(rates_expect, &rates_act);
+        let price: f64;
+        if buy_sell == "buy" {
+            price = pair_to_spread[pair].ask * (1. + remaining_roi);
+        } else {
+            price = pair_to_spread[pair].bid * (1. - remaining_roi);
+        }
+
+        let userref = match make_trade(token, &buy_sell, trade_volume, price, pair, private_ws) {
+            Ok(userref) => userref,
+            Err(e) => return Err(e.into()),
+        };
+        let mut order_data = None;
+        let start = Instant::now();
+        while start.elapsed().as_millis() < 50 {
+            let order_exists = {
+                let orders = orders.lock().unwrap();
+                orders.contains_key(&userref)
+            };
+            if order_exists {
+                let orders = orders.lock().unwrap();
+                order_data = orders.get(&userref).cloned();
+                break;
+            }
+            tokio::time::sleep(Duration::from_micros(5)).await;
+        }
+        if let Some(order_data) = order_data {
+            let vol = order_data.vol;
+            let cost = order_data.cost;
+            let fee = order_data.fee;
+            if buy_sell == "buy" {
+                rates_act.push(vol / (cost + fee));
+                remaining_asset1_volume = asset1_volume - (cost + fee);
+                asset1_volume = vol; // Update for next iteration
+            } else {
+                rates_act.push((cost - fee) / vol);
+                remaining_asset1_volume = asset1_volume - vol;
+                asset1_volume = cost - fee; // Update for next iteration
+            }
+        } else {
+            // Order never received: Throw error
+            let _ = trade_back_to_starter(
+                &asset1,
+                &path_names,
+                &assets_to_pair,
+                asset1_volume,
+                &fees,
+                &pair_to_spread,
+                token,
+                private_ws,
+            );
+            let msg = "Attempted trade yielded no order.";
+            log::warn!("{}", msg);
+            return Err(msg.into());
+        }
+        // Trade back to the starter
+        let _ = trade_back_to_starter(
+            &asset1,
+            &path_names,
+            &assets_to_pair,
+            remaining_asset1_volume,
+            &fees,
+            &pair_to_spread,
+            token,
+            private_ws,
+        );
     }
     Ok(())
+}
+
+/// Return the ROI allocation for the trade,
+/// based on prior actual trade prices and future expected trade prices
+fn compute_roi(rates_expect: &Vec<f64>, rates_act: &Vec<f64>) -> f64 {
+    let total = rates_expect.len();
+    let complete = rates_act.len();
+    let mut roi = 1.;
+    for rate in rates_act {
+        roi *= rate;
+    }
+    for rate in rates_expect.iter().skip(complete) {
+        roi *= rate;
+    }
+    roi -= 1.;
+    1. / ((total as f64) - (complete as f64)) * roi
 }
 
 fn determine_trade_info(
@@ -167,124 +254,95 @@ fn determine_trade_info(
     Ok((trade_type, new_volume))
 }
 
-async fn make_trade(
+fn make_trade(
     token: &str,
     trade_type: &String,
     volume: f64,
+    price: f64,
     pair: &String,
     private_ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+) -> Result<i32, Box<dyn std::error::Error>> {
+    let userref = rand::random::<i32>();
+
+    let trade_msg: String;
+    if trade_type == "buy" {
+        trade_msg = serde_json::json!({
+            "event": "addOrder",
+            "token": token,
+            "type": "buy",
+            "ordertype": "limit",
+            "timeinforce": "IOC",
+            "price": price,
+            "volume": volume,
+            "pair": pair,
+            "userref": userref,
+        })
+        .to_string();
+    } else {
+        trade_msg = serde_json::json!({
+            "event": "addOrder",
+            "token": token,
+            "type": "sell",
+            "ordertype": "market",
+            "volume": volume,
+            "pair": pair,
+            "userref": userref,
+        })
+        .to_string();
+    }
+    let _ = private_ws.send(Message::Text(trade_msg)); // Don't wait for trade to go through
+    Ok(userref)
+}
+
+fn trade_back_to_starter(
+    asset1: &String,
+    path_names: &Vec<String>,
+    assets_to_pair: &AssetsToPair,
+    remaining_asset1_volume: f64,
+    fees: &HashMap<String, f64>,
+    pair_to_spread: &PairToSpread,
+    token: &str,
+    private_ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let trade_msg = serde_json::json!({
-        "event": "addOrder",
-        "token": token,
-        "type": trade_type,
-        "ordertype": "market",
-        "volume": volume,
-        "pair": pair,
-    })
-    .to_string();
-    private_ws.send(Message::Text(trade_msg)).await?;
+    let pair_data = assets_to_pair
+        .get(&(asset1.to_string(), path_names[0].to_string()))
+        .ok_or(format!(
+            "Trade failed: No {} & {} pair",
+            asset1, &path_names[0]
+        ))?;
+    let pair = &pair_data.pair;
+    let base = &pair_data.base;
+    let (buy_sell, trade_volume) = determine_trade_info(
+        asset1,
+        &path_names[0],
+        base,
+        pair,
+        remaining_asset1_volume,
+        fees[pair],
+        pair_to_spread,
+    )?;
+    let _ = make_trade(
+        token,
+        &buy_sell,
+        trade_volume,
+        pair_to_spread[pair].ask,
+        pair,
+        private_ws,
+    );
     Ok(())
 }
 
-async fn process_trade_response(
-    private_ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
-    pair: &String,
-    base: &String,
-    asset1: &String,
-    asset2: &String,
-) -> Result<f64, Box<dyn std::error::Error>> {
-    let mut volume: Option<f64> = None;
-    let timeout_duration = Duration::from_secs(10);
-    let result = timeout(timeout_duration, async {
-        while let Some(message) = private_ws.next().await {
-            match message {
-                Ok(msg) => {
-                    let data: serde_json::Value = serde_json::from_str(&msg.to_string())?;
-                    if let Some(trades) = data.get("ownTrades") {
-                        volume = process_trades(trades, pair, base, asset1, asset2)?;
-                        if volume.is_some() {
-                            break;
-                        }
-                    }
-                }
-                Err(e) => log::error!("Message error on process_trade_response: {}", e),
-            }
-        }
-        Ok::<_, Box<dyn std::error::Error>>(())
-    })
-    .await;
-    match result {
-        Ok(_) => volume.ok_or("Could not compute volume".into()),
-        Err(_) => Err(format!("Timeout reached waiting for trade response of {}", pair).into()),
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_roi() {
+        let rates_expect = vec![2.0, 0.5, 4.0, 0.26];
+        let rates_act = vec![1.95, 0.55];
+
+        let roi = compute_roi(&rates_expect, &rates_act);
+
+        assert!((roi - 0.0577).abs() < 0.0001);
     }
-}
-
-fn process_trades(
-    trades: &serde_json::Value,
-    pair: &String,
-    base: &String,
-    asset1: &String,
-    asset2: &String,
-) -> Result<Option<f64>, Box<dyn std::error::Error>> {
-    let trades_object = trades.as_object().ok_or("Err: trades_object")?;
-
-    for trade in trades_object {
-        let trade_data = trade.1.as_object().ok_or("Err: trade_data")?;
-
-        let received_pair = trade_data
-            .get("pair")
-            .ok_or("Failed to get 'pair' from trade data")?
-            .as_str()
-            .ok_or("Failed to parse 'pair' as string")?;
-
-        if received_pair == pair {
-            let volume = calculate_volume(trade_data, base, asset1, asset2)?;
-            if volume.is_some() {
-                return Ok(volume);
-            }
-        }
-    }
-    Ok(None)
-}
-
-fn calculate_volume(
-    trade_data: &serde_json::Map<String, serde_json::Value>,
-    base: &String,
-    asset1: &String,
-    asset2: &String,
-) -> Result<Option<f64>, Box<dyn std::error::Error>> {
-    let cost = trade_data
-        .get("cost")
-        .ok_or("Failed to get 'cost' from trade data")?
-        .as_str()
-        .ok_or("Failed to parse 'cost' as string")?
-        .parse::<f64>()
-        .map_err(|_| "Failed to parse 'cost' as f64")?;
-
-    let price = trade_data
-        .get("price")
-        .ok_or("Failed to get 'price' from trade data")?
-        .as_str()
-        .ok_or("Failed to parse 'price' as string")?
-        .parse::<f64>()
-        .map_err(|_| "Failed to parse 'price' as f64")?;
-
-    let fee = trade_data
-        .get("fee")
-        .ok_or("Failed to get 'fee' from trade data")?
-        .as_str()
-        .ok_or("Failed to parse 'fee' as string")?
-        .parse::<f64>()
-        .map_err(|_| "Failed to parse 'fee' as f64")?;
-
-    let volume = if asset1 == base {
-        Some(cost - fee)
-    } else if asset2 == base {
-        Some((cost - fee) / price)
-    } else {
-        return Err(format!("Trade failed: Neither {} nor {} is base", asset1, asset2).into());
-    };
-
-    Ok(volume)
 }

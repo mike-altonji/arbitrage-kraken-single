@@ -8,13 +8,14 @@ use std::env;
 use std::f64::INFINITY;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use structs::{AssetNameConverter, PairToVolatility};
+use structs::{AssetNameConverter, OrderMap, PairToVolatility};
 use tokio::time::sleep;
 
 mod evaluate_arbitrage;
 mod graph_algorithms;
 mod influx;
 mod kraken;
+mod kraken_orders_listener;
 mod kraken_private;
 mod structs;
 mod telegram;
@@ -123,6 +124,22 @@ async fn main() {
                 .expect("Failed to fetch data");
             })
         };
+        let mut all_handles = vec![Box::pin(fetch_handle)];
+
+        // Keep orders up to date
+        let orders = Arc::new(Mutex::new(OrderMap::new()));
+        if allow_trades {
+            let token_clone = token.clone();
+            let orders_handle = {
+                let orders_clone = orders.clone();
+                tokio::spawn(async move {
+                    kraken_orders_listener::fetch_orders(&token_clone, &orders_clone)
+                        .await
+                        .expect("Failed to fetch data");
+                })
+            };
+            all_handles.push(Box::pin(orders_handle));
+        }
 
         // Task dedicated to grabbing the most recent fee
         let fees: Arc<Mutex<HashMap<String, f64>>> = Arc::new(Mutex::new(
@@ -152,6 +169,7 @@ async fn main() {
                 }
             })
         };
+        all_handles.push(Box::pin(fees_handle));
 
         // Task dedicated to keeping volatility up to date
         let volatility: Arc<Mutex<PairToVolatility>> = Arc::new(Mutex::new(
@@ -176,6 +194,7 @@ async fn main() {
                 }
             })
         };
+        all_handles.push(Box::pin(volatility_handle));
 
         // Task dedicated to knowing the p90 latency of spread fetches
         let latency_handle = {
@@ -189,6 +208,7 @@ async fn main() {
                 }
             })
         };
+        all_handles.push(Box::pin(latency_handle));
 
         // Search for arbitrage opportunities, for each graph
         let mut evaluate_handles = Vec::new();
@@ -203,6 +223,7 @@ async fn main() {
                 let token = token.clone();
                 let p90_latency_clone = p90_latency.clone();
                 let volatility_clone = volatility_clone.clone();
+                let orders_clone = orders.clone();
                 tokio::spawn(async move {
                     let _ = evaluate_arbitrage::evaluate_arbitrage_opportunities(
                         pair_to_assets_clone,
@@ -216,18 +237,13 @@ async fn main() {
                         token.as_str(),
                         i as i64,
                         volatility_clone,
+                        orders_clone,
                     )
                     .await;
                 })
             };
             evaluate_handles.push(evaluate_handle);
         }
-
-        // Wait for all tasks to complete. Only happens on failure, since infinite loops
-        let mut all_handles = vec![Box::pin(fetch_handle)];
-        all_handles.push(Box::pin(fees_handle));
-        all_handles.push(Box::pin(volatility_handle));
-        all_handles.push(Box::pin(latency_handle));
         for handle in evaluate_handles {
             all_handles.push(Box::pin(handle));
         }

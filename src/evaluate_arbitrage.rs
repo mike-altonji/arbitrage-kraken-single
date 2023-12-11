@@ -1,6 +1,6 @@
 use crate::graph_algorithms::bellman_ford_negative_cycle;
 use crate::kraken_private::execute_trade;
-use crate::structs::{AssetsToPair, BaseQuote, PairToAssets, PairToVolatility, Spread};
+use crate::structs::{AssetsToPair, BaseQuote, OrderMap, PairToAssets, PairToVolatility, Spread};
 use crate::structs::{Edge, PairToSpread};
 use crate::trade::rotate_path;
 use futures_util::SinkExt;
@@ -27,6 +27,7 @@ pub async fn evaluate_arbitrage_opportunities(
     token: &str,
     graph_id: i64,
     volatility: Arc<Mutex<PairToVolatility>>,
+    orders: Arc<Mutex<OrderMap>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Set up InfluxDB client
     dotenv::dotenv().ok();
@@ -149,6 +150,7 @@ pub async fn evaluate_arbitrage_opportunities(
             );
             let (min_volume, end_volume, rates) =
                 limiting_volume(&path_names, &rate_map, &volume_map);
+            let rates_clone = rates.clone();
 
             // Log and send message at most every 5 seconds
             let path_names_clone = path_names.clone();
@@ -194,12 +196,14 @@ pub async fn evaluate_arbitrage_opportunities(
                     .ok_or("Can't execute trades: Private WebSocket does not exist")?;
                 execute_trade(
                     path_names_clone,
+                    &rates_clone,
                     min_volume,
                     &assets_to_pair,
                     pair_to_spread,
                     private_ws,
                     token,
                     fees_clone,
+                    &orders,
                 )
                 .await?;
             }
