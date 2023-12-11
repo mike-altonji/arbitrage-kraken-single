@@ -58,7 +58,7 @@ async fn setup_private_websocket(
     SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
     SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
 ) {
-    let url = url::Url::parse("wss://ws.kraken-auth.com").expect("Private ws unparseable");
+    let url = url::Url::parse("wss://ws-auth.kraken.com").expect("Private ws unparseable");
     let (ws, _) = connect_async(url)
         .await
         .expect("Failed to connect to private websocket");
