@@ -78,3 +78,14 @@ impl IntoIterator for AssetNameConverter {
         vec.into_iter()
     }
 }
+
+#[derive(Clone)]
+pub struct OrderData {
+    pub lastupdated: f64,
+    pub status: String,
+    pub vol: f64,
+    pub cost: f64,
+    pub fee: f64,
+    pub price: f64,
+}
+pub type OrderMap = HashMap<i32, OrderData>;
