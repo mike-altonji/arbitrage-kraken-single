@@ -51,6 +51,7 @@ dependencies = [
  "influx_db_client",
  "log",
  "log4rs",
+ "rand",
  "reqwest",
  "serde",
  "serde_json",

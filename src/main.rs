@@ -127,9 +127,9 @@ async fn main() {
         let mut all_handles = vec![Box::pin(fetch_handle)];
 
         // Keep orders up to date
+        let orders = Arc::new(Mutex::new(OrderMap::new()));
         if allow_trades {
             let token_clone = token.clone();
-            let orders = Arc::new(Mutex::new(OrderMap::new()));
             let orders_handle = {
                 let orders_clone = orders.clone();
                 tokio::spawn(async move {
@@ -223,6 +223,7 @@ async fn main() {
                 let token = token.clone();
                 let p90_latency_clone = p90_latency.clone();
                 let volatility_clone = volatility_clone.clone();
+                let orders_clone = orders.clone();
                 tokio::spawn(async move {
                     let _ = evaluate_arbitrage::evaluate_arbitrage_opportunities(
                         pair_to_assets_clone,
@@ -236,6 +237,7 @@ async fn main() {
                         token.as_str(),
                         i as i64,
                         volatility_clone,
+                        orders_clone,
                     )
                     .await;
                 })
