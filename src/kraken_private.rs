@@ -121,7 +121,9 @@ pub async fn execute_trade(
     fees: &HashMap<String, f64>,
     orders: &Arc<Mutex<OrderMap>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut volume = min_volume.min(FIAT_BALANCE); // TODO: Remove hard-coding
+    let mut asset1_volume = min_volume.min(FIAT_BALANCE); // In terms of asset1. TODO: Remove hard-coding
+    let mut remaining_asset1_volume: f64; // For determing how much to "sell back to starter"
+
     let mut rates_act = Vec::<f64>::new();
     for i in 0..path_names.len() - 1 {
         let asset1 = &path_names[i];
@@ -131,16 +133,15 @@ pub async fn execute_trade(
             .ok_or(format!("Trade failed: No {} & {} pair", asset1, asset2))?;
         let pair = &pair_data.pair;
         let base = &pair_data.base;
-        let (buy_sell, new_volume) = determine_trade_info(
+        let (buy_sell, trade_volume) = determine_trade_info(
             asset1,
             asset2,
             base,
             pair,
-            volume,
+            asset1_volume,
             fees[pair],
             &pair_to_spread,
         )?;
-        volume = new_volume;
 
         // Allow limit orders beyond expectations based on remaining ROI
         let remaining_roi = compute_roi(rates_expect, &rates_act);
@@ -151,7 +152,7 @@ pub async fn execute_trade(
             price = pair_to_spread[pair].bid * (1. - remaining_roi);
         }
 
-        let userref = match make_trade(token, &buy_sell, volume, price, pair, private_ws) {
+        let userref = match make_trade(token, &buy_sell, trade_volume, price, pair, private_ws) {
             Ok(userref) => userref,
             Err(e) => return Err(e.into()),
         };
@@ -175,14 +176,40 @@ pub async fn execute_trade(
             let fee = order_data.fee;
             if buy_sell == "buy" {
                 rates_act.push(vol / (cost + fee));
-                volume = vol;
+                remaining_asset1_volume = asset1_volume - (cost + fee);
+                asset1_volume = vol; // Update for next iteration
             } else {
                 rates_act.push((cost - fee) / vol);
-                volume = cost - fee;
+                remaining_asset1_volume = asset1_volume - vol;
+                asset1_volume = cost - fee; // Update for next iteration
             }
         } else {
-            log::warn!("Attempted trade yielded no order.");
+            // Order never received: Throw error
+            let _ = trade_back_to_starter(
+                &asset1,
+                &path_names,
+                &assets_to_pair,
+                asset1_volume,
+                &fees,
+                &pair_to_spread,
+                token,
+                private_ws,
+            );
+            let msg = "Attempted trade yielded no order.";
+            log::warn!("{}", msg);
+            return Err(msg.into());
         }
+        // Trade back to the starter
+        let _ = trade_back_to_starter(
+            &asset1,
+            &path_names,
+            &assets_to_pair,
+            remaining_asset1_volume,
+            &fees,
+            &pair_to_spread,
+            token,
+            private_ws,
+        );
     }
     Ok(())
 }
@@ -265,6 +292,44 @@ fn make_trade(
     }
     let _ = private_ws.send(Message::Text(trade_msg)); // Don't wait for trade to go through
     Ok(userref)
+}
+
+fn trade_back_to_starter(
+    asset1: &String,
+    path_names: &Vec<String>,
+    assets_to_pair: &AssetsToPair,
+    remaining_asset1_volume: f64,
+    fees: &HashMap<String, f64>,
+    pair_to_spread: &PairToSpread,
+    token: &str,
+    private_ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let pair_data = assets_to_pair
+        .get(&(asset1.to_string(), path_names[0].to_string()))
+        .ok_or(format!(
+            "Trade failed: No {} & {} pair",
+            asset1, &path_names[0]
+        ))?;
+    let pair = &pair_data.pair;
+    let base = &pair_data.base;
+    let (buy_sell, trade_volume) = determine_trade_info(
+        asset1,
+        &path_names[0],
+        base,
+        pair,
+        remaining_asset1_volume,
+        fees[pair],
+        pair_to_spread,
+    )?;
+    let _ = make_trade(
+        token,
+        &buy_sell,
+        trade_volume,
+        pair_to_spread[pair].ask,
+        pair,
+        private_ws,
+    );
+    Ok(())
 }
 
 #[cfg(test)]
