@@ -105,13 +105,12 @@ async fn handle_message_text(
                     if let Value::Object(order_obj) = order {
                         for (_key, value) in order_obj {
                             if let Value::Object(order_data) = value {
-                                if let Some(status) = order_data["status"].as_str() {
+                                if let Some(status) =
+                                    order_data.get("status").and_then(|v| v.as_str())
+                                {
                                     if status == "closed" || status == "cancelled" {
-                                        let userref = order_data["userref"]
-                                            .as_str()
-                                            .unwrap()
-                                            .parse::<i32>()
-                                            .unwrap();
+                                        let userref =
+                                            order_data["userref"].as_i64().unwrap() as i32;
                                         let lastupdated = order_data["lastupdated"]
                                             .as_str()
                                             .unwrap()
@@ -140,7 +139,6 @@ async fn handle_message_text(
 
                                         let order_data = OrderData {
                                             lastupdated,
-                                            status: status.to_string(),
                                             vol,
                                             cost,
                                             fee,
