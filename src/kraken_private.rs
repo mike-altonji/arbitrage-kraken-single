@@ -142,7 +142,16 @@ pub async fn execute_trade(
         )?;
         volume = new_volume;
 
-        let userref = match make_trade(token, &buy_sell, volume, pair, private_ws) {
+        // Allow limit orders beyond expectations based on remaining ROI
+        let remaining_roi = compute_roi(rates_expect, &rates_act);
+        let price: f64;
+        if buy_sell == "buy" {
+            price = pair_to_spread[pair].ask * (1. + remaining_roi);
+        } else {
+            price = pair_to_spread[pair].bid * (1. - remaining_roi);
+        }
+
+        let userref = match make_trade(token, &buy_sell, volume, price, pair, private_ws) {
             Ok(userref) => userref,
             Err(e) => return Err(e.into()),
         };
@@ -178,6 +187,22 @@ pub async fn execute_trade(
     Ok(())
 }
 
+/// Return the ROI allocation for the trade,
+/// based on prior actual trade prices and future expected trade prices
+fn compute_roi(rates_expect: &Vec<f64>, rates_act: &Vec<f64>) -> f64 {
+    let total = rates_expect.len();
+    let complete = rates_act.len();
+    let mut roi = 1.;
+    for rate in rates_act {
+        roi *= rate;
+    }
+    for rate in rates_expect.iter().skip(complete) {
+        roi *= rate;
+    }
+    roi -= 1.;
+    1. / ((total as f64) - (complete as f64)) * roi
+}
+
 fn determine_trade_info(
     asset1: &String,
     asset2: &String,
@@ -206,20 +231,53 @@ fn make_trade(
     token: &str,
     trade_type: &String,
     volume: f64,
+    price: f64,
     pair: &String,
     private_ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
 ) -> Result<i32, Box<dyn std::error::Error>> {
     let userref = rand::random::<i32>();
-    let trade_msg = serde_json::json!({
-        "event": "addOrder",
-        "token": token,
-        "type": trade_type,
-        "ordertype": "market",
-        "volume": volume,
-        "pair": pair,
-        "userref": userref,
-    })
-    .to_string();
+
+    let trade_msg: String;
+    if trade_type == "buy" {
+        trade_msg = serde_json::json!({
+            "event": "addOrder",
+            "token": token,
+            "type": "buy",
+            "ordertype": "limit",
+            "timeinforce": "IOC",
+            "price": price,
+            "volume": volume,
+            "pair": pair,
+            "userref": userref,
+        })
+        .to_string();
+    } else {
+        trade_msg = serde_json::json!({
+            "event": "addOrder",
+            "token": token,
+            "type": "sell",
+            "ordertype": "market",
+            "volume": volume,
+            "pair": pair,
+            "userref": userref,
+        })
+        .to_string();
+    }
     let _ = private_ws.send(Message::Text(trade_msg)); // Don't wait for trade to go through
     Ok(userref)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_roi() {
+        let rates_expect = vec![2.0, 0.5, 4.0, 0.26];
+        let rates_act = vec![1.95, 0.55];
+
+        let roi = compute_roi(&rates_expect, &rates_act);
+
+        assert!((roi - 0.0577).abs() < 0.0001);
+    }
 }
