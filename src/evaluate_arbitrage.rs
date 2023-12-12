@@ -50,7 +50,7 @@ pub async fn evaluate_arbitrage_opportunities(
 
     let starters = HashSet::from(["USD".to_string(), "EUR".to_string()]);
 
-    // Set up websocket connection to private Kraken endpoint if trading & subscribe to `ownTrades`
+    // Set up websocket connection to private Kraken endpoint if trading & subscribe to `ownTrades` to stay connected
     let mut private_ws = None;
     if allow_trades {
         let (ws, _) = connect_async("wss://ws-auth.kraken.com").await?;
