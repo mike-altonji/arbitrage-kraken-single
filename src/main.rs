@@ -1,7 +1,9 @@
 use dotenv::dotenv;
+use evaluate_arbitrage::evaluate_arbitrage_opportunities;
 use futures::future::select_all;
 use kraken::update_volatility;
 use kraken_private::get_auth_token;
+use kraken_private_rest::fetch_asset_balances;
 use log4rs::{append::file::FileAppender, config};
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -17,6 +19,7 @@ mod influx;
 mod kraken;
 mod kraken_orders_listener;
 mod kraken_private;
+mod kraken_private_rest;
 mod structs;
 mod telegram;
 mod trade;
@@ -78,13 +81,19 @@ async fn main() {
         let public_online = Arc::new(Mutex::new(false));
         let p90_latency = Arc::new(Mutex::new(INFINITY));
         let mut all_fee_schedules = HashMap::new();
+        let mut all_asset_pair_conversion = AssetNameConverter::new();
         let mut all_asset_name_conversion = AssetNameConverter::new();
 
         for csv_file in csv_files {
-            let (pair_to_assets, assets_to_pair, asset_name_conversion, fee_schedules) =
-                kraken::asset_pairs_to_pull(&csv_file)
-                    .await
-                    .expect("Failed to get asset pairs");
+            let (
+                pair_to_assets,
+                assets_to_pair,
+                asset_name_conversion,
+                asset_pair_conversion,
+                fee_schedules,
+            ) = kraken::asset_pairs_to_pull(&csv_file)
+                .await
+                .expect("Failed to get asset pairs");
             let pair_to_spread = Arc::new(Mutex::new(HashMap::new()));
             pair_to_assets_vec.push(pair_to_assets);
             assets_to_pair_vec.push(assets_to_pair);
@@ -92,9 +101,10 @@ async fn main() {
             for (key, value) in fee_schedules {
                 all_fee_schedules.insert(key, value);
             }
-            for (ws, rest) in asset_name_conversion {
-                all_asset_name_conversion.insert(ws, rest);
+            for (ws, rest) in asset_pair_conversion {
+                all_asset_pair_conversion.insert(ws, rest);
             }
+            all_asset_name_conversion = asset_name_conversion; // Overwrite, since all the same
         }
 
         // Unique set of all pairs, so we just have 1 subscription to the Kraken websocket
@@ -141,6 +151,20 @@ async fn main() {
             all_handles.push(Box::pin(orders_handle));
         }
 
+        // Keep balances up to date
+        let balances = Arc::new(Mutex::new(HashMap::<String, f64>::new()));
+        if allow_trades {
+            let balance_handle = {
+                let balances_clone = balances.clone();
+                tokio::spawn(async move {
+                    fetch_asset_balances(&balances_clone, &all_asset_name_conversion)
+                        .await
+                        .expect("Failed to fetch data balances");
+                })
+            };
+            all_handles.push(Box::pin(balance_handle));
+        }
+
         // Task dedicated to grabbing the most recent fee
         let fees: Arc<Mutex<HashMap<String, f64>>> = Arc::new(Mutex::new(
             all_fee_schedules
@@ -173,7 +197,7 @@ async fn main() {
 
         // Task dedicated to keeping volatility up to date
         let volatility: Arc<Mutex<PairToVolatility>> = Arc::new(Mutex::new(
-            all_asset_name_conversion
+            all_asset_pair_conversion
                 .ws_to_rest_map
                 .keys()
                 .map(|key| (key.clone(), INFINITY))
@@ -181,12 +205,12 @@ async fn main() {
         ));
         let volatility_clone = volatility.clone();
         let volatility_handle = {
-            let asset_name_conversion = all_asset_name_conversion.clone();
+            let asset_pair_conversion = all_asset_pair_conversion.clone();
             tokio::spawn(async move {
                 loop {
                     {
                         let volatility_clone2 = volatility.clone();
-                        update_volatility(volatility_clone2, &asset_name_conversion)
+                        update_volatility(volatility_clone2, &asset_pair_conversion)
                             .await
                             .expect("Volatility pull failed");
                     }
@@ -224,8 +248,9 @@ async fn main() {
                 let p90_latency_clone = p90_latency.clone();
                 let volatility_clone = volatility_clone.clone();
                 let orders_clone = orders.clone();
+                let balances_clone = balances.clone();
                 tokio::spawn(async move {
-                    let _ = evaluate_arbitrage::evaluate_arbitrage_opportunities(
+                    let _ = evaluate_arbitrage_opportunities(
                         pair_to_assets_clone,
                         assets_to_pair_clone,
                         pair_to_spread_clone,
@@ -238,6 +263,7 @@ async fn main() {
                         i as i64,
                         volatility_clone,
                         orders_clone,
+                        balances_clone,
                     )
                     .await;
                 })

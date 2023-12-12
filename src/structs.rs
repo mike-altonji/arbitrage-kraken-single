@@ -34,7 +34,7 @@ pub struct Edge {
 }
 
 /// Holds 2 dictionaries: One to convert from Web Socket to REST format, and vice versa
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct AssetNameConverter {
     pub ws_to_rest_map: HashMap<String, String>,
     pub rest_to_ws_map: HashMap<String, String>,
@@ -61,7 +61,7 @@ impl AssetNameConverter {
     }
 
     // Find ws by rest
-    pub fn _rest_to_ws(&self, rest: &str) -> Option<&String> {
+    pub fn rest_to_ws(&self, rest: &str) -> Option<&String> {
         self.rest_to_ws_map.get(rest)
     }
 }
