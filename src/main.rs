@@ -1,4 +1,5 @@
 use dotenv::dotenv;
+use evaluate_arbitrage::evaluate_arbitrage_opportunities;
 use futures::future::select_all;
 use kraken::update_volatility;
 use kraken_private::get_auth_token;
@@ -151,11 +152,12 @@ async fn main() {
         }
 
         // Keep balances up to date
-        let asset_balances = Arc::new(Mutex::new(HashMap::<String, f64>::new()));
+        let balances = Arc::new(Mutex::new(HashMap::<String, f64>::new()));
         if allow_trades {
             let balance_handle = {
+                let balances_clone = balances.clone();
                 tokio::spawn(async move {
-                    fetch_asset_balances(&asset_balances, &all_asset_name_conversion)
+                    fetch_asset_balances(&balances_clone, &all_asset_name_conversion)
                         .await
                         .expect("Failed to fetch data balances");
                 })
@@ -246,8 +248,9 @@ async fn main() {
                 let p90_latency_clone = p90_latency.clone();
                 let volatility_clone = volatility_clone.clone();
                 let orders_clone = orders.clone();
+                let balances_clone = balances.clone();
                 tokio::spawn(async move {
-                    let _ = evaluate_arbitrage::evaluate_arbitrage_opportunities(
+                    let _ = evaluate_arbitrage_opportunities(
                         pair_to_assets_clone,
                         assets_to_pair_clone,
                         pair_to_spread_clone,
@@ -260,6 +263,7 @@ async fn main() {
                         i as i64,
                         volatility_clone,
                         orders_clone,
+                        balances_clone,
                     )
                     .await;
                 })

@@ -28,6 +28,7 @@ pub async fn evaluate_arbitrage_opportunities(
     graph_id: i64,
     volatility: Arc<Mutex<PairToVolatility>>,
     orders: Arc<Mutex<OrderMap>>,
+    balances: Arc<Mutex<HashMap<String, f64>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Set up InfluxDB client
     dotenv::dotenv().ok();
@@ -148,7 +149,7 @@ pub async fn evaluate_arbitrage_opportunities(
                 &volatility.lock().unwrap().clone(),
                 &assets_to_pair,
             );
-            let (min_volume, end_volume, rates) =
+            let (mut min_volume, end_volume, rates) =
                 limiting_volume(&path_names, &rate_map, &volume_map);
             let rates_clone = rates.clone();
 
@@ -190,6 +191,11 @@ pub async fn evaluate_arbitrage_opportunities(
                 && end_volume - min_volume > MIN_PROFIT
                 && p90_latency_value < MAX_LATENCY
             {
+                // When we want to limit trading by limiting `ordermin` per pair, will need to move above this if statement
+                let balances = balances.lock().unwrap().clone();
+                let balance = balances.get(&path_names_clone[0]).unwrap_or(&0.0);
+                min_volume = min_volume.min(*balance * 0.8); // Only trade up to 80% of what we have, to avoid failing trades
+
                 let fees_clone = &fees.lock().unwrap().clone();
                 let private_ws = private_ws
                     .as_mut()
