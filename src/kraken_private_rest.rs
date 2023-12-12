@@ -12,11 +12,14 @@ use std::{
 };
 use tokio::time::sleep;
 
+use crate::structs::AssetNameConverter;
+
 pub async fn fetch_asset_balances(
     asset_balances: &Arc<Mutex<HashMap<String, f64>>>,
+    asset_name_conversion: &AssetNameConverter,
 ) -> Result<(), Box<dyn std::error::Error>> {
     loop {
-        match update_balances(asset_balances).await {
+        match update_balances(asset_balances, asset_name_conversion).await {
             Ok(_) => (),
             Err(e) => log::error!("Error fetching balances: {}", e),
         }
@@ -27,6 +30,7 @@ pub async fn fetch_asset_balances(
 
 pub async fn update_balances(
     asset_balances: &Arc<Mutex<HashMap<String, f64>>>,
+    asset_name_conversion: &AssetNameConverter,
 ) -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
 
@@ -84,7 +88,9 @@ pub async fn update_balances(
                     for (key, value) in result_map {
                         if let Some(balance) = value.as_str() {
                             if let Ok(balance) = balance.parse::<f64>() {
-                                balances.insert(key.clone(), balance);
+                                if let Some(asset_ws) = asset_name_conversion.rest_to_ws(key) {
+                                    balances.insert(asset_ws.clone(), balance);
+                                }
                             }
                         }
                     }

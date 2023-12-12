@@ -28,6 +28,7 @@ pub async fn asset_pairs_to_pull(
         PairToAssets,
         AssetsToPair,
         AssetNameConverter,
+        AssetNameConverter,
         HashMap<String, Vec<Vec<f64>>>,
     ),
     Box<dyn std::error::Error>,
@@ -53,8 +54,15 @@ pub async fn asset_pairs_to_pull(
     let data_assets: serde_json::Value = serde_json::from_str(&text)?;
     let mut pair_to_fee = HashMap::new();
 
-    // Create the {pair: (base, quote)} HashMap
+    // Make the asset name converter
     let mut asset_name_conversion = AssetNameConverter::new();
+    for (key, value) in data_assets["result"].as_object().unwrap() {
+        let ws_name = value["altname"].as_str().unwrap().to_string();
+        asset_name_conversion.insert(ws_name, key.clone());
+    }
+
+    // Create the {pair: (base, quote)} HashMap
+    let mut asset_pair_conversion = AssetNameConverter::new();
     let mut pair_to_assets = PairToAssets::new();
     let pairs = data_asset_pairs["result"].as_object().ok_or("No pairs")?;
     for (pair, details) in pairs {
@@ -78,7 +86,7 @@ pub async fn asset_pairs_to_pull(
         pair_to_fee.insert(pair_ws.clone(), fee_schedule);
 
         // Update name conversion
-        asset_name_conversion.insert(pair_ws.clone(), pair.to_string());
+        asset_pair_conversion.insert(pair_ws.clone(), pair.to_string());
 
         // Convert base/quote to ws_name format
         let base_ws = data_assets["result"][&base]["altname"].as_str();
@@ -130,6 +138,7 @@ pub async fn asset_pairs_to_pull(
         pair_to_assets,
         assets_to_pair,
         asset_name_conversion,
+        asset_pair_conversion,
         pair_to_fee,
     ))
 }
@@ -477,7 +486,13 @@ mod tests {
             .unwrap()
             .block_on(asset_pairs_to_pull("resources/asset_pairs_a1.csv"));
         assert!(result.is_ok());
-        let (pair_to_assets, assets_to_pair, _asset_name_conversion, pair_to_fee) = result.unwrap();
+        let (
+            pair_to_assets,
+            assets_to_pair,
+            _asset_name_conversion,
+            _asset_pair_conversion,
+            pair_to_fee,
+        ) = result.unwrap();
         assert!(pair_to_assets.contains_key("EUR/USD"));
         assert_eq!(pair_to_assets["EUR/USD"].base, "EUR");
         assert_eq!(pair_to_assets["EUR/USD"].quote, "USD");
