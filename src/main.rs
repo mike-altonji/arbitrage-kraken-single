@@ -2,6 +2,7 @@ use dotenv::dotenv;
 use futures::future::select_all;
 use kraken::update_volatility;
 use kraken_private::get_auth_token;
+use kraken_private_rest::fetch_asset_balances;
 use log4rs::{append::file::FileAppender, config};
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -17,6 +18,7 @@ mod influx;
 mod kraken;
 mod kraken_orders_listener;
 mod kraken_private;
+mod kraken_private_rest;
 mod structs;
 mod telegram;
 mod trade;
@@ -139,6 +141,19 @@ async fn main() {
                 })
             };
             all_handles.push(Box::pin(orders_handle));
+        }
+
+        // Keep balances up to date
+        let asset_balances = Arc::new(Mutex::new(HashMap::<String, f64>::new()));
+        if allow_trades {
+            let balance_handle = {
+                tokio::spawn(async move {
+                    fetch_asset_balances(&asset_balances)
+                        .await
+                        .expect("Failed to fetch data balances");
+                })
+            };
+            all_handles.push(Box::pin(balance_handle));
         }
 
         // Task dedicated to grabbing the most recent fee
