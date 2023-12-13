@@ -1,7 +1,9 @@
 use dotenv::dotenv;
 use evaluate_arbitrage::evaluate_arbitrage_opportunities;
 use futures::future::select_all;
-use kraken::update_volatility;
+use influx::spread_latency_from_influx;
+use kraken::{fetch_spreads, update_volatility};
+use kraken_orders_listener::fetch_orders;
 use kraken_private::get_auth_token;
 use kraken_private_rest::fetch_asset_balances;
 use log4rs::{append::file::FileAppender, config};
@@ -123,7 +125,7 @@ async fn main() {
             let pair_status_clone = pair_status.clone();
             let public_online_clone = public_online.clone();
             tokio::spawn(async move {
-                kraken::fetch_spreads(
+                fetch_spreads(
                     all_pairs_clone,
                     pair_to_spread_vec_clone,
                     pair_to_assets_vec_clone,
@@ -143,7 +145,7 @@ async fn main() {
             let orders_handle = {
                 let orders_clone = orders.clone();
                 tokio::spawn(async move {
-                    kraken_orders_listener::fetch_orders(&token_clone, &orders_clone)
+                    fetch_orders(&token_clone, &orders_clone)
                         .await
                         .expect("Failed to fetch data");
                 })
@@ -214,7 +216,7 @@ async fn main() {
                             .await
                             .expect("Volatility pull failed");
                     }
-                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    sleep(Duration::from_secs(10)).await;
                 }
             })
         };
@@ -225,10 +227,10 @@ async fn main() {
             let p90_latency_clone = p90_latency.clone();
             tokio::spawn(async move {
                 loop {
-                    influx::spread_latency_from_influx(p90_latency_clone.clone())
+                    spread_latency_from_influx(p90_latency_clone.clone())
                         .await
                         .expect("Failed to fetch latency from InfluxDB.");
-                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    sleep(Duration::from_secs(5)).await;
                 }
             })
         };
