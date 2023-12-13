@@ -57,11 +57,6 @@ async fn main() {
         retry += 1;
         sleep(Duration::from_secs(10)).await;
 
-        // Variables initialized for later use
-        let pair_status: Arc<Mutex<HashMap<String, bool>>> = Arc::new(Mutex::new(HashMap::new()));
-        let public_online = Arc::new(Mutex::new(false));
-        let p90_latency = Arc::new(Mutex::new(INFINITY));
-
         // Pull asset pairs and initialize bids/asks
         let (
             pair_to_assets_vec,
@@ -75,6 +70,8 @@ async fn main() {
             .expect("Failed to get asset pairs");
 
         // Keep bids/asks up to date
+        let pair_status: Arc<Mutex<HashMap<String, bool>>> = Arc::new(Mutex::new(HashMap::new()));
+        let public_online = Arc::new(Mutex::new(false));
         let fetch_handle = {
             let all_pairs = get_unique_pairs(&pair_to_assets_vec);
             let pair_to_spread_vec_clone = pair_to_spread_vec.clone();
@@ -180,6 +177,7 @@ async fn main() {
         all_handles.push(Box::pin(volatility_handle));
 
         // Task dedicated to knowing the p90 latency of spread fetches
+        let p90_latency = Arc::new(Mutex::new(INFINITY));
         let latency_handle = {
             let p90_latency_clone = p90_latency.clone();
             tokio::spawn(async move {
