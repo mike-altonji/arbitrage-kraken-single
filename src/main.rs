@@ -73,18 +73,17 @@ async fn main() {
         ) = extract_asset_pairs_from_csv_files("resources")
             .await
             .expect("Failed to get asset pairs");
-        let all_pairs = get_unique_pairs(&pair_to_assets_vec);
 
         // Keep bids/asks up to date
         let fetch_handle = {
-            let all_pairs_clone = all_pairs.clone();
+            let all_pairs = get_unique_pairs(&pair_to_assets_vec);
             let pair_to_spread_vec_clone = pair_to_spread_vec.clone();
             let pair_to_assets_vec_clone = pair_to_assets_vec.clone();
             let pair_status_clone = pair_status.clone();
             let public_online_clone = public_online.clone();
             tokio::spawn(async move {
                 fetch_spreads(
-                    all_pairs_clone,
+                    all_pairs,
                     pair_to_spread_vec_clone,
                     pair_to_assets_vec_clone,
                     pair_status_clone,
