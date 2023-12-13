@@ -23,7 +23,6 @@ pub async fn fetch_asset_balances(
             Ok(_) => (),
             Err(e) => log::error!("Error fetching balances: {}", e),
         }
-        println!("Balances: {:?}", asset_balances);
         sleep(Duration::from_secs(2)).await;
     }
 }
