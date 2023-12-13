@@ -63,6 +63,7 @@ async fn main() {
             assets_to_pair_vec,
             pair_to_spread_vec,
             fee_schedules,
+            pair_trade_mins,
             asset_pair_conversion,
             asset_name_conversion,
         ) = extract_asset_pairs_from_csv_files("resources")

@@ -1,7 +1,7 @@
 use crate::influx::setup_influx;
 use crate::structs::{
     AssetNameConverter, AssetsToPair, BaseQuote, BaseQuotePair, PairToAssets, PairToSpread,
-    PairToVolatility, Spread,
+    PairToTradeMin, PairToVolatility, Spread, TradeMin,
 };
 use crate::telegram::send_telegram_message;
 use crate::utils::compute_variance;
@@ -30,6 +30,7 @@ pub async fn asset_pairs_to_pull(
         AssetNameConverter,
         AssetNameConverter,
         HashMap<String, Vec<Vec<f64>>>,
+        PairToTradeMin,
     ),
     Box<dyn std::error::Error>,
 > {
@@ -53,6 +54,7 @@ pub async fn asset_pairs_to_pull(
     let text = resp.text().await?;
     let data_assets: serde_json::Value = serde_json::from_str(&text)?;
     let mut pair_to_fee = HashMap::new();
+    let mut pair_to_mins = PairToTradeMin::new();
 
     // Make the asset name converter
     let mut asset_name_conversion = AssetNameConverter::new();
@@ -84,6 +86,19 @@ pub async fn asset_pairs_to_pull(
             .map(|res| res.map_err(|e| e.into())) // Map the error type
             .collect::<Result<Vec<Vec<f64>>, Box<dyn std::error::Error>>>()?;
         pair_to_fee.insert(pair_ws.clone(), fee_schedule);
+
+        // Pair to mins
+        let ordermin = details["ordermin"]
+            .as_str()
+            .ok_or(format!("Failed to parse ordermin as string"))?
+            .parse::<f64>()
+            .map_err(|_| format!("Failed to parse ordermin as f64"))?;
+        let costmin = details["costmin"]
+            .as_str()
+            .ok_or(format!("Failed to parse costmin as string"))?
+            .parse::<f64>()
+            .map_err(|_| format!("Failed to parse costmin as f64"))?;
+        pair_to_mins.insert(pair_ws.clone(), TradeMin { ordermin, costmin });
 
         // Update name conversion
         asset_pair_conversion.insert(pair_ws.clone(), pair.to_string());
@@ -140,6 +155,7 @@ pub async fn asset_pairs_to_pull(
         asset_name_conversion,
         asset_pair_conversion,
         pair_to_fee,
+        pair_to_mins,
     ))
 }
 
@@ -492,6 +508,7 @@ mod tests {
             _asset_name_conversion,
             _asset_pair_conversion,
             pair_to_fee,
+            _pair_to_mins,
         ) = result.unwrap();
         assert!(pair_to_assets.contains_key("EUR/USD"));
         assert_eq!(pair_to_assets["EUR/USD"].base, "EUR");

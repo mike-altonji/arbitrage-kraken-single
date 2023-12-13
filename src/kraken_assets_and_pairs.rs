@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     kraken::asset_pairs_to_pull,
-    structs::{AssetNameConverter, AssetsToPair, PairToAssets, PairToSpread},
+    structs::{AssetNameConverter, AssetsToPair, PairToAssets, PairToSpread, PairToTradeMin},
     utils::get_csv_files_from_directory,
 };
 
@@ -17,6 +17,7 @@ pub async fn extract_asset_pairs_from_csv_files(
         Vec<AssetsToPair>,
         Vec<Arc<Mutex<PairToSpread>>>,
         HashMap<String, Vec<Vec<f64>>>,
+        PairToTradeMin,
         AssetNameConverter,
         AssetNameConverter,
     ),
@@ -26,6 +27,7 @@ pub async fn extract_asset_pairs_from_csv_files(
     let mut assets_to_pair_vec = Vec::new();
     let mut pair_to_spread_vec = Vec::new();
     let mut all_fee_schedules = HashMap::new();
+    let mut all_pair_trade_mins = PairToTradeMin::new();
     let mut all_asset_pair_conversion = AssetNameConverter::new();
     let mut all_asset_name_conversion = AssetNameConverter::new();
 
@@ -37,6 +39,7 @@ pub async fn extract_asset_pairs_from_csv_files(
             asset_name_conversion,
             asset_pair_conversion,
             fee_schedules,
+            pair_trade_mins,
         ) = asset_pairs_to_pull(&csv_file).await?;
         let pair_to_spread = Arc::new(Mutex::new(HashMap::new()));
         pair_to_assets_vec.push(pair_to_assets);
@@ -44,6 +47,9 @@ pub async fn extract_asset_pairs_from_csv_files(
         pair_to_spread_vec.push(pair_to_spread);
         for (key, value) in fee_schedules {
             all_fee_schedules.insert(key, value);
+        }
+        for (key, value) in pair_trade_mins {
+            all_pair_trade_mins.insert(key, value);
         }
         for (ws, rest) in asset_pair_conversion {
             all_asset_pair_conversion.insert(ws, rest);
@@ -56,6 +62,7 @@ pub async fn extract_asset_pairs_from_csv_files(
         assets_to_pair_vec,
         pair_to_spread_vec,
         all_fee_schedules,
+        all_pair_trade_mins,
         all_asset_pair_conversion,
         all_asset_name_conversion,
     ))
