@@ -207,6 +207,7 @@ async fn main() {
                 let volatility_clone = volatility_clone.clone();
                 let orders_clone = orders.clone();
                 let balances_clone = balances.clone();
+                let pair_trade_mins_clone = pair_trade_mins.clone();
                 tokio::spawn(async move {
                     let _ = evaluate_arbitrage_opportunities(
                         pair_to_assets_clone,
@@ -222,6 +223,7 @@ async fn main() {
                         volatility_clone,
                         orders_clone,
                         balances_clone,
+                        pair_trade_mins_clone,
                     )
                     .await;
                 })

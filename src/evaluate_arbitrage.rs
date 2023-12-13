@@ -1,6 +1,8 @@
 use crate::graph_algorithms::bellman_ford_negative_cycle;
 use crate::kraken_private::execute_trade;
-use crate::structs::{AssetsToPair, BaseQuote, OrderMap, PairToAssets, PairToVolatility, Spread};
+use crate::structs::{
+    AssetsToPair, BaseQuote, OrderMap, PairToAssets, PairToTradeMin, PairToVolatility, Spread,
+};
 use crate::structs::{Edge, PairToSpread};
 use crate::trade::rotate_path;
 use futures_util::SinkExt;
@@ -29,6 +31,7 @@ pub async fn evaluate_arbitrage_opportunities(
     volatility: Arc<Mutex<PairToVolatility>>,
     orders: Arc<Mutex<OrderMap>>,
     balances: Arc<Mutex<HashMap<String, f64>>>,
+    pair_to_trade_mins: PairToTradeMin,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Set up InfluxDB client
     dotenv::dotenv().ok();
@@ -48,6 +51,7 @@ pub async fn evaluate_arbitrage_opportunities(
     );
     let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
     let p90_latency_value = p90_latency.lock().unwrap().clone();
+    let assets_to_pair_clone = assets_to_pair.clone();
 
     let starters = HashSet::from(["USD".to_string(), "EUR".to_string()]);
 
@@ -147,10 +151,19 @@ pub async fn evaluate_arbitrage_opportunities(
                 &mut path_names,
                 &starters,
                 &volatility.lock().unwrap().clone(),
-                &assets_to_pair,
+                &assets_to_pair_clone,
             );
             let (mut min_volume, end_volume, rates) =
                 limiting_volume(&path_names, &rate_map, &volume_map);
+
+            let high_enough_trade_volume = is_trade_volume_high_enough(
+                &min_volume,
+                &path_names,
+                &pair_to_trade_mins,
+                assets_to_pair.clone(),
+                &pair_to_spread,
+            );
+
             let rates_clone = rates.clone();
 
             // Log and send message at most every 5 seconds
@@ -190,6 +203,7 @@ pub async fn evaluate_arbitrage_opportunities(
                 && end_volume / min_volume > MIN_ROI
                 && end_volume - min_volume > MIN_PROFIT
                 && p90_latency_value < MAX_LATENCY
+                && high_enough_trade_volume
             {
                 // When we want to limit trading by limiting `ordermin` per pair, will need to move above this if statement
                 let balances = balances.lock().unwrap().clone();
@@ -265,6 +279,48 @@ fn limiting_volume(
     }
     ending_volume *= min_volume;
     (min_volume, ending_volume, rate_vec)
+}
+
+/// If any trade in the path is below the ordermin or costmin for the pair, flag as false
+/// TODO: Should consider drop in volume over the trades based on fees. For now, ignoring
+fn is_trade_volume_high_enough(
+    min_volume: &f64,
+    path: &[String],
+    pair_to_trade_mins: &PairToTradeMin,
+    assets_to_pair: AssetsToPair,
+    pair_to_spread: &PairToSpread,
+) -> bool {
+    let mut traded_vol = *min_volume;
+    for i in 0..path.len() - 1 {
+        let asset1 = path[i].clone();
+        let asset2 = path[i + 1].clone();
+        let asset1_clone = asset1.clone();
+        let asset2_clone = asset2.clone();
+        let pair = assets_to_pair
+            .get(&(asset1, asset2))
+            .expect("Path contains invalid pair");
+        let spread = pair_to_spread
+            .get(&pair.pair)
+            .expect("Couldn't find spread");
+        let trade_mins = pair_to_trade_mins
+            .get(&pair.pair)
+            .expect("No trade min found");
+
+        if asset1_clone == pair.base {
+            if traded_vol < trade_mins.ordermin || traded_vol * spread.bid < trade_mins.costmin {
+                return false;
+            }
+            traded_vol *= spread.bid;
+        } else if asset2_clone == pair.base {
+            if traded_vol < trade_mins.costmin || traded_vol / spread.ask < trade_mins.ordermin {
+                return false;
+            }
+            traded_vol /= spread.ask;
+        } else {
+            panic!("Neither asset in pair is base");
+        }
+    }
+    true
 }
 
 fn generate_asset_to_index_map(pair_to_assets: &PairToAssets) -> HashMap<String, usize> {
