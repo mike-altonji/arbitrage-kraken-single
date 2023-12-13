@@ -37,11 +37,12 @@ async fn main() {
     let args: Vec<String> = env::args().collect();
     let allow_trades = args.contains(&"--trade".to_string());
     utils::init_logging();
-    if allow_trades {
-        send_telegram_message("🚀 Launching Kraken arbitrage: Trade mode").await;
+    let mode_message = if allow_trades {
+        "🚀 Launching Kraken arbitrage: Trade mode"
     } else {
-        send_telegram_message("🚀 Launching Kraken arbitrage: Evaluation-only mode").await;
-    }
+        "🚀 Launching Kraken arbitrage: Evaluation-only mode"
+    };
+    send_telegram_message(mode_message).await;
     let token = if allow_trades {
         Some(get_auth_token().await.expect("Could not pull auth token."))
     } else {
