@@ -20,6 +20,19 @@ pub fn init_logging() {
     log4rs::init_config(log_config).expect("Unable to build log file");
 }
 
+/// Helper function to list CSV files in a directory
+pub fn get_csv_files_from_directory(
+    directory: &str,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let paths = std::fs::read_dir(directory)?;
+    let csv_files: Vec<_> = paths
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().and_then(std::ffi::OsStr::to_str) == Some("csv"))
+        .map(|e| e.path().to_str().unwrap().to_string())
+        .collect();
+    Ok(csv_files)
+}
+
 /// Population variance
 pub fn compute_variance(values: Vec<f64>) -> f64 {
     let sum: f64 = values.iter().sum();
