@@ -62,9 +62,9 @@ async fn main() {
             pair_to_assets_vec,
             assets_to_pair_vec,
             pair_to_spread_vec,
-            all_fee_schedules,
-            all_asset_pair_conversion,
-            all_asset_name_conversion,
+            fee_schedules,
+            asset_pair_conversion,
+            asset_name_conversion,
         ) = extract_asset_pairs_from_csv_files("resources")
             .await
             .expect("Failed to get asset pairs");
@@ -113,7 +113,7 @@ async fn main() {
             let balance_handle = {
                 let balances_clone = balances.clone();
                 tokio::spawn(async move {
-                    fetch_asset_balances(&balances_clone, &all_asset_name_conversion)
+                    fetch_asset_balances(&balances_clone, &asset_name_conversion)
                         .await
                         .expect("Failed to fetch data balances");
                 })
@@ -123,14 +123,14 @@ async fn main() {
 
         // Task dedicated to grabbing the most recent fee
         let fees: Arc<Mutex<HashMap<String, f64>>> = Arc::new(Mutex::new(
-            all_fee_schedules
+            fee_schedules
                 .keys()
                 .map(|key| (key.clone(), 0.0026))
                 .collect(),
         ));
         let fees_handle = {
             let fees_clone = fees.clone();
-            let schedules_clone = all_fee_schedules.clone();
+            let schedules_clone = fee_schedules.clone();
             tokio::spawn(async move {
                 loop {
                     let vol = match get_30d_trade_volume().await {
@@ -153,7 +153,7 @@ async fn main() {
 
         // Task dedicated to keeping volatility up to date
         let volatility: Arc<Mutex<PairToVolatility>> = Arc::new(Mutex::new(
-            all_asset_pair_conversion
+            asset_pair_conversion
                 .ws_to_rest_map
                 .keys()
                 .map(|key| (key.clone(), INFINITY))
@@ -161,7 +161,7 @@ async fn main() {
         ));
         let volatility_clone = volatility.clone();
         let volatility_handle = {
-            let asset_pair_conversion = all_asset_pair_conversion.clone();
+            let asset_pair_conversion = asset_pair_conversion.clone();
             tokio::spawn(async move {
                 loop {
                     {
