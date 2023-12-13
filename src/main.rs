@@ -2,16 +2,15 @@ use dotenv::dotenv;
 use evaluate_arbitrage::evaluate_arbitrage_opportunities;
 use futures::future::select_all;
 use influx::spread_latency_from_influx;
-use kraken::{fetch_spreads, update_volatility};
+use kraken::{asset_pairs_to_pull, fetch_spreads, update_volatility};
 use kraken_orders_listener::fetch_orders;
 use kraken_private::get_auth_token;
 use kraken_private_rest::fetch_asset_balances;
-use log4rs::{append::file::FileAppender, config};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::f64::INFINITY;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use structs::{AssetNameConverter, OrderMap, PairToVolatility};
 use tokio::time::sleep;
 
@@ -37,21 +36,7 @@ async fn main() {
     dotenv().ok();
     let args: Vec<String> = env::args().collect();
     let allow_trades = args.contains(&"--trade".to_string());
-    let now = SystemTime::now();
-    let since_the_epoch = now.duration_since(UNIX_EPOCH).expect("Time invalid");
-    let timestamp = since_the_epoch.as_secs();
-    let log_config = FileAppender::builder()
-        .build(format!("logs/arbitrage_log_{}.log", timestamp))
-        .expect("Unable to build log file");
-    let log_config = config::Config::builder()
-        .appender(config::Appender::builder().build("default", Box::new(log_config)))
-        .build(
-            config::Root::builder()
-                .appender("default")
-                .build(log::LevelFilter::Info),
-        )
-        .expect("Unable to build log file");
-    log4rs::init_config(log_config).expect("Unable to build log file");
+    utils::init_logging();
     if allow_trades {
         send_telegram_message("🚀 Launching Kraken arbitrage: Trade mode").await;
     } else {
@@ -93,7 +78,7 @@ async fn main() {
                 asset_name_conversion,
                 asset_pair_conversion,
                 fee_schedules,
-            ) = kraken::asset_pairs_to_pull(&csv_file)
+            ) = asset_pairs_to_pull(&csv_file)
                 .await
                 .expect("Failed to get asset pairs");
             let pair_to_spread = Arc::new(Mutex::new(HashMap::new()));
