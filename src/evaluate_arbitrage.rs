@@ -24,7 +24,7 @@ pub async fn evaluate_arbitrage_opportunities(
     public_online: Arc<Mutex<bool>>,
     p90_latency: Arc<Mutex<f64>>,
     allow_trades: bool,
-    token: &str,
+    token: Option<&str>,
     graph_id: i64,
     volatility: Arc<Mutex<PairToVolatility>>,
     orders: Arc<Mutex<OrderMap>>,
@@ -207,7 +207,7 @@ pub async fn evaluate_arbitrage_opportunities(
                     &assets_to_pair,
                     pair_to_spread,
                     private_ws,
-                    token,
+                    token.expect("Token must exist to trade"),
                     fees_clone,
                     &orders,
                 )

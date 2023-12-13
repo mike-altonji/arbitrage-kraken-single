@@ -43,9 +43,9 @@ async fn main() {
         send_telegram_message("🚀 Launching Kraken arbitrage: Evaluation-only mode").await;
     }
     let token = if allow_trades {
-        get_auth_token().await.expect("Could not pull auth token.")
+        Some(get_auth_token().await.expect("Could not pull auth token."))
     } else {
-        "".to_string()
+        None
     };
 
     // Loop allows retries
@@ -126,7 +126,7 @@ async fn main() {
         // Keep orders up to date
         let orders = Arc::new(Mutex::new(OrderMap::new()));
         if allow_trades {
-            let token_clone = token.clone();
+            let token_clone = token.clone().expect("Token must exist to query orders");
             let orders_handle = {
                 let orders_clone = orders.clone();
                 tokio::spawn(async move {
@@ -231,7 +231,7 @@ async fn main() {
                 let fees_clone = fees.clone();
                 let pair_status_clone = pair_status.clone();
                 let public_online_clone = public_online.clone();
-                let token = token.clone();
+                let token_clone = token.clone();
                 let p90_latency_clone = p90_latency.clone();
                 let volatility_clone = volatility_clone.clone();
                 let orders_clone = orders.clone();
@@ -246,7 +246,7 @@ async fn main() {
                         public_online_clone,
                         p90_latency_clone,
                         allow_trades,
-                        token.as_str(),
+                        token_clone.as_deref(),
                         i as i64,
                         volatility_clone,
                         orders_clone,
