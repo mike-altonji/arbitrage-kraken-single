@@ -103,7 +103,7 @@ async fn handle_message_text(
             if let Value::Array(order_array) = &main_array[0] {
                 for order in order_array {
                     if let Value::Object(order_obj) = order {
-                        for (_key, value) in order_obj {
+                        for (order_key, value) in order_obj {
                             if let Value::Object(order_data) = value {
                                 if let Some(status) =
                                     order_data.get("status").and_then(|v| v.as_str())
@@ -138,6 +138,7 @@ async fn handle_message_text(
                                             .unwrap();
 
                                         let order_data = OrderData {
+                                            order_id: order_key.clone(),
                                             lastupdated,
                                             vol,
                                             cost,

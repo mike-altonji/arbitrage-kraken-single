@@ -1,6 +1,7 @@
 use base64::{decode_config, encode_config, STANDARD};
 use futures_util::SinkExt;
 use hmac::{Hmac, Mac, NewMac};
+use influx_db_client::Client;
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::Value;
 use sha2::{Digest, Sha256, Sha512};
@@ -14,6 +15,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use crate::structs::{AssetsToPair, OrderMap, PairToSpread};
+use crate::trade::{trade_leg_to_influx, trade_path_to_influx};
 
 const FIAT_BALANCE: f64 = 1000.0; // TODO: Replace with real number, kept up-to-date
 
@@ -120,6 +122,9 @@ pub async fn execute_trade(
     token: &str,
     fees: &HashMap<String, f64>,
     orders: &Arc<Mutex<OrderMap>>,
+    client: Arc<Client>,
+    graph_id: i64,
+    recent_latency: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut asset1_volume = min_volume.min(FIAT_BALANCE); // In terms of asset1. TODO: Remove hard-coding
     let mut remaining_asset1_volume: f64; // For determing how much to "sell back to starter"
@@ -146,12 +151,19 @@ pub async fn execute_trade(
         // Allow limit orders beyond expectations based on remaining ROI
         let remaining_roi = compute_roi(rates_expect, &rates_act);
         let price: f64;
+        let price_expected: f64;
         if buy_sell == "buy" {
+            price_expected = pair_to_spread[pair].ask;
             price = pair_to_spread[pair].ask * (1. + remaining_roi);
         } else {
+            price_expected = pair_to_spread[pair].bid;
             price = pair_to_spread[pair].bid * (1. - remaining_roi);
         }
 
+        let send_ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
         let userref = match make_trade(token, &buy_sell, trade_volume, price, pair, private_ws) {
             Ok(userref) => userref,
             Err(e) => return Err(e.into()),
@@ -170,6 +182,34 @@ pub async fn execute_trade(
             }
             tokio::time::sleep(Duration::from_micros(5)).await;
         }
+        let response_ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+
+        // Log individual trade details
+        let pair_clone = pair.clone();
+        let order_data_clone = order_data.clone();
+        let client_clone = Arc::clone(&client);
+        let buy_sell_clone = buy_sell.clone();
+        tokio::spawn(async move {
+            trade_leg_to_influx(
+                client_clone,
+                order_data_clone,
+                graph_id,
+                pair_clone,
+                (i + 1) as i64,
+                recent_latency,
+                send_ts,
+                response_ts,
+                buy_sell_clone,
+                trade_volume,
+                price_expected,
+                false,
+            )
+            .await;
+        });
+
         if let Some(order_data) = order_data {
             let vol = order_data.vol;
             let cost = order_data.cost;
