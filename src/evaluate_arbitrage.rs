@@ -204,6 +204,7 @@ pub async fn evaluate_arbitrage_opportunities(
                 && p90_latency_value < MAX_LATENCY
                 && high_enough_trade_volume
             {
+                log::info!("Trade should have triggered for {:?}", path_names_clone);
                 let winnings_expected = end_volume - min_volume; // Do before adjusting min_volume
 
                 // When we want to limit trading by limiting `ordermin` per pair, will need to move above this if statement
