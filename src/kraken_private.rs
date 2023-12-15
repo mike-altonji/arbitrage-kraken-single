@@ -125,11 +125,18 @@ pub async fn execute_trade(
     client: Arc<Client>,
     graph_id: i64,
     recent_latency: f64,
+    winnings_expected: f64,
+    roi_expected: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut asset1_volume = min_volume.min(FIAT_BALANCE); // In terms of asset1. TODO: Remove hard-coding
+    let starting_volume = min_volume.min(FIAT_BALANCE); // In terms of asset1. TODO: Remove hard-coding
+    let mut asset1_volume = starting_volume;
     let mut remaining_asset1_volume: f64; // For determing how much to "sell back to starter"
 
     let mut rates_act = Vec::<f64>::new();
+    let start_ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64();
     for i in 0..path_names.len() - 1 {
         let asset1 = &path_names[i];
         let asset2 = &path_names[i + 1];
@@ -251,6 +258,30 @@ pub async fn execute_trade(
             private_ws,
         );
     }
+    let ending_volume = asset1_volume;
+    let end_ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64();
+    let client_clone = Arc::clone(&client);
+    let winnings_actual = ending_volume - starting_volume;
+    let roi_actual = ending_volume / starting_volume - 1.;
+    tokio::spawn(async move {
+        trade_path_to_influx(
+            client_clone,
+            graph_id,
+            path_names,
+            recent_latency,
+            start_ts,
+            end_ts,
+            winnings_expected,
+            winnings_actual,
+            roi_expected,
+            roi_actual,
+        )
+        .await;
+    });
+
     Ok(())
 }
 

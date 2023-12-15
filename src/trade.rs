@@ -53,7 +53,7 @@ pub async fn trade_leg_to_influx(
 pub async fn trade_path_to_influx(
     client: Arc<Client>,
     graph_id: i64,
-    path: String,
+    path: Vec<String>,
     recent_latency: f64,
     start_ts: f64,
     end_ts: f64,
@@ -64,7 +64,7 @@ pub async fn trade_path_to_influx(
 ) {
     let point = Point::new("trade_path")
         .add_field("graph_id", Value::Integer(graph_id))
-        .add_field("path", Value::String(path))
+        .add_field("path", Value::String(path.join(", ")))
         .add_field("recent_latency", Value::Float(recent_latency))
         .add_field("start_ts", Value::Float(start_ts))
         .add_field("duration", Value::Float(end_ts - start_ts))
