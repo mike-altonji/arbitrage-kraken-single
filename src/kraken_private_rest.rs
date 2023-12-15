@@ -41,9 +41,11 @@ pub async fn fetch_asset_balances(
             Ok(_) => {
                 counter += 1;
                 if counter % 5 == 0 {
-                    let balances_clone = asset_balances.lock().unwrap().clone();
                     let client_clone = Arc::clone(&client);
-                    let _ = balances_to_influx(client_clone, balances_clone);
+                    let balances_clone = asset_balances.lock().unwrap().clone();
+                    tokio::spawn(async move {
+                        let _ = balances_to_influx(client_clone, balances_clone).await;
+                    });
                     counter = 0;
                 }
             }
@@ -150,7 +152,6 @@ pub async fn balances_to_influx(
     }
     let _ = client
         .write_points(points, Some(Precision::Nanoseconds), None)
-        .await
-        .expect("Failed to write to balances");
+        .await?;
     Ok(())
 }
