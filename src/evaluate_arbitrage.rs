@@ -196,7 +196,6 @@ pub async fn evaluate_arbitrage_opportunities(
             });
 
             // Execute Trade, given conditions
-            // TODO: Also only execute if have enough `FIAT_BALANCE`
             if starters.contains(path_names_clone[0].as_str())
                 && allow_trades
                 && path_names_clone.len() <= MAX_TRADES + 1
@@ -205,6 +204,8 @@ pub async fn evaluate_arbitrage_opportunities(
                 && p90_latency_value < MAX_LATENCY
                 && high_enough_trade_volume
             {
+                let winnings_expected = end_volume - min_volume; // Do before adjusting min_volume
+
                 // When we want to limit trading by limiting `ordermin` per pair, will need to move above this if statement
                 let balances = balances.lock().unwrap().clone();
                 let balance = balances.get(&path_names_clone[0]).unwrap_or(&0.0);
@@ -215,7 +216,6 @@ pub async fn evaluate_arbitrage_opportunities(
                     .as_mut()
                     .ok_or("Can't execute trades: Private WebSocket does not exist")?;
                 let client_clone = Arc::clone(&client);
-                let winnings_expected = end_volume - min_volume;
                 let roi_expected = end_volume / min_volume - 1.;
                 execute_trade(
                     path_names_clone,
