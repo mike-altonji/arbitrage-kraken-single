@@ -1,6 +1,7 @@
 use base64::{decode_config, encode_config, STANDARD};
 use dotenv::dotenv;
 use hmac::{Hmac, Mac, NewMac};
+use influx_db_client::{Client, Point, Precision, Value};
 use reqwest::header::{HeaderMap, HeaderValue};
 use sha2::{Digest, Sha256, Sha512};
 use std::time::Duration;
@@ -11,6 +12,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::time::sleep;
+use url::Url;
 
 use crate::structs::AssetNameConverter;
 
@@ -18,9 +20,33 @@ pub async fn fetch_asset_balances(
     asset_balances: &Arc<Mutex<HashMap<String, f64>>>,
     asset_name_conversion: &AssetNameConverter,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Set up InfluxDB client
+    dotenv::dotenv().ok();
+    let host = std::env::var("INFLUXDB_HOST").expect("INFLUXDB_HOST must be set");
+    let port = std::env::var("INFLUXDB_PORT").expect("INFLUXDB_PORT must be set");
+    let db_name = std::env::var("DB_NAME").expect("DB_NAME must be set");
+    let user = std::env::var("DB_USER").expect("DB_USER must be set");
+    let password = std::env::var("DB_PASSWORD").expect("DB_PASSWORD must be set");
+    let client = Arc::new(
+        Client::new(
+            Url::parse(&format!("http://{}:{}", &host, &port)).expect("Failed to parse URL"),
+            &db_name,
+        )
+        .set_authentication(&user, &password),
+    );
+    // Update balances and occassionally log to InfluxDB
+    let mut counter = 0;
     loop {
         match update_balances(asset_balances, asset_name_conversion).await {
-            Ok(_) => (),
+            Ok(_) => {
+                counter += 1;
+                if counter % 5 == 0 {
+                    let balances_clone = asset_balances.lock().unwrap().clone();
+                    let client_clone = Arc::clone(&client);
+                    let _ = balances_to_influx(client_clone, balances_clone);
+                    counter = 0;
+                }
+            }
             Err(e) => log::error!("Error fetching balances: {}", e),
         }
         sleep(Duration::from_secs(2)).await;
@@ -107,5 +133,24 @@ pub async fn update_balances(
     let mut asset_balances = asset_balances.lock().unwrap();
     *asset_balances = data_balances;
 
+    Ok(())
+}
+
+/// Log asset balances in Influx
+pub async fn balances_to_influx(
+    client: Arc<Client>,
+    balances: HashMap<String, f64>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut points = Vec::new();
+    for (asset, balance) in balances {
+        let point = Point::new("balances")
+            .add_tag("asset", Value::String(asset))
+            .add_field("balance", Value::Float(balance));
+        points.push(point);
+    }
+    let _ = client
+        .write_points(points, Some(Precision::Nanoseconds), None)
+        .await
+        .expect("Failed to write to balances");
     Ok(())
 }
