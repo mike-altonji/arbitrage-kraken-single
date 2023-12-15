@@ -2,10 +2,10 @@ use dotenv::dotenv;
 use evaluate_arbitrage::evaluate_arbitrage_opportunities;
 use futures::future::select_all;
 use influx::spread_latency_from_influx;
-use kraken::{fetch_spreads, update_volatility};
+use kraken::{fetch_spreads, update_fees_based_on_volume, update_volatility};
 use kraken_assets_and_pairs::{extract_asset_pairs_from_csv_files, get_unique_pairs};
 use kraken_orders_listener::fetch_orders;
-use kraken_private::get_auth_token;
+use kraken_private::{get_30d_trade_volume, get_auth_token};
 use kraken_private_rest::fetch_asset_balances;
 use std::collections::HashMap;
 use std::env;
@@ -13,6 +13,7 @@ use std::f64::INFINITY;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use structs::{OrderMap, PairToVolatility};
+use telegram::send_telegram_message;
 use tokio::time::sleep;
 
 mod evaluate_arbitrage;
@@ -27,10 +28,6 @@ mod structs;
 mod telegram;
 mod trade;
 mod utils;
-
-use crate::kraken::update_fees_based_on_volume;
-use crate::kraken_private::get_30d_trade_volume;
-use crate::telegram::send_telegram_message;
 
 #[tokio::main]
 async fn main() {
@@ -132,6 +129,7 @@ async fn main() {
         let fees_handle = {
             let fees_clone = fees.clone();
             let schedules_clone = fee_schedules.clone();
+            sleep(Duration::from_secs(3)).await; // Avoids duplicating tokens, which fails
             tokio::spawn(async move {
                 loop {
                     let vol = match get_30d_trade_volume().await {
