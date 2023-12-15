@@ -17,6 +17,7 @@ pub async fn trade_leg_to_influx(
     price_expected: f64,   // The expected bid or ask price from spread. No fees.
     back_to_starter: bool, // bool for if this is us reverting to the starting currency
 ) {
+    let trade_direction_clone = trade_direction.clone();
     let mut point = Point::new("trade_leg")
         .add_field("graph_id", Value::Integer(graph_id))
         .add_field("pair", Value::String(pair))
@@ -32,6 +33,11 @@ pub async fn trade_leg_to_influx(
         let send_to_execute = order.lastupdated - send_ts;
         let send_to_response = response_ts - send_ts;
         let price_pct_diff = order.price / price_expected - 1.;
+        let got_good_price = match trade_direction_clone.as_str() {
+            "sell" if price_pct_diff >= 0. => 1.,
+            "buy" if price_pct_diff <= 0. => 1.,
+            _ => 0.,
+        };
         point = point
             .add_field("send_to_execute", Value::Float(send_to_execute))
             .add_field("send_to_response", Value::Float(send_to_response))
@@ -40,7 +46,8 @@ pub async fn trade_leg_to_influx(
             .add_field("price_actual", Value::Float(order.price))
             .add_field("cost_actual", Value::Float(order.cost))
             .add_field("fee_actual", Value::Float(order.fee))
-            .add_field("price_pct_diff", Value::Float(price_pct_diff));
+            .add_field("price_pct_diff", Value::Float(price_pct_diff))
+            .add_field("win", Value::Float(got_good_price));
     }
 
     let _ = client
@@ -72,7 +79,11 @@ pub async fn trade_path_to_influx(
         .add_field("winnings_actual", Value::Float(winnings_actual))
         .add_field("roi_expected", Value::Float(roi_expected))
         .add_field("roi_actual", Value::Float(roi_actual))
-        .add_field("roi_pct_diff", Value::Float(roi_actual / roi_expected - 1.));
+        .add_field("roi_pct_diff", Value::Float(roi_actual / roi_expected - 1.))
+        .add_field(
+            "win",
+            Value::Float(if winnings_actual > 0. { 1. } else { 0. }),
+        );
 
     let _ = client
         .write_point(point, Some(Precision::Nanoseconds), None)
