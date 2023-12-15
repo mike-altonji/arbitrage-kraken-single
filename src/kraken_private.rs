@@ -17,8 +17,6 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use crate::structs::{AssetsToPair, OrderMap, PairToSpread};
 use crate::trade::{trade_leg_to_influx, trade_path_to_influx};
 
-const FIAT_BALANCE: f64 = 1000.0; // TODO: Replace with real number, kept up-to-date
-
 pub async fn get_auth_token() -> Result<String, Box<dyn std::error::Error>> {
     let api_key = env::var("KRAKEN_KEY").expect("KRAKEN_KEY must be set");
     let api_secret = env::var("KRAKEN_SECRET").expect("KRAKEN_SECRET must be set");
@@ -128,7 +126,7 @@ pub async fn execute_trade(
     winnings_expected: f64,
     roi_expected: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let starting_volume = min_volume.min(FIAT_BALANCE); // In terms of asset1. TODO: Remove hard-coding
+    let starting_volume = min_volume;
     let mut asset1_volume = starting_volume;
     let mut remaining_asset1_volume: f64; // For determing how much to "sell back to starter"
 
