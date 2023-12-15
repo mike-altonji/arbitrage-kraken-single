@@ -12,10 +12,10 @@ use std::sync::{Arc, Mutex};
 use tokio::time::{sleep, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-const MIN_ROI: f64 = 1.0025;
-const MIN_PROFIT: f64 = 0.10;
+const MIN_ROI: f64 = 1.00;
+const MIN_PROFIT: f64 = 0.01;
 const MAX_TRADES: usize = 4;
-const MAX_LATENCY: f64 = 0.100;
+const MAX_LATENCY: f64 = 0.200;
 
 pub async fn evaluate_arbitrage_opportunities(
     pair_to_assets: PairToAssets,
