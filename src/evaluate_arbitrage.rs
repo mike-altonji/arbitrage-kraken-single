@@ -214,6 +214,9 @@ pub async fn evaluate_arbitrage_opportunities(
                 let private_ws = private_ws
                     .as_mut()
                     .ok_or("Can't execute trades: Private WebSocket does not exist")?;
+                let client_clone = Arc::clone(&client);
+                let winnings_expected = end_volume - min_volume;
+                let roi_expected = end_volume / min_volume - 1.;
                 execute_trade(
                     path_names_clone,
                     &rates_clone,
@@ -224,6 +227,11 @@ pub async fn evaluate_arbitrage_opportunities(
                     token.expect("Token must exist to trade"),
                     fees_clone,
                     &orders,
+                    client_clone,
+                    graph_id,
+                    p90_latency_value,
+                    winnings_expected,
+                    roi_expected,
                 )
                 .await?;
             }

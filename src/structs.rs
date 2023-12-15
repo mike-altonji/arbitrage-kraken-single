@@ -88,6 +88,7 @@ impl IntoIterator for AssetNameConverter {
 
 #[derive(Debug, Clone)]
 pub struct OrderData {
+    pub order_id: String,
     pub lastupdated: f64,
     pub vol: f64,
     pub cost: f64,
