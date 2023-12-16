@@ -59,7 +59,7 @@ pub async fn evaluate_arbitrage_opportunities(
     let mut private_ws = None;
     if allow_trades {
         let (ws, _) = connect_async("wss://ws-auth.kraken.com").await?;
-        private_ws = Some(ws);
+        private_ws = Some(Arc::new(tokio::sync::Mutex::new(ws)));
         let sub_msg = serde_json::json!({
             "event": "subscribe",
             "subscription": {
@@ -67,8 +67,9 @@ pub async fn evaluate_arbitrage_opportunities(
                 "token": token
             }
         });
-        if let Some(ws) = &mut private_ws {
-            ws.send(Message::Text(sub_msg.to_string())).await?;
+        if let Some(ws) = &private_ws {
+            let mut lock = ws.lock().await;
+            lock.send(Message::Text(sub_msg.to_string())).await?;
         }
     }
 
@@ -212,10 +213,13 @@ pub async fn evaluate_arbitrage_opportunities(
                 let balance = balances.get(&path_names_clone[0]).unwrap_or(&0.0);
                 min_volume = min_volume.min(*balance * 0.8); // Only trade up to 80% of what we have, to avoid failing trades
 
-                let fees_clone = &fees.lock().unwrap().clone();
-                let private_ws = private_ws
-                    .as_mut()
-                    .ok_or("Can't execute trades: Private WebSocket does not exist")?;
+                let fees_clone = fees.lock().unwrap().clone();
+                let private_ws_arc = match &private_ws {
+                    Some(ws) => Arc::clone(ws),
+                    None => {
+                        return Err("Can't execute trades: Private WebSocket does not exist".into())
+                    }
+                };
                 let client_clone = Arc::clone(&client);
                 let roi_expected = end_volume / min_volume - 1.;
                 execute_trade(
@@ -224,9 +228,9 @@ pub async fn evaluate_arbitrage_opportunities(
                     min_volume,
                     &assets_to_pair,
                     pair_to_spread,
-                    private_ws,
+                    private_ws_arc,
                     token.expect("Token must exist to trade"),
-                    fees_clone,
+                    &fees_clone,
                     &orders,
                     client_clone,
                     graph_id,
@@ -234,7 +238,7 @@ pub async fn evaluate_arbitrage_opportunities(
                     winnings_expected,
                     roi_expected,
                 )
-                .await?;
+                .await;
             }
         }
     }
