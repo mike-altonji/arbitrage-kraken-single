@@ -101,11 +101,19 @@ pub async fn get_30d_trade_volume() -> Result<f64, Box<dyn std::error::Error>> {
 
     let response_text = res.text().await?;
     let v: Value = serde_json::from_str(&response_text)?;
-    let volume = v["result"]["volume"]
-        .as_str()
-        .unwrap()
-        .parse::<f64>()
-        .unwrap();
+    let volume = match v["result"]["volume"].as_str() {
+        Some(volume_str) => match volume_str.parse::<f64>() {
+            Ok(parsed_volume) => parsed_volume,
+            Err(e) => {
+                log::warn!("Failed to parse volume as f64: {}. Defaulting to 0.", e);
+                0.0
+            }
+        },
+        None => {
+            log::warn!("Failed to get volume as string from response. Defaulting to 0.");
+            0.0
+        }
+    };
 
     Ok(volume)
 }
