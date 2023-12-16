@@ -239,6 +239,15 @@ pub async fn evaluate_arbitrage_opportunities(
                     roi_expected,
                 )
                 .await;
+            } else {
+                log::info!("Trade did not trigger. Values are: starters contains path_names_clone[0]: {}, allow_trades: {}, path_names_clone.len() <= MAX_TRADES + 1: {}, end_volume / min_volume > MIN_ROI: {}, end_volume - min_volume > MIN_PROFIT: {}, p90_latency_value < MAX_LATENCY: {}, high_enough_trade_volume: {}",
+                           starters.contains(path_names_clone[0].as_str()),
+                           allow_trades,
+                           path_names_clone.len(),
+                           end_volume / min_volume,
+                           end_volume - min_volume,
+                           p90_latency_value,
+                           high_enough_trade_volume);
             }
         }
     }
