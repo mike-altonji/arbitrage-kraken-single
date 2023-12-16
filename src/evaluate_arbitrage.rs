@@ -205,7 +205,7 @@ pub async fn evaluate_arbitrage_opportunities(
                 && p90_latency_value < MAX_LATENCY
                 && high_enough_trade_volume
             {
-                log::info!("Trade should have triggered for {:?}", path_names_clone);
+                log::debug!("Trade should have triggered for {:?}", path_names_clone);
                 let winnings_expected = end_volume - min_volume; // Do before adjusting min_volume
 
                 // When we want to limit trading by limiting `ordermin` per pair, will need to move above this if statement
@@ -240,7 +240,7 @@ pub async fn evaluate_arbitrage_opportunities(
                 )
                 .await;
             } else {
-                log::info!("Trade did not trigger. Values are: starters contains path_names_clone[0]: {}, allow_trades: {}, path_names_clone.len() <= MAX_TRADES + 1: {}, end_volume / min_volume > MIN_ROI: {}, end_volume - min_volume > MIN_PROFIT: {}, p90_latency_value < MAX_LATENCY: {}, high_enough_trade_volume: {}",
+                log::debug!("Trade did not trigger. Values are: starters contains path_names_clone[0]: {}, allow_trades: {}, path_names_clone.len() <= MAX_TRADES + 1: {}, end_volume / min_volume > MIN_ROI: {}, end_volume - min_volume > MIN_PROFIT: {}, p90_latency_value < MAX_LATENCY: {}, high_enough_trade_volume: {}",
                            starters.contains(path_names_clone[0].as_str()),
                            allow_trades,
                            path_names_clone.len(),
