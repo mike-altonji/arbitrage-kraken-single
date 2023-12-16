@@ -360,10 +360,10 @@ fn make_trade(
             "type": "buy",
             "ordertype": "limit",
             "timeinforce": "IOC",
-            "price": price,
-            "volume": volume,
+            "price": price.to_string(),
+            "volume": volume.to_string(),
             "pair": pair,
-            "userref": userref,
+            "userref": userref.to_string(),
         })
         .to_string();
     } else {
@@ -372,12 +372,13 @@ fn make_trade(
             "token": token,
             "type": "sell",
             "ordertype": "market",
-            "volume": volume,
+            "volume": volume.to_string(),
             "pair": pair,
-            "userref": userref,
+            "userref": userref.to_string(),
         })
         .to_string();
     }
+    log::info!("Trade message (compare to Python): {trade_msg}");
     let private_ws_clone = Arc::clone(&private_ws);
     tokio::spawn(async move {
         let mut lock = private_ws_clone.lock().await;
