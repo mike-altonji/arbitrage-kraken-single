@@ -116,7 +116,7 @@ pub async fn execute_trade(
     min_volume: f64,
     assets_to_pair: &AssetsToPair,
     pair_to_spread: PairToSpread,
-    private_ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+    private_ws: Arc<tokio::sync::Mutex<WebSocketStream<MaybeTlsStream<TcpStream>>>>,
     token: &str,
     fees: &HashMap<String, f64>,
     orders: &Arc<Mutex<OrderMap>>,
@@ -129,6 +129,8 @@ pub async fn execute_trade(
     let starting_volume = min_volume;
     let mut asset1_volume = starting_volume;
     let mut remaining_asset1_volume: f64; // For determing how much to "sell back to starter"
+    let private_ws_clone = private_ws.clone();
+    let private_ws_clone2 = private_ws.clone();
 
     let mut rates_act = Vec::<f64>::new();
     let start_ts = SystemTime::now()
@@ -169,7 +171,14 @@ pub async fn execute_trade(
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs_f64();
-        let userref = match make_trade(token, &buy_sell, trade_volume, price, pair, private_ws) {
+        let userref = match make_trade(
+            token,
+            &buy_sell,
+            trade_volume,
+            price,
+            pair,
+            Arc::clone(&private_ws_clone),
+        ) {
             Ok(userref) => userref,
             Err(e) => return Err(e.into()),
         };
@@ -238,7 +247,7 @@ pub async fn execute_trade(
                 &fees,
                 &pair_to_spread,
                 token,
-                private_ws,
+                private_ws_clone,
             );
             let msg = "Attempted trade yielded no order.";
             log::warn!("{}", msg);
@@ -253,7 +262,7 @@ pub async fn execute_trade(
             &fees,
             &pair_to_spread,
             token,
-            private_ws,
+            private_ws_clone2.clone(),
         );
     }
     let ending_volume = asset1_volume;
@@ -329,7 +338,7 @@ fn make_trade(
     volume: f64,
     price: f64,
     pair: &String,
-    private_ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+    private_ws: Arc<tokio::sync::Mutex<WebSocketStream<MaybeTlsStream<TcpStream>>>>,
 ) -> Result<i32, Box<dyn std::error::Error>> {
     let userref = rand::random::<i32>();
 
@@ -359,7 +368,11 @@ fn make_trade(
         })
         .to_string();
     }
-    let _ = private_ws.send(Message::Text(trade_msg)); // Don't wait for trade to go through
+    let private_ws_clone = Arc::clone(&private_ws);
+    tokio::spawn(async move {
+        let mut lock = private_ws_clone.lock().await;
+        let _ = lock.send(Message::Text(trade_msg)).await; // Don't wait for trade to go through
+    });
     Ok(userref)
 }
 
@@ -371,7 +384,7 @@ fn trade_back_to_starter(
     fees: &HashMap<String, f64>,
     pair_to_spread: &PairToSpread,
     token: &str,
-    private_ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+    private_ws: Arc<tokio::sync::Mutex<WebSocketStream<MaybeTlsStream<TcpStream>>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let pair_data = assets_to_pair
         .get(&(asset1.to_string(), path_names[0].to_string()))
