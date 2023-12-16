@@ -358,7 +358,7 @@ fn make_trade(
     pair: &String,
     private_ws: Arc<tokio::sync::Mutex<WebSocketStream<MaybeTlsStream<TcpStream>>>>,
 ) -> Result<i32, Box<dyn std::error::Error>> {
-    let userref = rand::random::<i32>();
+    let userref = rand::random::<u32>() as i32;
 
     let trade_msg: String;
     if trade_type == "buy" {
