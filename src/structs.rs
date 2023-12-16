@@ -27,6 +27,13 @@ pub type PairToSpread = HashMap<String, Spread>;
 
 pub type PairToVolatility = HashMap<String, f64>;
 
+#[derive(Clone)]
+pub struct Decimals {
+    pub volume: usize,
+    pub price: usize,
+}
+pub type PairToDecimals = HashMap<String, Decimals>;
+
 #[derive(Debug, Clone)]
 pub struct TradeMin {
     pub ordermin: f64,
