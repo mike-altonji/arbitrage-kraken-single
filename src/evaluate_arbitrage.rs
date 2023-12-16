@@ -1,7 +1,8 @@
 use crate::graph_algorithms::bellman_ford_negative_cycle;
 use crate::kraken_private::execute_trade;
 use crate::structs::{
-    AssetsToPair, BaseQuote, OrderMap, PairToAssets, PairToTradeMin, PairToVolatility, Spread,
+    AssetsToPair, BaseQuote, OrderMap, PairToAssets, PairToDecimals, PairToTradeMin,
+    PairToVolatility, Spread,
 };
 use crate::structs::{Edge, PairToSpread};
 use crate::trade::rotate_path;
@@ -22,6 +23,7 @@ pub async fn evaluate_arbitrage_opportunities(
     assets_to_pair: AssetsToPair,
     pair_to_spread: Arc<Mutex<PairToSpread>>,
     fees: Arc<Mutex<HashMap<String, f64>>>,
+    pair_to_decimals: PairToDecimals,
     pair_status: Arc<Mutex<HashMap<String, bool>>>,
     public_online: Arc<Mutex<bool>>,
     p90_latency: Arc<Mutex<f64>>,
@@ -224,6 +226,7 @@ pub async fn evaluate_arbitrage_opportunities(
                 let roi_expected = end_volume / min_volume - 1.;
                 execute_trade(
                     path_names_clone,
+                    pair_to_decimals.clone(),
                     &rates_clone,
                     min_volume,
                     &assets_to_pair,

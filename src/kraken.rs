@@ -1,7 +1,7 @@
 use crate::influx::setup_influx;
 use crate::structs::{
-    AssetNameConverter, AssetsToPair, BaseQuote, BaseQuotePair, PairToAssets, PairToSpread,
-    PairToTradeMin, PairToVolatility, Spread, TradeMin,
+    AssetNameConverter, AssetsToPair, BaseQuote, BaseQuotePair, Decimals, PairToAssets,
+    PairToDecimals, PairToSpread, PairToTradeMin, PairToVolatility, Spread, TradeMin,
 };
 use crate::telegram::send_telegram_message;
 use crate::utils::compute_variance;
@@ -30,6 +30,7 @@ pub async fn asset_pairs_to_pull(
         AssetNameConverter,
         AssetNameConverter,
         HashMap<String, Vec<Vec<f64>>>,
+        PairToDecimals,
         PairToTradeMin,
     ),
     Box<dyn std::error::Error>,
@@ -54,6 +55,7 @@ pub async fn asset_pairs_to_pull(
     let text = resp.text().await?;
     let data_assets: serde_json::Value = serde_json::from_str(&text)?;
     let mut pair_to_fee = HashMap::new();
+    let mut pair_to_decimals = PairToDecimals::new();
     let mut pair_to_mins = PairToTradeMin::new();
 
     // Make the asset name converter
@@ -72,6 +74,8 @@ pub async fn asset_pairs_to_pull(
         let pair_ws = details["wsname"].as_str().unwrap_or("").to_string();
         let base = details["base"].as_str().unwrap_or("").to_string();
         let quote = details["quote"].as_str().unwrap_or("").to_string();
+        let vol_decimals = details["lot_decimals"].as_u64().unwrap() as usize;
+        let price_decimals = details["pair_decimals"].as_u64().unwrap() as usize;
         let fee_schedule = details["fees"]
             .as_array()
             .ok_or("Fees not an array")?
@@ -86,6 +90,13 @@ pub async fn asset_pairs_to_pull(
             .map(|res| res.map_err(|e| e.into())) // Map the error type
             .collect::<Result<Vec<Vec<f64>>, Box<dyn std::error::Error>>>()?;
         pair_to_fee.insert(pair_ws.clone(), fee_schedule);
+        pair_to_decimals.insert(
+            pair_ws.clone(),
+            Decimals {
+                volume: vol_decimals,
+                price: price_decimals,
+            },
+        );
 
         // Pair to mins
         let ordermin = details["ordermin"]
@@ -155,6 +166,7 @@ pub async fn asset_pairs_to_pull(
         asset_name_conversion,
         asset_pair_conversion,
         pair_to_fee,
+        pair_to_decimals,
         pair_to_mins,
     ))
 }
@@ -508,6 +520,7 @@ mod tests {
             _asset_name_conversion,
             _asset_pair_conversion,
             pair_to_fee,
+            _pair_to_decimals,
             _pair_to_mins,
         ) = result.unwrap();
         assert!(pair_to_assets.contains_key("EUR/USD"));

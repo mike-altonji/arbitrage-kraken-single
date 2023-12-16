@@ -14,7 +14,7 @@ use tokio::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use crate::structs::{AssetsToPair, OrderMap, PairToSpread};
+use crate::structs::{AssetsToPair, OrderMap, PairToDecimals, PairToSpread};
 use crate::trade::{trade_leg_to_influx, trade_path_to_influx};
 
 pub async fn get_auth_token() -> Result<String, Box<dyn std::error::Error>> {
@@ -120,6 +120,7 @@ pub async fn get_30d_trade_volume() -> Result<f64, Box<dyn std::error::Error>> {
 
 pub async fn execute_trade(
     path_names: Vec<String>,
+    pair_to_decimals: PairToDecimals,
     rates_expect: &Vec<f64>,
     min_volume: f64,
     assets_to_pair: &AssetsToPair,
@@ -139,6 +140,9 @@ pub async fn execute_trade(
     let mut remaining_asset1_volume: f64; // For determing how much to "sell back to starter"
     let private_ws_clone = private_ws.clone();
     let private_ws_clone2 = private_ws.clone();
+    let pair_to_decimals_clone1 = pair_to_decimals.clone();
+    let pair_to_decimals_clone2 = pair_to_decimals.clone();
+    let pair_to_decimals_clone3 = pair_to_decimals.clone();
 
     let mut rates_act = Vec::<f64>::new();
     let start_ts = SystemTime::now()
@@ -191,6 +195,7 @@ pub async fn execute_trade(
             .as_secs_f64();
         let userref = match make_trade(
             token,
+            pair_to_decimals_clone1.clone(),
             &buy_sell,
             trade_volume,
             price,
@@ -263,6 +268,7 @@ pub async fn execute_trade(
             let _ = trade_back_to_starter(
                 &asset1,
                 &path_names,
+                pair_to_decimals_clone2.clone(),
                 &assets_to_pair,
                 asset1_volume,
                 &fees,
@@ -277,6 +283,7 @@ pub async fn execute_trade(
         let _ = trade_back_to_starter(
             &asset1,
             &path_names,
+            pair_to_decimals_clone3.clone(),
             &assets_to_pair,
             remaining_asset1_volume,
             &fees,
@@ -352,6 +359,7 @@ fn determine_trade_info(
 
 fn make_trade(
     token: &str,
+    pair_to_decimals: PairToDecimals,
     trade_type: &String,
     volume: f64,
     price: f64,
@@ -359,6 +367,10 @@ fn make_trade(
     private_ws: Arc<tokio::sync::Mutex<WebSocketStream<MaybeTlsStream<TcpStream>>>>,
 ) -> Result<i32, Box<dyn std::error::Error>> {
     let userref = rand::random::<u32>() as i32;
+
+    let decimals = pair_to_decimals.get(pair).unwrap();
+    let price_str = format!("{:.*}", decimals.price, price);
+    let volume_str = format!("{:.*}", decimals.volume, volume);
 
     let trade_msg: String;
     if trade_type == "buy" {
@@ -368,8 +380,8 @@ fn make_trade(
             "type": "buy",
             "ordertype": "limit",
             "timeinforce": "IOC",
-            "price": price.to_string(),
-            "volume": volume.to_string(),
+            "price": price_str,
+            "volume": volume_str,
             "pair": pair,
             "userref": userref.to_string(),
         })
@@ -380,7 +392,7 @@ fn make_trade(
             "token": token,
             "type": "sell",
             "ordertype": "market",
-            "volume": volume.to_string(),
+            "volume": volume_str,
             "pair": pair,
             "userref": userref.to_string(),
         })
@@ -398,6 +410,7 @@ fn make_trade(
 fn trade_back_to_starter(
     asset1: &String,
     path_names: &Vec<String>,
+    pair_to_decimals: PairToDecimals,
     assets_to_pair: &AssetsToPair,
     remaining_asset1_volume: f64,
     fees: &HashMap<String, f64>,
@@ -424,6 +437,7 @@ fn trade_back_to_starter(
     )?;
     let _ = make_trade(
         token,
+        pair_to_decimals,
         &buy_sell,
         trade_volume,
         pair_to_spread[pair].ask,
