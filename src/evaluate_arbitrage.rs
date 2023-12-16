@@ -238,7 +238,7 @@ pub async fn evaluate_arbitrage_opportunities(
                     winnings_expected,
                     roi_expected,
                 )
-                .await?;
+                .await;
             }
         }
     }

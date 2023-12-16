@@ -125,7 +125,7 @@ pub async fn execute_trade(
     recent_latency: f64,
     winnings_expected: f64,
     roi_expected: f64,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> () {
     let starting_volume = min_volume;
     let mut asset1_volume = starting_volume;
     let mut remaining_asset1_volume: f64; // For determing how much to "sell back to starter"
@@ -140,12 +140,16 @@ pub async fn execute_trade(
     for i in 0..path_names.len() - 1 {
         let asset1 = &path_names[i];
         let asset2 = &path_names[i + 1];
-        let pair_data = assets_to_pair
-            .get(&(asset1.to_string(), asset2.to_string()))
-            .ok_or(format!("Trade failed: No {} & {} pair", asset1, asset2))?;
+        let pair_data = match assets_to_pair.get(&(asset1.to_string(), asset2.to_string())) {
+            Some(pair_data) => pair_data,
+            None => {
+                log::error!("Trade failed: No {} & {} pair", asset1, asset2);
+                return;
+            }
+        };
         let pair = &pair_data.pair;
         let base = &pair_data.base;
-        let (buy_sell, trade_volume) = determine_trade_info(
+        let (buy_sell, trade_volume) = match determine_trade_info(
             asset1,
             asset2,
             base,
@@ -153,7 +157,13 @@ pub async fn execute_trade(
             asset1_volume,
             fees[pair],
             &pair_to_spread,
-        )?;
+        ) {
+            Ok((buy_sell, trade_volume)) => (buy_sell, trade_volume),
+            Err(e) => {
+                log::error!("Error determining trade info: {:?}", e);
+                return;
+            }
+        };
 
         // Allow limit orders beyond expectations based on remaining ROI
         let remaining_roi = compute_roi(rates_expect, &rates_act);
@@ -180,7 +190,10 @@ pub async fn execute_trade(
             Arc::clone(&private_ws_clone),
         ) {
             Ok(userref) => userref,
-            Err(e) => return Err(e.into()),
+            Err(e) => {
+                log::error!("Error making trade: {:?}", e);
+                return;
+            }
         };
         let mut order_data = None;
         let start = Instant::now();
@@ -249,9 +262,8 @@ pub async fn execute_trade(
                 token,
                 private_ws_clone,
             );
-            let msg = "Attempted trade yielded no order.";
-            log::warn!("{}", msg);
-            return Err(msg.into());
+            log::warn!("Attempted trade yielded no order.");
+            return;
         }
         // Trade back to the starter
         let _ = trade_back_to_starter(
@@ -288,8 +300,6 @@ pub async fn execute_trade(
         )
         .await;
     });
-
-    Ok(())
 }
 
 /// Return the ROI allocation for the trade,
