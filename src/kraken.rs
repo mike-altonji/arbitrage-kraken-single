@@ -442,7 +442,7 @@ async fn handle_pair(
             .as_secs_f64();
         let client = Arc::clone(client);
         let retention_policy_clone = Arc::clone(retention_policy);
-        update_points_vector(points, pair.clone(), kraken_ts, now);
+        update_points_vector(points, pair, kraken_ts, now);
         if points.len() >= batch_size {
             let points_clone = points.clone();
             points.clear();
