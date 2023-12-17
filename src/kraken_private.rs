@@ -398,7 +398,7 @@ fn make_trade(
         })
         .to_string();
     }
-    log::info!("Trade message (compare to Python): {trade_msg}");
+    log::debug!("Trade message: {trade_msg}");
     let private_ws_clone = Arc::clone(&private_ws);
     tokio::spawn(async move {
         let mut lock = private_ws_clone.lock().await;
