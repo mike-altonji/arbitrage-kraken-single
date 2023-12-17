@@ -13,6 +13,7 @@ use tokio::net::TcpStream;
 use tokio::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use uuid::Uuid;
 
 use crate::structs::{AssetsToPair, OrderMap, PairToDecimals, PairToSpread};
 use crate::trade::{trade_leg_to_influx, trade_path_to_influx};
@@ -143,6 +144,7 @@ pub async fn execute_trade(
     let pair_to_decimals_clone1 = pair_to_decimals.clone();
     let pair_to_decimals_clone2 = pair_to_decimals.clone();
     let pair_to_decimals_clone3 = pair_to_decimals.clone();
+    let path_uuid = Uuid::new_v4().to_string();
 
     let mut rates_act = Vec::<f64>::new();
     let start_ts = SystemTime::now()
@@ -232,9 +234,12 @@ pub async fn execute_trade(
         let order_data_clone = order_data.clone();
         let client_clone = Arc::clone(&client);
         let buy_sell_clone = buy_sell.clone();
+        let path_uuid_clone = path_uuid.clone();
         tokio::spawn(async move {
             trade_leg_to_influx(
                 client_clone,
+                userref,
+                path_uuid_clone,
                 order_data_clone,
                 graph_id,
                 pair_clone,
@@ -300,9 +305,11 @@ pub async fn execute_trade(
     let client_clone = Arc::clone(&client);
     let winnings_actual = ending_volume - starting_volume;
     let roi_actual = ending_volume / starting_volume - 1.;
+    let path_uuid_clone = path_uuid.clone();
     tokio::spawn(async move {
         trade_path_to_influx(
             client_clone,
+            path_uuid_clone,
             graph_id,
             path_names,
             recent_latency,
