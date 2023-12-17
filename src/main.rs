@@ -177,19 +177,19 @@ async fn main() {
         all_handles.push(Box::pin(volatility_handle));
 
         // Task dedicated to knowing the p90 latency of spread fetches
-        let latency_handle = {
-            let p90_latency_clone = p90_latency.clone();
-            tokio::spawn(async move {
-                loop {
-                    spread_latency_from_influx(p90_latency_clone.clone())
-                        .await
-                        .expect("Failed to fetch latency from InfluxDB.");
-                    sleep(Duration::from_secs(5)).await;
-                }
-            })
-        };
-        all_handles.push(Box::pin(latency_handle));
-        let p90_latency = Arc::new(Mutex::new(f64::MAX));
+        let p90_latency = Arc::new(Mutex::new(123456.789));
+        // let latency_handle = {
+        //     let p90_latency_clone = p90_latency.clone();
+        //     tokio::spawn(async move {
+        //         loop {
+        //             spread_latency_from_influx(p90_latency_clone.clone())
+        //                 .await
+        //                 .expect("Failed to fetch latency from InfluxDB.");
+        //             sleep(Duration::from_secs(5)).await;
+        //         }
+        //     })
+        // };
+        // all_handles.push(Box::pin(latency_handle));
 
         // Search for arbitrage opportunities, for each graph
         let mut evaluate_handles = Vec::new();
