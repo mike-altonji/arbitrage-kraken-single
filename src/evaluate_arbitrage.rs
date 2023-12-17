@@ -175,28 +175,35 @@ pub async fn evaluate_arbitrage_opportunities(
             let client1 = Arc::clone(&client);
             let client2 = Arc::clone(&client);
             let sem_clone = Arc::clone(&semaphore);
-            tokio::spawn(async move {
-                if let Ok(_permit) = sem_clone.try_acquire() {
-                    arbitrage_details_to_influx(
-                        client1,
-                        graph_id,
-                        min_volume,
-                        end_volume,
-                        path_names[0].to_string(),
-                        path_names,
-                        rates,
-                    )
-                    .await;
 
-                    // Log +/- 5 minutes of raw data. Don't need to wait for it to finish
-                    tokio::spawn(async move {
-                        save_spread_latency_around_arbitrage_to_influx(client2, &*retention_policy)
+            // Only record arbitrage opportunity if it's tradeable
+            if high_enough_trade_volume {
+                tokio::spawn(async move {
+                    if let Ok(_permit) = sem_clone.try_acquire() {
+                        arbitrage_details_to_influx(
+                            client1,
+                            graph_id,
+                            min_volume,
+                            end_volume,
+                            path_names[0].to_string(),
+                            path_names,
+                            rates,
+                        )
+                        .await;
+
+                        // Log +/- 5 minutes of raw data. Don't need to wait for it to finish
+                        tokio::spawn(async move {
+                            save_spread_latency_around_arbitrage_to_influx(
+                                client2,
+                                &*retention_policy,
+                            )
                             .await;
-                    });
+                        });
 
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                }
-            });
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                    }
+                });
+            }
 
             // Execute Trade, given conditions
             if starters.contains(path_names_clone[0].as_str())
@@ -204,8 +211,8 @@ pub async fn evaluate_arbitrage_opportunities(
                 && path_names_clone.len() <= MAX_TRADES + 1
                 && end_volume / min_volume > MIN_ROI
                 && end_volume - min_volume > MIN_PROFIT
-                && p90_latency_value < MAX_LATENCY
                 && high_enough_trade_volume
+            // && p90_latency_value < MAX_LATENCY
             {
                 log::debug!("Trade should have triggered for {:?}", path_names_clone);
                 let winnings_expected = end_volume - min_volume; // Do before adjusting min_volume
@@ -243,7 +250,7 @@ pub async fn evaluate_arbitrage_opportunities(
                 )
                 .await;
             } else {
-                log::debug!("Trade did not trigger. Values are: starters contains path_names_clone[0]: {}, allow_trades: {}, path_names_clone.len() <= MAX_TRADES + 1: {}, end_volume / min_volume > MIN_ROI: {}, end_volume - min_volume > MIN_PROFIT: {}, p90_latency_value < MAX_LATENCY: {}, high_enough_trade_volume: {}",
+                log::debug!("Trade did not trigger. Values are: starters contains path_names]: {}, allow_trades: {}, path length: {}, roi: {}, profit: {}, latency: {}, high_enough_trade_volume: {}",
                            starters.contains(path_names_clone[0].as_str()),
                            allow_trades,
                            path_names_clone.len(),
