@@ -177,7 +177,6 @@ async fn main() {
         all_handles.push(Box::pin(volatility_handle));
 
         // Task dedicated to knowing the p90 latency of spread fetches
-        let p90_latency = Arc::new(Mutex::new(INFINITY));
         let latency_handle = {
             let p90_latency_clone = p90_latency.clone();
             tokio::spawn(async move {
@@ -190,6 +189,7 @@ async fn main() {
             })
         };
         all_handles.push(Box::pin(latency_handle));
+        let p90_latency = Arc::new(Mutex::new(f64::MAX));
 
         // Search for arbitrage opportunities, for each graph
         let mut evaluate_handles = Vec::new();
