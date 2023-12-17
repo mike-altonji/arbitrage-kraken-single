@@ -5,6 +5,7 @@ use std::{collections::HashSet, sync::Arc};
 /// Log a trade leg to Influx
 pub async fn trade_leg_to_influx(
     client: Arc<Client>,
+    userref: i32,
     order: Option<OrderData>,
     graph_id: i64,
     pair: String,
@@ -19,6 +20,7 @@ pub async fn trade_leg_to_influx(
 ) {
     let trade_direction_clone = trade_direction.clone();
     let mut point = Point::new("trade_leg")
+        .add_field("userref", Value::Integer(userref as i64))
         .add_field("graph_id", Value::Integer(graph_id))
         .add_field("pair", Value::String(pair))
         .add_field("trade_number", Value::Integer(trade_number))

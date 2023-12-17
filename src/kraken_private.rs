@@ -235,6 +235,7 @@ pub async fn execute_trade(
         tokio::spawn(async move {
             trade_leg_to_influx(
                 client_clone,
+                userref,
                 order_data_clone,
                 graph_id,
                 pair_clone,
