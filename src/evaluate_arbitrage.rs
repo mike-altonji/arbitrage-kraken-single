@@ -211,8 +211,8 @@ pub async fn evaluate_arbitrage_opportunities(
                 && path_names_clone.len() <= MAX_TRADES + 1
                 && end_volume / min_volume > MIN_ROI
                 && end_volume - min_volume > MIN_PROFIT
-                && p90_latency_value < MAX_LATENCY
                 && high_enough_trade_volume
+            // && p90_latency_value < MAX_LATENCY
             {
                 log::debug!("Trade should have triggered for {:?}", path_names_clone);
                 let winnings_expected = end_volume - min_volume; // Do before adjusting min_volume
