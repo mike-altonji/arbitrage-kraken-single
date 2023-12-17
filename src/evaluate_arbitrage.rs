@@ -250,7 +250,7 @@ pub async fn evaluate_arbitrage_opportunities(
                 )
                 .await;
             } else {
-                log::debug!("Trade did not trigger. Values are: starters contains path_names_clone[0]: {}, allow_trades: {}, path_names_clone.len() <= MAX_TRADES + 1: {}, end_volume / min_volume > MIN_ROI: {}, end_volume - min_volume > MIN_PROFIT: {}, p90_latency_value < MAX_LATENCY: {}, high_enough_trade_volume: {}",
+                log::debug!("Trade did not trigger. Values are: starters contains path_names]: {}, allow_trades: {}, path length: {}, roi: {}, profit: {}, latency: {}, high_enough_trade_volume: {}",
                            starters.contains(path_names_clone[0].as_str()),
                            allow_trades,
                            path_names_clone.len(),
