@@ -6,6 +6,7 @@ use std::{collections::HashSet, sync::Arc};
 pub async fn trade_leg_to_influx(
     client: Arc<Client>,
     userref: i32,
+    path_uuid: String,
     order: Option<OrderData>,
     graph_id: i64,
     pair: String,
@@ -21,6 +22,7 @@ pub async fn trade_leg_to_influx(
     let trade_direction_clone = trade_direction.clone();
     let mut point = Point::new("trade_leg")
         .add_field("userref", Value::Integer(userref as i64))
+        .add_field("path_uuid", Value::String(path_uuid))
         .add_field("graph_id", Value::Integer(graph_id))
         .add_field("pair", Value::String(pair))
         .add_field("trade_number", Value::Integer(trade_number))
@@ -61,6 +63,7 @@ pub async fn trade_leg_to_influx(
 /// Log overall trade results Influx
 pub async fn trade_path_to_influx(
     client: Arc<Client>,
+    path_uuid: String,
     graph_id: i64,
     path: Vec<String>,
     recent_latency: f64,
@@ -72,6 +75,7 @@ pub async fn trade_path_to_influx(
     roi_actual: f64,
 ) {
     let point = Point::new("trade_path")
+        .add_field("path_uuid", Value::String(path_uuid))
         .add_field("graph_id", Value::Integer(graph_id))
         .add_field("path", Value::String(path.join(", ")))
         .add_field("recent_latency", Value::Float(recent_latency))
