@@ -41,8 +41,8 @@ pub async fn spread_latency_from_influx(
             .and_then(|values| values.get(0))
             .and_then(|first_value| first_value.get(1))
             .and_then(|latency| latency.as_f64())
-            .unwrap_or(f64::INFINITY),
-        _ => f64::INFINITY,
+            .unwrap_or(f64::MAX),
+        _ => f64::MAX,
     };
 
     match p90_latency.lock() {
