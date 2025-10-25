@@ -251,6 +251,8 @@ pub fn evaluate_arbitrage_opportunities(
                             roi_expected,
                         )
                         .await;
+                        // Wait 1ms buffer before releasing the semaphore permit
+                        tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
                     });
                 } else {
                     log::debug!("Skipping trade - already executing another trade");
