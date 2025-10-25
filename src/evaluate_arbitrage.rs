@@ -105,7 +105,7 @@ pub fn evaluate_arbitrage_opportunities(
         let path = bellman_ford_negative_cycle(n, &rate_edges, 0);
 
         // Log a subsample of events every N iterations
-        if counter == 1000 {
+        if counter == 10000 {
             let end_time = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
