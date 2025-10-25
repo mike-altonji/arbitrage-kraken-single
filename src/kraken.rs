@@ -240,11 +240,12 @@ pub async fn fetch_spreads(
     pair_to_assets_vec: Vec<PairToAssets>,
     pair_status: Arc<Mutex<HashMap<String, bool>>>,
     public_online: Arc<Mutex<bool>>,
+    ws_url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     const SLEEP_DURATION: Duration = Duration::from_secs(5);
     loop {
         let (client, retention_policy, batch_size, mut points) = setup_influx().await;
-        let (_write, mut read) = setup_websocket(&all_pairs).await;
+        let (_write, mut read) = setup_websocket(&all_pairs, ws_url).await;
         while let Some(msg) = read.next().await {
             match msg {
                 Ok(Message::Text(text)) => {
@@ -292,11 +293,12 @@ pub async fn fetch_spreads(
 
 async fn setup_websocket(
     all_pairs: &HashSet<String>,
+    ws_url: &str,
 ) -> (
     SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
     SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
 ) {
-    let url = url::Url::parse("wss://ws.kraken.com").expect("Public ws unparseable");
+    let url = url::Url::parse(ws_url).expect("Public ws unparseable");
     let (ws_stream, _) = connect_async(url)
         .await
         .expect("Failed to connect to public websocket");

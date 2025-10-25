@@ -34,6 +34,20 @@ async fn main() {
     dotenv().ok();
     let args: Vec<String> = env::args().collect();
     let allow_trades = args.contains(&"--trade".to_string());
+    let use_colocated = args.contains(&"--colocated".to_string());
+
+    // Determine WebSocket URLs based on --colocated flag
+    let public_ws_url = if use_colocated {
+        "wss://colo-dublin.vip-ws.kraken.com"
+    } else {
+        "wss://ws.kraken.com"
+    };
+    let private_ws_url = if use_colocated {
+        "wss://colo-dublin.vip-ws-auth.kraken.com"
+    } else {
+        "wss://ws-auth.kraken.com"
+    };
+
     utils::init_logging();
     let mode_message = if allow_trades {
         "🚀 Launching Kraken arbitrage: Trade mode"
@@ -83,6 +97,7 @@ async fn main() {
                     pair_to_assets_vec_clone,
                     pair_status_clone,
                     public_online_clone,
+                    public_ws_url,
                 )
                 .await
                 .expect("Failed to fetch data");
@@ -97,7 +112,7 @@ async fn main() {
             let orders_handle = {
                 let orders_clone = orders.clone();
                 tokio::spawn(async move {
-                    fetch_orders(&token_clone, &orders_clone)
+                    fetch_orders(&token_clone, &orders_clone, private_ws_url)
                         .await
                         .expect("Failed to fetch data");
                 })
@@ -198,10 +213,12 @@ async fn main() {
 
         // Set up websocket connection to private Kraken endpoint if trading
         let own_trades_ws = if allow_trades {
-            let ws =
-                setup_own_trades_websocket(token.as_ref().expect("Token must exist for trading"))
-                    .await
-                    .expect("Failed to set up private WebSocket");
+            let ws = setup_own_trades_websocket(
+                token.as_ref().expect("Token must exist for trading"),
+                private_ws_url,
+            )
+            .await
+            .expect("Failed to set up private WebSocket");
             Some(ws)
         } else {
             None

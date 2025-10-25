@@ -21,11 +21,12 @@ use tokio_tungstenite::connect_async;
 
 pub async fn setup_own_trades_websocket(
     token: &str,
+    ws_url: &str,
 ) -> Result<
     Arc<tokio::sync::Mutex<WebSocketStream<MaybeTlsStream<TcpStream>>>>,
     Box<dyn std::error::Error>,
 > {
-    let (ws, _) = connect_async("wss://ws-auth.kraken.com").await?;
+    let (ws, _) = connect_async(ws_url).await?;
     let ws_arc = Arc::new(tokio::sync::Mutex::new(ws));
 
     let sub_msg = serde_json::json!({
