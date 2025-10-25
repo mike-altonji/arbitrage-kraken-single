@@ -1,11 +1,10 @@
 use dotenv::dotenv;
 use evaluate_arbitrage::evaluate_arbitrage_opportunities;
 use futures::future::select_all;
-use influx::spread_latency_from_influx;
 use kraken::{fetch_spreads, update_fees_based_on_volume, update_volatility};
 use kraken_assets_and_pairs::{extract_asset_pairs_from_csv_files, get_unique_pairs};
 use kraken_orders_listener::fetch_orders;
-use kraken_private::{get_30d_trade_volume, get_auth_token};
+use kraken_private::{get_30d_trade_volume, get_auth_token, setup_own_trades_websocket};
 use kraken_private_rest::fetch_asset_balances;
 use std::collections::HashMap;
 use std::env;
@@ -35,6 +34,20 @@ async fn main() {
     dotenv().ok();
     let args: Vec<String> = env::args().collect();
     let allow_trades = args.contains(&"--trade".to_string());
+    let use_colocated = args.contains(&"--colocated".to_string());
+
+    // Determine WebSocket URLs based on --colocated flag
+    let public_ws_url = if use_colocated {
+        "wss://colo-dublin.vip-ws.kraken.com"
+    } else {
+        "wss://ws.kraken.com"
+    };
+    let private_ws_url = if use_colocated {
+        "wss://colo-dublin.vip-ws-auth.kraken.com"
+    } else {
+        "wss://ws-auth.kraken.com"
+    };
+
     utils::init_logging();
     let mode_message = if allow_trades {
         "🚀 Launching Kraken arbitrage: Trade mode"
@@ -84,6 +97,7 @@ async fn main() {
                     pair_to_assets_vec_clone,
                     pair_status_clone,
                     public_online_clone,
+                    public_ws_url,
                 )
                 .await
                 .expect("Failed to fetch data");
@@ -98,7 +112,7 @@ async fn main() {
             let orders_handle = {
                 let orders_clone = orders.clone();
                 tokio::spawn(async move {
-                    fetch_orders(&token_clone, &orders_clone)
+                    fetch_orders(&token_clone, &orders_clone, private_ws_url)
                         .await
                         .expect("Failed to fetch data");
                 })
@@ -191,48 +205,69 @@ async fn main() {
         // };
         // all_handles.push(Box::pin(latency_handle));
 
-        // Search for arbitrage opportunities, for each graph
-        let mut evaluate_handles = Vec::new();
+        // Get runtime handle for spawning async tasks from sync threads
+        let rt_handle = tokio::runtime::Handle::current();
+
+        // Create trade semaphore to limit concurrent trades
+        let trade_semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+
+        // Set up websocket connection to private Kraken endpoint if trading
+        let own_trades_ws = if allow_trades {
+            let ws = setup_own_trades_websocket(
+                token.as_ref().expect("Token must exist for trading"),
+                private_ws_url,
+            )
+            .await
+            .expect("Failed to set up private WebSocket");
+            Some(ws)
+        } else {
+            None
+        };
+
+        // Give pair_to_spread time to populate
+        sleep(Duration::from_secs(5)).await;
+
+        // Search for arbitrage opportunities in dedicated threads, for each graph
         for i in 0..pair_to_assets_vec.len() {
-            let evaluate_handle = {
-                let pair_to_assets_clone = pair_to_assets_vec[i].clone();
-                let assets_to_pair_clone = assets_to_pair_vec[i].clone();
-                let pair_to_spread_clone = pair_to_spread_vec[i].clone();
-                let fees_clone = fees.clone();
-                let pair_to_decimals_clone = pair_to_decimals.clone();
-                let pair_status_clone = pair_status.clone();
-                let public_online_clone = public_online.clone();
-                let token_clone = token.clone();
-                let p90_latency_clone = p90_latency.clone();
-                let volatility_clone = volatility_clone.clone();
-                let orders_clone = orders.clone();
-                let balances_clone = balances.clone();
-                let pair_trade_mins_clone = pair_trade_mins.clone();
-                tokio::spawn(async move {
-                    let _ = evaluate_arbitrage_opportunities(
-                        pair_to_assets_clone,
-                        assets_to_pair_clone,
-                        pair_to_spread_clone,
-                        fees_clone,
-                        pair_to_decimals_clone,
-                        pair_status_clone,
-                        public_online_clone,
-                        p90_latency_clone,
-                        allow_trades,
-                        token_clone.as_deref(),
-                        i as i64,
-                        volatility_clone,
-                        orders_clone,
-                        balances_clone,
-                        pair_trade_mins_clone,
-                    )
-                    .await;
-                })
-            };
-            evaluate_handles.push(evaluate_handle);
-        }
-        for handle in evaluate_handles {
-            all_handles.push(Box::pin(handle));
+            let pair_to_assets_clone = pair_to_assets_vec[i].clone();
+            let assets_to_pair_clone = assets_to_pair_vec[i].clone();
+            let pair_to_spread_clone = pair_to_spread_vec[i].clone();
+            let fees_clone = fees.clone();
+            let pair_to_decimals_clone = pair_to_decimals.clone();
+            let pair_status_clone = pair_status.clone();
+            let public_online_clone = public_online.clone();
+            let token_clone = token.clone();
+            let p90_latency_clone = p90_latency.clone();
+            let volatility_clone = volatility_clone.clone();
+            let orders_clone = orders.clone();
+            let balances_clone = balances.clone();
+            let pair_trade_mins_clone = pair_trade_mins.clone();
+            let own_trades_ws_clone = own_trades_ws.clone();
+            let rt_handle_clone = rt_handle.clone();
+            let trade_semaphore_clone = trade_semaphore.clone();
+
+            std::thread::spawn(move || {
+                let _ = evaluate_arbitrage_opportunities(
+                    pair_to_assets_clone,
+                    assets_to_pair_clone,
+                    pair_to_spread_clone,
+                    fees_clone,
+                    pair_to_decimals_clone,
+                    pair_status_clone,
+                    public_online_clone,
+                    p90_latency_clone,
+                    allow_trades,
+                    token_clone,
+                    i as i64,
+                    volatility_clone,
+                    orders_clone,
+                    balances_clone,
+                    pair_trade_mins_clone,
+                    own_trades_ws_clone,
+                    rt_handle_clone,
+                    trade_semaphore_clone,
+                );
+            });
         }
 
         let (result, _index, remaining) = select_all(all_handles).await;

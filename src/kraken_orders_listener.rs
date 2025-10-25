@@ -13,10 +13,11 @@ use tokio_tungstenite::{tungstenite::Error::Protocol, MaybeTlsStream, WebSocketS
 pub async fn fetch_orders(
     token: &String,
     orders: &Arc<Mutex<OrderMap>>,
+    ws_url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     const SLEEP_DURATION: Duration = Duration::from_secs(5);
     loop {
-        let (_write, mut read) = setup_private_websocket(token).await;
+        let (_write, mut read) = setup_private_websocket(token, ws_url).await;
         while let Some(msg) = read.next().await {
             match msg {
                 Ok(Message::Text(text)) => {
@@ -54,11 +55,12 @@ pub async fn fetch_orders(
 
 async fn setup_private_websocket(
     token: &String,
+    ws_url: &str,
 ) -> (
     SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
     SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
 ) {
-    let url = url::Url::parse("wss://ws-auth.kraken.com").expect("Private ws unparseable");
+    let url = url::Url::parse(ws_url).expect("Private ws unparseable");
     let (ws, _) = connect_async(url)
         .await
         .expect("Failed to connect to private websocket");

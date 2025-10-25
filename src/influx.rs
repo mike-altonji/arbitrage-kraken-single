@@ -23,6 +23,7 @@ pub async fn setup_influx() -> (Arc<Client>, Arc<String>, usize, Vec<Point>) {
     (client, retention_policy, batch_size, points)
 }
 
+#[allow(dead_code)]
 pub async fn spread_latency_from_influx(
     p90_latency: Arc<Mutex<f64>>,
 ) -> Result<(), Box<dyn Error>> {
