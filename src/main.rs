@@ -1,11 +1,10 @@
 use dotenv::dotenv;
 use evaluate_arbitrage::evaluate_arbitrage_opportunities;
 use futures::future::select_all;
-use futures_util::SinkExt;
 use kraken::{fetch_spreads, update_fees_based_on_volume, update_volatility};
 use kraken_assets_and_pairs::{extract_asset_pairs_from_csv_files, get_unique_pairs};
 use kraken_orders_listener::fetch_orders;
-use kraken_private::{get_30d_trade_volume, get_auth_token};
+use kraken_private::{get_30d_trade_volume, get_auth_token, setup_own_trades_websocket};
 use kraken_private_rest::fetch_asset_balances;
 use std::collections::HashMap;
 use std::env;
@@ -15,7 +14,6 @@ use std::time::Duration;
 use structs::{OrderMap, PairToVolatility};
 use telegram::send_telegram_message;
 use tokio::time::sleep;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 mod evaluate_arbitrage;
 mod graph_algorithms;
@@ -199,25 +197,12 @@ async fn main() {
         let trade_semaphore = Arc::new(tokio::sync::Semaphore::new(1));
 
         // Set up websocket connection to private Kraken endpoint if trading
-        let private_ws = if allow_trades {
-            let (ws, _) = connect_async("wss://ws-auth.kraken.com")
-                .await
-                .expect("Failed to connect to Kraken WebSocket");
-            let ws_arc = Arc::new(tokio::sync::Mutex::new(ws));
-            let sub_msg = serde_json::json!({
-                "event": "subscribe",
-                "subscription": {
-                    "name": "ownTrades",
-                    "token": token.as_ref().expect("Token must exist for trading")
-                }
-            });
-            let mut ws_lock = ws_arc.lock().await;
-            ws_lock
-                .send(Message::Text(sub_msg.to_string()))
-                .await
-                .expect("Failed to subscribe to ownTrades");
-            drop(ws_lock);
-            Some(ws_arc)
+        let own_trades_ws = if allow_trades {
+            let ws =
+                setup_own_trades_websocket(token.as_ref().expect("Token must exist for trading"))
+                    .await
+                    .expect("Failed to set up private WebSocket");
+            Some(ws)
         } else {
             None
         };
@@ -240,7 +225,7 @@ async fn main() {
             let orders_clone = orders.clone();
             let balances_clone = balances.clone();
             let pair_trade_mins_clone = pair_trade_mins.clone();
-            let private_ws_clone = private_ws.clone();
+            let own_trades_ws_clone = own_trades_ws.clone();
             let rt_handle_clone = rt_handle.clone();
             let trade_semaphore_clone = trade_semaphore.clone();
 
@@ -261,7 +246,7 @@ async fn main() {
                     orders_clone,
                     balances_clone,
                     pair_trade_mins_clone,
-                    private_ws_clone,
+                    own_trades_ws_clone,
                     rt_handle_clone,
                     trade_semaphore_clone,
                 );

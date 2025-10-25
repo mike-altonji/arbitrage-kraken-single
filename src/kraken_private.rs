@@ -17,6 +17,31 @@ use uuid::Uuid;
 
 use crate::structs::{AssetsToPair, OrderMap, PairToDecimals, PairToSpread};
 use crate::trade::{trade_leg_to_influx, trade_path_to_influx};
+use tokio_tungstenite::connect_async;
+
+pub async fn setup_own_trades_websocket(
+    token: &str,
+) -> Result<
+    Arc<tokio::sync::Mutex<WebSocketStream<MaybeTlsStream<TcpStream>>>>,
+    Box<dyn std::error::Error>,
+> {
+    let (ws, _) = connect_async("wss://ws-auth.kraken.com").await?;
+    let ws_arc = Arc::new(tokio::sync::Mutex::new(ws));
+
+    let sub_msg = serde_json::json!({
+        "event": "subscribe",
+        "subscription": {
+            "name": "ownTrades",
+            "token": token
+        }
+    });
+
+    let mut ws_lock = ws_arc.lock().await;
+    ws_lock.send(Message::Text(sub_msg.to_string())).await?;
+    drop(ws_lock);
+
+    Ok(ws_arc)
+}
 
 pub async fn get_auth_token() -> Result<String, Box<dyn std::error::Error>> {
     let api_key = env::var("KRAKEN_KEY").expect("KRAKEN_KEY must be set");
