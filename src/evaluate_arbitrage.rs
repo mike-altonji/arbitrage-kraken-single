@@ -6,19 +6,21 @@ use crate::structs::{
 };
 use crate::structs::{Edge, PairToSpread};
 use crate::trade::rotate_path;
-use futures_util::SinkExt;
 use influx_db_client::{reqwest::Url, Client, Point, Precision, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use tokio::time::{sleep, Duration};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use std::time::Duration;
+use tokio::time::sleep;
 
 const MIN_ROI: f64 = 1.00;
 const MIN_PROFIT: f64 = 0.01;
 const MAX_TRADES: usize = 4;
+#[allow(dead_code)]
 const MAX_LATENCY: f64 = 0.200;
 
-pub async fn evaluate_arbitrage_opportunities(
+// Synchronous version of evaluate_arbitrage_opportunities
+/// Evaluation runs synchronously, but uses runtime handle to spawn async tasks for logging and trading
+pub fn evaluate_arbitrage_opportunities(
     pair_to_assets: PairToAssets,
     assets_to_pair: AssetsToPair,
     pair_to_spread: Arc<Mutex<PairToSpread>>,
@@ -28,12 +30,23 @@ pub async fn evaluate_arbitrage_opportunities(
     public_online: Arc<Mutex<bool>>,
     p90_latency: Arc<Mutex<f64>>,
     allow_trades: bool,
-    token: Option<&str>,
+    token: Option<String>,
     graph_id: i64,
     volatility: Arc<Mutex<PairToVolatility>>,
     orders: Arc<Mutex<OrderMap>>,
     balances: Arc<Mutex<HashMap<String, f64>>>,
     pair_to_trade_mins: PairToTradeMin,
+    own_trades_ws: Option<
+        Arc<
+            tokio::sync::Mutex<
+                tokio_tungstenite::WebSocketStream<
+                    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+                >,
+            >,
+        >,
+    >,
+    runtime_handle: tokio::runtime::Handle,
+    trade_semaphore: Arc<tokio::sync::Semaphore>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Set up InfluxDB client
     dotenv::dotenv().ok();
@@ -57,27 +70,6 @@ pub async fn evaluate_arbitrage_opportunities(
 
     let starters = HashSet::from(["USD".to_string(), "EUR".to_string()]);
 
-    // Set up websocket connection to private Kraken endpoint if trading & subscribe to `ownTrades` to stay connected
-    let mut private_ws = None;
-    if allow_trades {
-        let (ws, _) = connect_async("wss://ws-auth.kraken.com").await?;
-        private_ws = Some(Arc::new(tokio::sync::Mutex::new(ws)));
-        let sub_msg = serde_json::json!({
-            "event": "subscribe",
-            "subscription": {
-                "name": "ownTrades",
-                "token": token
-            }
-        });
-        if let Some(ws) = &private_ws {
-            let mut lock = ws.lock().await;
-            lock.send(Message::Text(sub_msg.to_string())).await?;
-        }
-    }
-
-    // Give pair_to_spread time to populate
-    tokio::time::sleep(Duration::from_secs(5)).await;
-
     let asset_to_index = generate_asset_to_index_map(&pair_to_assets);
     let n = asset_to_index.len();
     log::info!(
@@ -90,7 +82,7 @@ pub async fn evaluate_arbitrage_opportunities(
     loop {
         // If the public endpoint is down, don't attempt evaluation
         if !*public_online.lock().unwrap() {
-            tokio::time::sleep(Duration::from_secs(5)).await;
+            std::thread::sleep(Duration::from_secs(5));
             continue;
         }
 
@@ -100,14 +92,11 @@ pub async fn evaluate_arbitrage_opportunities(
             .unwrap_or_default()
             .as_nanos();
 
-        // Take pauses so I don't overheat computer (actually waits longer...eval times went from 1.5us to 1.5ms. Fine with this for now!)
-        tokio::time::sleep(Duration::from_micros(10)).await;
-
-        let pair_to_spread = pair_to_spread.lock().unwrap().clone();
+        let pair_to_spread_local = pair_to_spread.lock().unwrap().clone();
         let pair_status_clone = pair_status.lock().unwrap().clone();
         let fees_clone = fees.lock().unwrap().clone();
         let (rate_edges, rate_map, volume_map) = prepare_graph(
-            &pair_to_spread,
+            &pair_to_spread_local,
             &pair_to_assets,
             &asset_to_index,
             &fees_clone,
@@ -123,7 +112,7 @@ pub async fn evaluate_arbitrage_opportunities(
                 .as_nanos();
             let client_clone = Arc::clone(&client);
             let retention_policy = Arc::clone(&retention_policy_clone);
-            tokio::spawn(async move {
+            runtime_handle.spawn(async move {
                 save_evaluation_time_to_influx(
                     client_clone,
                     &*retention_policy,
@@ -164,7 +153,7 @@ pub async fn evaluate_arbitrage_opportunities(
                 &path_names,
                 &pair_to_trade_mins,
                 assets_to_pair.clone(),
-                &pair_to_spread,
+                &pair_to_spread_local,
             );
 
             let rates_clone = rates.clone();
@@ -178,7 +167,7 @@ pub async fn evaluate_arbitrage_opportunities(
 
             // Only record arbitrage opportunity if it's tradeable
             if high_enough_trade_volume {
-                tokio::spawn(async move {
+                runtime_handle.spawn(async move {
                     if let Ok(_permit) = sem_clone.try_acquire() {
                         arbitrage_details_to_influx(
                             client1,
@@ -200,7 +189,7 @@ pub async fn evaluate_arbitrage_opportunities(
                             .await;
                         });
 
-                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                     }
                 });
             }
@@ -214,41 +203,58 @@ pub async fn evaluate_arbitrage_opportunities(
                 && high_enough_trade_volume
             // && p90_latency_value < MAX_LATENCY
             {
-                log::debug!("Trade should have triggered for {:?}", path_names_clone);
-                let winnings_expected = end_volume - min_volume; // Do before adjusting min_volume
+                // Check if we can acquire the trade semaphore
+                if trade_semaphore.available_permits() > 0 {
+                    log::debug!("Trade should have triggered for {:?}", path_names_clone);
+                    let winnings_expected = end_volume - min_volume; // Do before adjusting min_volume
 
-                // When we want to limit trading by limiting `ordermin` per pair, will need to move above this if statement
-                let balances = balances.lock().unwrap().clone();
-                let balance = balances.get(&path_names_clone[0]).unwrap_or(&0.0);
-                min_volume = min_volume.min(*balance * 0.8); // Only trade up to 80% of what we have, to avoid failing trades
+                    // When we want to limit trading by limiting `ordermin` per pair, will need to move above this if statement
+                    let balances_local = balances.lock().unwrap().clone();
+                    let balance = balances_local.get(&path_names_clone[0]).unwrap_or(&0.0);
+                    min_volume = min_volume.min(*balance * 0.8); // Only trade up to 80% of what we have, to avoid failing trades
 
-                let fees_clone = fees.lock().unwrap().clone();
-                let private_ws_arc = match &private_ws {
-                    Some(ws) => Arc::clone(ws),
-                    None => {
-                        return Err("Can't execute trades: Private WebSocket does not exist".into())
-                    }
-                };
-                let client_clone = Arc::clone(&client);
-                let roi_expected = end_volume / min_volume - 1.;
-                execute_trade(
-                    path_names_clone,
-                    pair_to_decimals.clone(),
-                    &rates_clone,
-                    min_volume,
-                    &assets_to_pair,
-                    pair_to_spread,
-                    private_ws_arc,
-                    token.expect("Token must exist to trade"),
-                    &fees_clone,
-                    &orders,
-                    client_clone,
-                    graph_id,
-                    p90_latency_value,
-                    winnings_expected,
-                    roi_expected,
-                )
-                .await;
+                    let fees_local = fees.lock().unwrap().clone();
+                    let own_trades_ws_arc = match &own_trades_ws {
+                        Some(ws) => Arc::clone(ws),
+                        None => {
+                            log::error!("Can't execute trades: Private WebSocket does not exist");
+                            continue;
+                        }
+                    };
+                    let client_clone = Arc::clone(&client);
+                    let roi_expected = end_volume / min_volume - 1.;
+                    let token_string = token.clone().expect("Token must exist to trade");
+
+                    let sem_clone = trade_semaphore.clone();
+                    let pair_to_decimals_clone = pair_to_decimals.clone();
+                    let assets_to_pair_clone = assets_to_pair.clone();
+                    let orders_clone = orders.clone();
+
+                    // Spawn trade execution asynchronously
+                    runtime_handle.spawn(async move {
+                        let _permit = sem_clone.acquire().await.unwrap();
+                        execute_trade(
+                            path_names_clone,
+                            pair_to_decimals_clone,
+                            &rates_clone,
+                            min_volume,
+                            &assets_to_pair_clone,
+                            pair_to_spread_local,
+                            own_trades_ws_arc,
+                            &token_string,
+                            &fees_local,
+                            &orders_clone,
+                            client_clone,
+                            graph_id,
+                            p90_latency_value,
+                            winnings_expected,
+                            roi_expected,
+                        )
+                        .await;
+                    });
+                } else {
+                    log::debug!("Skipping trade - already executing another trade");
+                }
             } else {
                 log::debug!("Trade did not trigger. Values are: starters contains path_names]: {}, allow_trades: {}, path length: {}, roi: {}, profit: {}, latency: {}, high_enough_trade_volume: {}",
                            starters.contains(path_names_clone[0].as_str()),
