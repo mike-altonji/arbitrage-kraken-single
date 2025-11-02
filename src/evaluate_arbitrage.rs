@@ -495,7 +495,7 @@ async fn arbitrage_details_to_influx(
         .add_field("limiting_volume", Value::Float(limited_volume))
         .add_field("ending_volume", Value::Float(ending_volume))
         .add_field("volume_units", Value::String(volume_units))
-        .add_field("path", Value::String(path.join(", ")))
+        .add_field("path", Value::String(path.join("|")))
         .add_field(
             "rates",
             Value::String(
@@ -503,7 +503,7 @@ async fn arbitrage_details_to_influx(
                     .iter()
                     .map(|r| r.to_string())
                     .collect::<Vec<String>>()
-                    .join(", "),
+                    .join("|"),
             ),
         );
     let _ = client

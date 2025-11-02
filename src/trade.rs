@@ -77,7 +77,7 @@ pub async fn trade_path_to_influx(
     let point = Point::new("trade_path")
         .add_field("path_uuid", Value::String(path_uuid))
         .add_field("graph_id", Value::Integer(graph_id))
-        .add_field("path", Value::String(path.join(", ")))
+        .add_field("path", Value::String(path.join("|")))
         .add_field("recent_latency", Value::Float(recent_latency))
         .add_field("start_ts", Value::Float(start_ts))
         .add_field("duration", Value::Float(end_ts - start_ts))
