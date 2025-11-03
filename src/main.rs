@@ -39,12 +39,12 @@ async fn main() {
 
     // Determine WebSocket URLs based on --colocated flag
     let public_ws_url = if use_colocated {
-        "wss://colo-dublin.vip-ws.kraken.com"
+        "wss://colo-london.vip-ws.kraken.com"
     } else {
         "wss://ws.kraken.com"
     };
     let private_ws_url = if use_colocated {
-        "wss://colo-dublin.vip-ws-auth.kraken.com"
+        "wss://colo-london.vip-ws-auth.kraken.com"
     } else {
         "wss://ws-auth.kraken.com"
     };
