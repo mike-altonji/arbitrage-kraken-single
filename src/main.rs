@@ -35,6 +35,7 @@ async fn main() {
     let args: Vec<String> = env::args().collect();
     let allow_trades = args.contains(&"--trade".to_string());
     let use_colocated = args.contains(&"--colocated".to_string());
+    let use_single_csv = args.contains(&"--single".to_string());
 
     // Determine WebSocket URLs based on --colocated flag
     let public_ws_url = if use_colocated {
@@ -77,7 +78,7 @@ async fn main() {
             pair_trade_mins,
             asset_pair_conversion,
             asset_name_conversion,
-        ) = extract_asset_pairs_from_csv_files("resources")
+        ) = extract_asset_pairs_from_csv_files("resources", use_single_csv)
             .await
             .expect("Failed to get asset pairs");
 
