@@ -307,7 +307,12 @@ pub async fn execute_trade(
                 token,
                 private_ws_clone,
             );
-            log::warn!("Attempted trade yielded no order.");
+            log::warn!(
+                "Attempted trade yielded no order. Asset1: {}, Asset2: {}, {}",
+                asset1,
+                asset2,
+                buy_sell
+            );
             return;
         }
         // Trade back to the starter

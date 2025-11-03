@@ -51,7 +51,7 @@ async fn main() {
 
     utils::init_logging();
     let mode_message = if allow_trades {
-        "🚀 Launching Kraken arbitrage: Trade mode"
+        "💰 Launching Kraken arbitrage: Trade mode"
     } else {
         "🚀 Launching Kraken arbitrage: Evaluation-only mode"
     };
