@@ -8,6 +8,7 @@ pub struct BaseQuote {
 pub type PairToAssets = HashMap<String, BaseQuote>;
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct BaseQuotePair {
     pub base: String,
     pub quote: String,
@@ -68,6 +69,7 @@ impl AssetNameConverter {
     }
 
     // Find rest by ws
+    #[allow(dead_code)]
     pub fn ws_to_rest(&self, ws: &str) -> Option<&String> {
         self.ws_to_rest_map.get(ws)
     }
