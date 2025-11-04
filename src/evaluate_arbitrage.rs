@@ -28,7 +28,6 @@ pub fn evaluate_arbitrage_opportunities(
     pair_to_decimals: PairToDecimals,
     pair_status: Arc<Mutex<HashMap<String, bool>>>,
     public_online: Arc<Mutex<bool>>,
-    p90_latency: Arc<Mutex<f64>>,
     allow_trades: bool,
     token: Option<String>,
     graph_id: i64,
@@ -65,7 +64,6 @@ pub fn evaluate_arbitrage_opportunities(
         .set_authentication(&user, &password),
     );
     let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
-    let p90_latency_value = p90_latency.lock().unwrap().clone();
     let assets_to_pair_clone = assets_to_pair.clone();
 
     let starters = HashSet::from(["USD".to_string(), "EUR".to_string()]);
@@ -201,7 +199,6 @@ pub fn evaluate_arbitrage_opportunities(
                 && end_volume / min_volume > MIN_ROI
                 && end_volume - min_volume > MIN_PROFIT
                 && high_enough_trade_volume
-            // && p90_latency_value < MAX_LATENCY
             {
                 // Check if we can acquire the trade semaphore
                 if trade_semaphore.available_permits() > 0 {
@@ -246,7 +243,6 @@ pub fn evaluate_arbitrage_opportunities(
                             &orders_clone,
                             client_clone,
                             graph_id,
-                            p90_latency_value,
                             winnings_expected,
                             roi_expected,
                         )
@@ -258,13 +254,12 @@ pub fn evaluate_arbitrage_opportunities(
                     log::debug!("Skipping trade - already executing another trade");
                 }
             } else {
-                log::debug!("Trade did not trigger. Values are: starters contains path_names]: {}, allow_trades: {}, path length: {}, roi: {}, profit: {}, latency: {}, high_enough_trade_volume: {}",
+                log::debug!("Trade did not trigger. Values are: starters contains path_names]: {}, allow_trades: {}, path length: {}, roi: {}, profit: {}, high_enough_trade_volume: {}",
                            starters.contains(path_names_clone[0].as_str()),
                            allow_trades,
                            path_names_clone.len(),
                            end_volume / min_volume,
                            end_volume - min_volume,
-                           p90_latency_value,
                            high_enough_trade_volume);
             }
         }
