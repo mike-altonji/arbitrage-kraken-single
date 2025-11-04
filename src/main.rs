@@ -2,7 +2,7 @@ use dotenv::dotenv;
 use evaluate_arbitrage::evaluate_arbitrage_opportunities;
 use futures::future::select_all;
 use kraken::{fetch_spreads, update_fees_based_on_volume};
-use kraken_assets_and_pairs::{extract_asset_pairs_from_csv_files, get_unique_pairs};
+use kraken_assets_and_pairs::{extract_asset_pairs_from_csv_file, get_unique_pairs};
 use kraken_orders_listener::fetch_orders;
 use kraken_private::{get_30d_trade_volume, get_auth_token, setup_own_trades_websocket};
 use kraken_private_rest::fetch_asset_balances;
@@ -34,7 +34,6 @@ async fn main() {
     let args: Vec<String> = env::args().collect();
     let allow_trades = args.contains(&"--trade".to_string());
     let use_colocated = args.contains(&"--colocated".to_string());
-    let use_single_csv = args.contains(&"--single".to_string());
 
     // Determine WebSocket URLs based on --colocated flag
     let public_ws_url = if use_colocated {
@@ -69,14 +68,14 @@ async fn main() {
 
         // Pull asset pairs and initialize bids/asks
         let (
-            pair_to_assets_vec,
-            assets_to_pair_vec,
-            pair_to_spread_vec,
+            pair_to_assets,
+            assets_to_pair,
+            pair_to_spread,
             fee_schedules,
             pair_to_decimals,
             pair_trade_mins,
             asset_name_conversion,
-        ) = extract_asset_pairs_from_csv_files("resources", use_single_csv)
+        ) = extract_asset_pairs_from_csv_file("resources/asset_pairs_all.csv")
             .await
             .expect("Failed to get asset pairs");
 
@@ -84,16 +83,16 @@ async fn main() {
         let pair_status: Arc<Mutex<HashMap<String, bool>>> = Arc::new(Mutex::new(HashMap::new()));
         let public_online = Arc::new(Mutex::new(false));
         let fetch_handle = {
-            let all_pairs = get_unique_pairs(&pair_to_assets_vec);
-            let pair_to_spread_vec_clone = pair_to_spread_vec.clone();
-            let pair_to_assets_vec_clone = pair_to_assets_vec.clone();
+            let all_pairs = get_unique_pairs(&pair_to_assets);
+            let pair_to_spread_clone = pair_to_spread.clone();
+            let pair_to_assets_clone = pair_to_assets.clone();
             let pair_status_clone = pair_status.clone();
             let public_online_clone = public_online.clone();
             tokio::spawn(async move {
                 fetch_spreads(
                     all_pairs,
-                    pair_to_spread_vec_clone,
-                    pair_to_assets_vec_clone,
+                    pair_to_spread_clone,
+                    pair_to_assets_clone,
                     pair_status_clone,
                     public_online_clone,
                     public_ws_url,
@@ -137,7 +136,7 @@ async fn main() {
         let fees: Arc<Mutex<HashMap<String, f64>>> = Arc::new(Mutex::new(
             fee_schedules
                 .keys()
-                .map(|key| (key.clone(), 0.0026))
+                .map(|key| (key.clone(), 0.0026)) // TODO: Revisit this default fee
                 .collect(),
         ));
         let fees_handle = {
@@ -186,44 +185,42 @@ async fn main() {
         // Give pair_to_spread time to populate
         sleep(Duration::from_secs(5)).await;
 
-        // Search for arbitrage opportunities in dedicated threads, for each graph
-        for i in 0..pair_to_assets_vec.len() {
-            let pair_to_assets_clone = pair_to_assets_vec[i].clone();
-            let assets_to_pair_clone = assets_to_pair_vec[i].clone();
-            let pair_to_spread_clone = pair_to_spread_vec[i].clone();
-            let fees_clone = fees.clone();
-            let pair_to_decimals_clone = pair_to_decimals.clone();
-            let pair_status_clone = pair_status.clone();
-            let public_online_clone = public_online.clone();
-            let token_clone = token.clone();
-            let orders_clone = orders.clone();
-            let balances_clone = balances.clone();
-            let pair_trade_mins_clone = pair_trade_mins.clone();
-            let own_trades_ws_clone = own_trades_ws.clone();
-            let rt_handle_clone = rt_handle.clone();
-            let trade_semaphore_clone = trade_semaphore.clone();
+        // Search for arbitrage opportunities in a single thread (one graph)
+        let pair_to_assets_clone = pair_to_assets.clone();
+        let assets_to_pair_clone = assets_to_pair.clone();
+        let pair_to_spread_clone = pair_to_spread.clone();
+        let fees_clone = fees.clone();
+        let pair_to_decimals_clone = pair_to_decimals.clone();
+        let pair_status_clone = pair_status.clone();
+        let public_online_clone = public_online.clone();
+        let token_clone = token.clone();
+        let orders_clone = orders.clone();
+        let balances_clone = balances.clone();
+        let pair_trade_mins_clone = pair_trade_mins.clone();
+        let own_trades_ws_clone = own_trades_ws.clone();
+        let rt_handle_clone = rt_handle.clone();
+        let trade_semaphore_clone = trade_semaphore.clone();
 
-            std::thread::spawn(move || {
-                let _ = evaluate_arbitrage_opportunities(
-                    pair_to_assets_clone,
-                    assets_to_pair_clone,
-                    pair_to_spread_clone,
-                    fees_clone,
-                    pair_to_decimals_clone,
-                    pair_status_clone,
-                    public_online_clone,
-                    allow_trades,
-                    token_clone,
-                    i as i64,
-                    orders_clone,
-                    balances_clone,
-                    pair_trade_mins_clone,
-                    own_trades_ws_clone,
-                    rt_handle_clone,
-                    trade_semaphore_clone,
-                );
-            });
-        }
+        std::thread::spawn(move || {
+            let _ = evaluate_arbitrage_opportunities(
+                pair_to_assets_clone,
+                assets_to_pair_clone,
+                pair_to_spread_clone,
+                fees_clone,
+                pair_to_decimals_clone,
+                pair_status_clone,
+                public_online_clone,
+                allow_trades,
+                token_clone,
+                0 as i64,
+                orders_clone,
+                balances_clone,
+                pair_trade_mins_clone,
+                own_trades_ws_clone,
+                rt_handle_clone,
+                trade_semaphore_clone,
+            );
+        });
 
         let (result, _index, remaining) = select_all(all_handles).await;
         match result {
