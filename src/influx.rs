@@ -22,38 +22,3 @@ pub async fn setup_influx() -> (Arc<Client>, Arc<String>, usize, Vec<Point>) {
 
     (client, retention_policy, batch_size, points)
 }
-
-#[allow(dead_code)]
-pub async fn spread_latency_from_influx(
-    p90_latency: Arc<Mutex<f64>>,
-) -> Result<(), Box<dyn Error>> {
-    let (client, retention_policy, _, _) = setup_influx().await;
-    let query = format!(
-        "SELECT last(latency) FROM \"{}\".\"recent_latency\" WHERE time > now() - 1m",
-        *retention_policy
-    );
-    let result = client.query(&query, None).await;
-    let latency_value = match result {
-        Ok(Some(data)) => data
-            .get(0)
-            .and_then(|first_result| first_result.series.as_ref())
-            .and_then(|series| series.get(0))
-            .and_then(|first_series| first_series.values.as_ref())
-            .and_then(|values| values.get(0))
-            .and_then(|first_value| first_value.get(1))
-            .and_then(|latency| latency.as_f64())
-            .unwrap_or(f64::MAX),
-        _ => f64::MAX,
-    };
-
-    match p90_latency.lock() {
-        Ok(mut p90_latency_lock) => *p90_latency_lock = latency_value,
-        Err(e) => log::error!("Failed to acquire p90 latency lock: {:?}", e),
-    }
-
-    if latency_value.is_infinite() {
-        log::warn!("Couldn't find a recent latency value: Setting to inf.");
-    }
-
-    Ok(())
-}

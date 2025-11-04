@@ -158,7 +158,6 @@ pub async fn execute_trade(
     orders: &Arc<Mutex<OrderMap>>,
     client: Arc<Client>,
     graph_id: i64,
-    recent_latency: f64,
     winnings_expected: f64,
     roi_expected: f64,
 ) -> () {
@@ -270,7 +269,6 @@ pub async fn execute_trade(
                 graph_id,
                 pair_clone,
                 (i + 1) as i64,
-                recent_latency,
                 send_ts,
                 response_ts,
                 buy_sell_clone,
@@ -343,7 +341,6 @@ pub async fn execute_trade(
             path_uuid_clone,
             graph_id,
             path_names,
-            recent_latency,
             start_ts,
             end_ts,
             winnings_expected,

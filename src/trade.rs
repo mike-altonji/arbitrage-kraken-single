@@ -11,7 +11,6 @@ pub async fn trade_leg_to_influx(
     graph_id: i64,
     pair: String,
     trade_number: i64,
-    recent_latency: f64,
     send_ts: f64,
     response_ts: f64,
     trade_direction: String,
@@ -26,7 +25,6 @@ pub async fn trade_leg_to_influx(
         .add_field("graph_id", Value::Integer(graph_id))
         .add_field("pair", Value::String(pair))
         .add_field("trade_number", Value::Integer(trade_number))
-        .add_field("recent_latency", Value::Float(recent_latency))
         .add_field("send_ts", Value::Float(send_ts))
         .add_field("trade_direction", Value::String(trade_direction))
         .add_field("volume_expected", Value::Float(volume_expected))
@@ -66,7 +64,6 @@ pub async fn trade_path_to_influx(
     path_uuid: String,
     graph_id: i64,
     path: Vec<String>,
-    recent_latency: f64,
     start_ts: f64,
     end_ts: f64,
     winnings_expected: f64,
@@ -78,7 +75,6 @@ pub async fn trade_path_to_influx(
         .add_field("path_uuid", Value::String(path_uuid))
         .add_field("graph_id", Value::Integer(graph_id))
         .add_field("path", Value::String(path.join("|")))
-        .add_field("recent_latency", Value::Float(recent_latency))
         .add_field("start_ts", Value::Float(start_ts))
         .add_field("duration", Value::Float(end_ts - start_ts))
         .add_field("winnings_expected", Value::Float(winnings_expected))
