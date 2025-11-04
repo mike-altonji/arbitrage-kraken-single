@@ -464,7 +464,7 @@ mod tests {
     fn test_asset_pairs_to_pull() {
         let result = Runtime::new()
             .unwrap()
-            .block_on(asset_pairs_to_pull("resources/asset_pairs_a1.csv"));
+            .block_on(asset_pairs_to_pull("resources/asset_pairs_all.csv"));
         assert!(result.is_ok());
         let (
             pair_to_assets,
@@ -474,21 +474,21 @@ mod tests {
             _pair_to_decimals,
             _pair_to_mins,
         ) = result.unwrap();
-        assert!(pair_to_assets.contains_key("EUR/USD"));
-        assert_eq!(pair_to_assets["EUR/USD"].base, "EUR");
-        assert_eq!(pair_to_assets["EUR/USD"].quote, "USD");
-        assert_eq!(pair_to_fee["EUR/USD"][0], vec![0.0, 0.20]);
+        assert!(pair_to_assets.contains_key("USDR/USD"));
+        assert_eq!(pair_to_assets["USDR/USD"].base, "USDR");
+        assert_eq!(pair_to_assets["USDR/USD"].quote, "USD");
+        assert_eq!(pair_to_fee["USDR/USD"][0], vec![0.0, 0.01]);
 
-        let usd_eur = ("USD".to_string(), "EUR".to_string());
-        let eur_usd = ("EUR".to_string(), "USD".to_string());
-        assert!(assets_to_pair.contains_key(&usd_eur));
-        assert!(assets_to_pair.contains_key(&eur_usd));
-        assert_eq!(assets_to_pair[&eur_usd].base, "EUR");
-        assert_eq!(assets_to_pair[&usd_eur].base, "EUR");
-        assert_eq!(assets_to_pair[&eur_usd].quote, "USD");
-        assert_eq!(assets_to_pair[&usd_eur].quote, "USD");
-        assert_eq!(assets_to_pair[&eur_usd].pair, "EUR/USD");
-        assert_eq!(assets_to_pair[&usd_eur].pair, "EUR/USD");
+        let usd_usdr = ("USD".to_string(), "USDR".to_string());
+        let usdr_usd = ("USDR".to_string(), "USD".to_string());
+        assert!(assets_to_pair.contains_key(&usd_usdr));
+        assert!(assets_to_pair.contains_key(&usdr_usd));
+        assert_eq!(assets_to_pair[&usdr_usd].base, "USDR");
+        assert_eq!(assets_to_pair[&usd_usdr].base, "USDR");
+        assert_eq!(assets_to_pair[&usdr_usd].quote, "USD");
+        assert_eq!(assets_to_pair[&usd_usdr].quote, "USD");
+        assert_eq!(assets_to_pair[&usdr_usd].pair, "USDR/USD");
+        assert_eq!(assets_to_pair[&usd_usdr].pair, "USDR/USD");
     }
 
     #[test]
