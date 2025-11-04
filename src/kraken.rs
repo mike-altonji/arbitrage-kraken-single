@@ -186,8 +186,8 @@ pub fn update_fees_based_on_volume(
 
 pub async fn fetch_spreads(
     all_pairs: HashSet<String>,
-    pair_to_spread_vec: Vec<Arc<Mutex<PairToSpread>>>,
-    pair_to_assets_vec: Vec<PairToAssets>,
+    pair_to_spread: Arc<Mutex<PairToSpread>>,
+    pair_to_assets: PairToAssets,
     pair_status: Arc<Mutex<HashMap<String, bool>>>,
     public_online: Arc<Mutex<bool>>,
     ws_url: &str,
@@ -203,8 +203,8 @@ pub async fn fetch_spreads(
                         &text,
                         &public_online,
                         &pair_status,
-                        &pair_to_spread_vec,
-                        &pair_to_assets_vec,
+                        &pair_to_spread,
+                        &pair_to_assets,
                         &client,
                         &retention_policy,
                         batch_size,
@@ -274,8 +274,8 @@ async fn handle_message_text(
     text: &str,
     public_online: &Arc<Mutex<bool>>,
     pair_status: &Arc<Mutex<HashMap<String, bool>>>,
-    pair_to_spread_vec: &Vec<Arc<Mutex<PairToSpread>>>,
-    pair_to_assets_vec: &Vec<PairToAssets>,
+    pair_to_spread: &Arc<Mutex<PairToSpread>>,
+    pair_to_assets: &PairToAssets,
     client: &Arc<Client>,
     retention_policy: &Arc<String>,
     batch_size: usize,
@@ -287,8 +287,8 @@ async fn handle_message_text(
     } else if let Some(array) = data.as_array() {
         handle_array(
             array,
-            pair_to_spread_vec,
-            pair_to_assets_vec,
+            pair_to_spread,
+            pair_to_assets,
             client,
             retention_policy,
             batch_size,
@@ -331,8 +331,8 @@ fn handle_event(
 
 async fn handle_array(
     array: &Vec<serde_json::Value>,
-    pair_to_spread_vec: &Vec<Arc<Mutex<PairToSpread>>>,
-    pair_to_assets_vec: &Vec<PairToAssets>,
+    pair_to_spread: &Arc<Mutex<PairToSpread>>,
+    pair_to_assets: &PairToAssets,
     client: &Arc<Client>,
     retention_policy: &Arc<String>,
     batch_size: usize,
@@ -347,23 +347,21 @@ async fn handle_array(
             let kraken_ts = get_f64_from_array(&inner_array, 2, "kraken_ts")?;
             let bid_volume = get_f64_from_array(&inner_array, 3, "bid_volume")?;
             let ask_volume = get_f64_from_array(&inner_array, 4, "ask_volume")?;
-            for i in 0..pair_to_assets_vec.len() {
-                if pair_to_assets_vec[i].contains_key(&pair.to_string()) {
-                    handle_pair(
-                        &pair,
-                        bid,
-                        ask,
-                        kraken_ts,
-                        bid_volume,
-                        ask_volume,
-                        &pair_to_spread_vec[i],
-                        client,
-                        retention_policy,
-                        batch_size,
-                        points,
-                    )
-                    .await?;
-                }
+            if pair_to_assets.contains_key(&pair.to_string()) {
+                handle_pair(
+                    &pair,
+                    bid,
+                    ask,
+                    kraken_ts,
+                    bid_volume,
+                    ask_volume,
+                    &pair_to_spread,
+                    client,
+                    retention_policy,
+                    batch_size,
+                    points,
+                )
+                .await?;
             }
         }
     }
