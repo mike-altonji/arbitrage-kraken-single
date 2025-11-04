@@ -1,8 +1,7 @@
 use crate::graph_algorithms::bellman_ford_negative_cycle;
 use crate::kraken_private::execute_trade;
 use crate::structs::{
-    AssetsToPair, BaseQuote, OrderMap, PairToAssets, PairToDecimals, PairToTradeMin,
-    PairToVolatility, Spread,
+    AssetsToPair, BaseQuote, OrderMap, PairToAssets, PairToDecimals, PairToTradeMin, Spread,
 };
 use crate::structs::{Edge, PairToSpread};
 use crate::trade::rotate_path;
@@ -31,7 +30,6 @@ pub fn evaluate_arbitrage_opportunities(
     allow_trades: bool,
     token: Option<String>,
     graph_id: i64,
-    volatility: Arc<Mutex<PairToVolatility>>,
     orders: Arc<Mutex<OrderMap>>,
     balances: Arc<Mutex<HashMap<String, f64>>>,
     pair_to_trade_mins: PairToTradeMin,
@@ -64,7 +62,6 @@ pub fn evaluate_arbitrage_opportunities(
         .set_authentication(&user, &password),
     );
     let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
-    let assets_to_pair_clone = assets_to_pair.clone();
 
     let starters = HashSet::from(["USD".to_string(), "EUR".to_string()]);
 
@@ -137,12 +134,7 @@ pub fn evaluate_arbitrage_opportunities(
                         .clone()
                 })
                 .collect();
-            rotate_path(
-                &mut path_names,
-                &starters,
-                &volatility.lock().unwrap().clone(),
-                &assets_to_pair_clone,
-            );
+            rotate_path(&mut path_names, &starters);
             let (mut min_volume, end_volume, rates) =
                 limiting_volume(&path_names, &rate_map, &volume_map);
 

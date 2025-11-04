@@ -24,7 +24,6 @@ pub async fn extract_asset_pairs_from_csv_files(
         PairToDecimals,
         PairToTradeMin,
         AssetNameConverter,
-        AssetNameConverter,
     ),
     Box<dyn std::error::Error>,
 > {
@@ -34,7 +33,6 @@ pub async fn extract_asset_pairs_from_csv_files(
     let mut all_fee_schedules = HashMap::new();
     let mut all_pair_to_decimals = PairToDecimals::new();
     let mut all_pair_trade_mins = PairToTradeMin::new();
-    let mut all_asset_pair_conversion = AssetNameConverter::new();
     let mut all_asset_name_conversion = AssetNameConverter::new();
 
     let csv_files = if use_single_csv {
@@ -51,7 +49,6 @@ pub async fn extract_asset_pairs_from_csv_files(
             pair_to_assets,
             assets_to_pair,
             asset_name_conversion,
-            asset_pair_conversion,
             fee_schedules,
             pair_to_decimals,
             pair_trade_mins,
@@ -69,9 +66,6 @@ pub async fn extract_asset_pairs_from_csv_files(
         for (key, value) in pair_trade_mins {
             all_pair_trade_mins.insert(key, value);
         }
-        for (ws, rest) in asset_pair_conversion {
-            all_asset_pair_conversion.insert(ws, rest);
-        }
         all_asset_name_conversion = asset_name_conversion; // Overwrite, since all the same
     }
 
@@ -82,7 +76,6 @@ pub async fn extract_asset_pairs_from_csv_files(
         all_fee_schedules,
         all_pair_to_decimals,
         all_pair_trade_mins,
-        all_asset_pair_conversion,
         all_asset_name_conversion,
     ))
 }

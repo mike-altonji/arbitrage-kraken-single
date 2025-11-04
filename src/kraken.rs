@@ -1,17 +1,15 @@
 use crate::influx::setup_influx;
 use crate::structs::{
     AssetNameConverter, AssetsToPair, BaseQuote, BaseQuotePair, Decimals, PairToAssets,
-    PairToDecimals, PairToSpread, PairToTradeMin, PairToVolatility, Spread, TradeMin,
+    PairToDecimals, PairToSpread, PairToTradeMin, Spread, TradeMin,
 };
 use crate::telegram::send_telegram_message;
-use crate::utils::compute_variance;
 use core::sync::atomic::Ordering;
 use csv::ReaderBuilder;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use influx_db_client::{Client, Point, Precision, Value};
 use reqwest;
-use reqwest::Error;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::sync::{atomic::AtomicUsize, Arc, Mutex};
@@ -27,7 +25,6 @@ pub async fn asset_pairs_to_pull(
     (
         PairToAssets,
         AssetsToPair,
-        AssetNameConverter,
         AssetNameConverter,
         HashMap<String, Vec<Vec<f64>>>,
         PairToDecimals,
@@ -164,7 +161,6 @@ pub async fn asset_pairs_to_pull(
         pair_to_assets,
         assets_to_pair,
         asset_name_conversion,
-        asset_pair_conversion,
         pair_to_fee,
         pair_to_decimals,
         pair_to_mins,
@@ -186,52 +182,6 @@ pub fn update_fees_based_on_volume(
         }
         fees.insert(key.clone(), fee);
     }
-}
-
-pub async fn update_volatility(
-    pair_to_volatility: Arc<Mutex<PairToVolatility>>,
-    asset_name_converter: &AssetNameConverter,
-) -> Result<(), Error> {
-    let client = reqwest::Client::new();
-    let pairs: Vec<String> = pair_to_volatility.lock().unwrap().keys().cloned().collect();
-    for ws in pairs {
-        let rest = asset_name_converter.ws_to_rest(&ws).unwrap().clone();
-        let url = format!("https://api.kraken.com/0/public/OHLC?pair={rest}&interval=1");
-        let resp = match client.get(&url).send().await {
-            Ok(response) => response,
-            Err(e) => {
-                log::warn!("Failed to retrieve OHLC response from {}: {}", url, e);
-                continue;
-            }
-        };
-        let ohlc_data: serde_json::Value = match resp.json().await {
-            Ok(data) => data,
-            Err(e) => {
-                log::warn!("Failed to parse OHLC response from {}: {}", url, e);
-                continue;
-            }
-        };
-        if let Some(data) = ohlc_data["result"][&rest].as_array() {
-            // Calculate the variance of the % change over the prior 12 hours (1m interval * 720 points)
-            let mut values: Vec<f64> = data
-                .iter()
-                .map(|x| x[1].as_str().unwrap().parse::<f64>().unwrap())
-                .collect();
-            values = values.windows(2).map(|x| (x[1] - x[0]) / x[0]).collect();
-            let variance = compute_variance(values);
-            let mut pair_to_volatility = pair_to_volatility.lock().unwrap();
-            if variance.is_nan() {
-                pair_to_volatility.insert(ws.clone(), f64::INFINITY);
-            } else {
-                pair_to_volatility.insert(ws.clone(), variance);
-            }
-        } else {
-            log::warn!("No OHLC data for {}", rest.clone());
-            continue;
-        }
-    }
-
-    Ok(())
 }
 
 pub async fn fetch_spreads(
@@ -514,32 +464,31 @@ mod tests {
     fn test_asset_pairs_to_pull() {
         let result = Runtime::new()
             .unwrap()
-            .block_on(asset_pairs_to_pull("resources/asset_pairs_a1.csv"));
+            .block_on(asset_pairs_to_pull("resources/asset_pairs_all.csv"));
         assert!(result.is_ok());
         let (
             pair_to_assets,
             assets_to_pair,
             _asset_name_conversion,
-            _asset_pair_conversion,
             pair_to_fee,
             _pair_to_decimals,
             _pair_to_mins,
         ) = result.unwrap();
-        assert!(pair_to_assets.contains_key("EUR/USD"));
-        assert_eq!(pair_to_assets["EUR/USD"].base, "EUR");
-        assert_eq!(pair_to_assets["EUR/USD"].quote, "USD");
-        assert_eq!(pair_to_fee["EUR/USD"][0], vec![0.0, 0.20]);
+        assert!(pair_to_assets.contains_key("USDR/USD"));
+        assert_eq!(pair_to_assets["USDR/USD"].base, "USDR");
+        assert_eq!(pair_to_assets["USDR/USD"].quote, "USD");
+        assert_eq!(pair_to_fee["USDR/USD"][0], vec![0.0, 0.01]);
 
-        let usd_eur = ("USD".to_string(), "EUR".to_string());
-        let eur_usd = ("EUR".to_string(), "USD".to_string());
-        assert!(assets_to_pair.contains_key(&usd_eur));
-        assert!(assets_to_pair.contains_key(&eur_usd));
-        assert_eq!(assets_to_pair[&eur_usd].base, "EUR");
-        assert_eq!(assets_to_pair[&usd_eur].base, "EUR");
-        assert_eq!(assets_to_pair[&eur_usd].quote, "USD");
-        assert_eq!(assets_to_pair[&usd_eur].quote, "USD");
-        assert_eq!(assets_to_pair[&eur_usd].pair, "EUR/USD");
-        assert_eq!(assets_to_pair[&usd_eur].pair, "EUR/USD");
+        let usd_usdr = ("USD".to_string(), "USDR".to_string());
+        let usdr_usd = ("USDR".to_string(), "USD".to_string());
+        assert!(assets_to_pair.contains_key(&usd_usdr));
+        assert!(assets_to_pair.contains_key(&usdr_usd));
+        assert_eq!(assets_to_pair[&usdr_usd].base, "USDR");
+        assert_eq!(assets_to_pair[&usd_usdr].base, "USDR");
+        assert_eq!(assets_to_pair[&usdr_usd].quote, "USD");
+        assert_eq!(assets_to_pair[&usd_usdr].quote, "USD");
+        assert_eq!(assets_to_pair[&usdr_usd].pair, "USDR/USD");
+        assert_eq!(assets_to_pair[&usd_usdr].pair, "USDR/USD");
     }
 
     #[test]

@@ -1,17 +1,16 @@
 use dotenv::dotenv;
 use evaluate_arbitrage::evaluate_arbitrage_opportunities;
 use futures::future::select_all;
-use kraken::{fetch_spreads, update_fees_based_on_volume, update_volatility};
+use kraken::{fetch_spreads, update_fees_based_on_volume};
 use kraken_assets_and_pairs::{extract_asset_pairs_from_csv_files, get_unique_pairs};
 use kraken_orders_listener::fetch_orders;
 use kraken_private::{get_30d_trade_volume, get_auth_token, setup_own_trades_websocket};
 use kraken_private_rest::fetch_asset_balances;
 use std::collections::HashMap;
 use std::env;
-use std::f64::INFINITY;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use structs::{OrderMap, PairToVolatility};
+use structs::OrderMap;
 use telegram::send_telegram_message;
 use tokio::time::sleep;
 
@@ -76,7 +75,6 @@ async fn main() {
             fee_schedules,
             pair_to_decimals,
             pair_trade_mins,
-            asset_pair_conversion,
             asset_name_conversion,
         ) = extract_asset_pairs_from_csv_files("resources", use_single_csv)
             .await
@@ -166,31 +164,6 @@ async fn main() {
         };
         all_handles.push(Box::pin(fees_handle));
 
-        // Task dedicated to keeping volatility up to date
-        let volatility: Arc<Mutex<PairToVolatility>> = Arc::new(Mutex::new(
-            asset_pair_conversion
-                .ws_to_rest_map
-                .keys()
-                .map(|key| (key.clone(), INFINITY))
-                .collect(),
-        ));
-        let volatility_clone = volatility.clone();
-        let volatility_handle = {
-            let asset_pair_conversion = asset_pair_conversion.clone();
-            tokio::spawn(async move {
-                loop {
-                    {
-                        let volatility_clone2 = volatility.clone();
-                        update_volatility(volatility_clone2, &asset_pair_conversion)
-                            .await
-                            .expect("Volatility pull failed");
-                    }
-                    sleep(Duration::from_secs(10)).await;
-                }
-            })
-        };
-        all_handles.push(Box::pin(volatility_handle));
-
         // Get runtime handle for spawning async tasks from sync threads
         let rt_handle = tokio::runtime::Handle::current();
 
@@ -223,7 +196,6 @@ async fn main() {
             let pair_status_clone = pair_status.clone();
             let public_online_clone = public_online.clone();
             let token_clone = token.clone();
-            let volatility_clone = volatility_clone.clone();
             let orders_clone = orders.clone();
             let balances_clone = balances.clone();
             let pair_trade_mins_clone = pair_trade_mins.clone();
@@ -243,7 +215,6 @@ async fn main() {
                     allow_trades,
                     token_clone,
                     i as i64,
-                    volatility_clone,
                     orders_clone,
                     balances_clone,
                     pair_trade_mins_clone,
