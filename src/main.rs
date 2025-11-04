@@ -2,7 +2,7 @@ use dotenv::dotenv;
 use evaluate_arbitrage::evaluate_arbitrage_opportunities;
 use futures::future::select_all;
 use kraken::{fetch_spreads, update_fees_based_on_volume};
-use kraken_assets_and_pairs::{extract_asset_pairs_from_csv_files, get_unique_pairs};
+use kraken_assets_and_pairs::{extract_asset_pairs_from_csv_file, get_unique_pairs};
 use kraken_orders_listener::fetch_orders;
 use kraken_private::{get_30d_trade_volume, get_auth_token, setup_own_trades_websocket};
 use kraken_private_rest::fetch_asset_balances;
@@ -34,7 +34,6 @@ async fn main() {
     let args: Vec<String> = env::args().collect();
     let allow_trades = args.contains(&"--trade".to_string());
     let use_colocated = args.contains(&"--colocated".to_string());
-    let use_single_csv = args.contains(&"--single".to_string());
 
     // Determine WebSocket URLs based on --colocated flag
     let public_ws_url = if use_colocated {
@@ -76,7 +75,7 @@ async fn main() {
             pair_to_decimals,
             pair_trade_mins,
             asset_name_conversion,
-        ) = extract_asset_pairs_from_csv_files("resources", use_single_csv)
+        ) = extract_asset_pairs_from_csv_file("resources/asset_pairs_all.csv")
             .await
             .expect("Failed to get asset pairs");
 

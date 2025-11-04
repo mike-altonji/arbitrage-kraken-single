@@ -9,12 +9,10 @@ use crate::{
         AssetNameConverter, AssetsToPair, PairToAssets, PairToDecimals, PairToSpread,
         PairToTradeMin,
     },
-    utils::get_csv_files_from_directory,
 };
 
-pub async fn extract_asset_pairs_from_csv_files(
-    directory: &str,
-    use_single_csv: bool,
+pub async fn extract_asset_pairs_from_csv_file(
+    csv_file: &str,
 ) -> Result<
     (
         Vec<PairToAssets>,
@@ -35,14 +33,7 @@ pub async fn extract_asset_pairs_from_csv_files(
     let mut all_pair_trade_mins = PairToTradeMin::new();
     let mut all_asset_name_conversion = AssetNameConverter::new();
 
-    let csv_files = if use_single_csv {
-        vec!["resources/asset_pairs_all.csv".to_string()]
-    } else {
-        let mut files = get_csv_files_from_directory(directory).expect("Failed to read directory");
-        // Exclude the single CSV file when not in single mode
-        files.retain(|f| f != "resources/asset_pairs_all.csv");
-        files
-    };
+    let csv_files = vec![csv_file.to_string()];
 
     for csv_file in csv_files {
         let (

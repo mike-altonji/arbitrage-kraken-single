@@ -12,4 +12,3 @@ cargo run --release
 ### Args
 - `--trade`: Trade, otherwise evaluate-only mode.
 - `--colocated`: Use the Beeks colocation VIP endpoints.
-- `--single`: Use the single `asset_pairs_all.csv` graph containing _all pairs_. Otherwise, use all other graphs.
