@@ -25,8 +25,6 @@ pub struct Spread {
 }
 pub type PairToSpread = HashMap<String, Spread>;
 
-pub type PairToVolatility = HashMap<String, f64>;
-
 #[derive(Clone)]
 pub struct Decimals {
     pub volume: usize,
