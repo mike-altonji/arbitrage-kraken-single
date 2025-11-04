@@ -137,7 +137,7 @@ async fn main() {
         let fees: Arc<Mutex<HashMap<String, f64>>> = Arc::new(Mutex::new(
             fee_schedules
                 .keys()
-                .map(|key| (key.clone(), 0.0026))
+                .map(|key| (key.clone(), 0.0026)) // TODO: Revisit this default fee
                 .collect(),
         ));
         let fees_handle = {

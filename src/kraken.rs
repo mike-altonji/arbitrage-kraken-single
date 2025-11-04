@@ -173,7 +173,7 @@ pub fn update_fees_based_on_volume(
     vol_30day: f64,
 ) {
     for (key, schedule) in schedules.iter() {
-        let mut fee = 0.0026; // default fee
+        let mut fee = 0.0026; // TODO: Revisit this default fee
         for pair in schedule {
             if vol_30day < pair[0] {
                 break;
