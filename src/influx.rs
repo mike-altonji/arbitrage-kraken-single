@@ -1,6 +1,5 @@
 use influx_db_client::{reqwest::Url, Client, Point};
-use std::error::Error;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub async fn setup_influx() -> (Arc<Client>, Arc<String>, usize, Vec<Point>) {
     dotenv::dotenv().ok();
