@@ -3,8 +3,8 @@ use phf::phf_map;
 // Currently using USDT as the conversion asset.
 // Higher 0.2% fee, but price levels much more stable than USDR/EUR.
 pub static STABLECOIN_ASSET_INDEX: phf::Map<&'static str, usize> = phf_map! {
-    "USDT/EUR" => 0,
-    "USDT/USD" => 1
+    "USDT/USD" => 0,
+    "USDT/EUR" => 1
 };
 
 pub static ASSET_INDEX_0: phf::Map<&'static str, usize> = phf_map! {
