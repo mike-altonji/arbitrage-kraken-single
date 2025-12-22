@@ -14,6 +14,7 @@ use structs::OrderMap;
 use telegram::send_telegram_message;
 use tokio::time::sleep;
 
+mod asset_pairs;
 mod evaluate_arbitrage;
 mod graph_algorithms;
 mod influx;
