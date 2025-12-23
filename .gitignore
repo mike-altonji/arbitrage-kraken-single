@@ -6,3 +6,5 @@ Cargo.lock
 eda/
 logs/
 scripts/.log_winnings_env/
+old_functions/
+new approach.md
