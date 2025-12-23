@@ -1,7 +1,14 @@
 use crate::structs::{BuyOrder, PairData, PairDataVec};
-use crate::{EUR_BALANCE, FEE_SPOT, FEE_STABLECOIN, USD_BALANCE};
+use crate::{EUR_BALANCE, FEE_SPOT, FEE_STABLECOIN, TRADER_BUSY, USD_BALANCE};
+use std::sync::atomic::Ordering;
+use tokio::sync::mpsc;
 
-pub fn evaluate_arbitrage(pair_data_vec: &PairDataVec, idx: usize, pair_names: &[&'static str]) {
+pub fn evaluate_arbitrage(
+    pair_data_vec: &PairDataVec,
+    idx: usize,
+    pair_names: &[&'static str],
+    trade_tx: mpsc::Sender<BuyOrder>,
+) {
     let usd_pair = pair_data_vec.get(idx - (idx % 2));
     let eur_pair = pair_data_vec.get(idx + 1 - (idx % 2));
     let usd_stable_pair = pair_data_vec.get(0);
@@ -69,11 +76,14 @@ pub fn evaluate_arbitrage(pair_data_vec: &PairDataVec, idx: usize, pair_names: &
             log::info!("Volume is valid: Trade!");
             let usd_pair_idx = idx - (idx % 2);
             if let Some(pair_name) = pair_names.get(usd_pair_idx).copied() {
-                trigger_trades(&BuyOrder {
-                    pair_name,
-                    volume,
-                    price: usd_pair.ask_price,
-                });
+                trigger_trades(
+                    &BuyOrder {
+                        pair_name,
+                        volume,
+                        price: usd_pair.ask_price,
+                    },
+                    trade_tx.clone(),
+                );
             }
         } else {
             log::debug!("Not enough volume to trade");
@@ -95,11 +105,14 @@ pub fn evaluate_arbitrage(pair_data_vec: &PairDataVec, idx: usize, pair_names: &
             log::info!("Volume is valid: Trade!");
             let eur_pair_idx = idx + 1 - (idx % 2);
             if let Some(pair_name) = pair_names.get(eur_pair_idx).copied() {
-                trigger_trades(&BuyOrder {
-                    pair_name,
-                    volume,
-                    price: eur_pair.ask_price,
-                });
+                trigger_trades(
+                    &BuyOrder {
+                        pair_name,
+                        volume,
+                        price: eur_pair.ask_price,
+                    },
+                    trade_tx.clone(),
+                );
             }
         } else {
             log::debug!("Not enough volume to trade");
@@ -151,11 +164,33 @@ fn check_guardrails(volume: f64, pair1: &PairData, pair2: &PairData) -> bool {
     return true;
 }
 
-/// Send the signal to start the arbitrage trades. Might replace this with an actual trade function later.
+/// Send the signal to start the arbitrage trades.
 /// Only need to specify the first buy order: Other buy orders are implied by the first buy order.
-fn trigger_trades(buy_order: &BuyOrder) {
-    println!(
-        "Sending buy order: {} {} {}",
-        buy_order.pair_name, buy_order.volume, buy_order.price
-    );
+/// Drops the message immediately if trader is busy (no queuing of stale orders).
+fn trigger_trades(buy_order: &BuyOrder, trade_tx: mpsc::Sender<BuyOrder>) {
+    // Check if trader is busy first - if so, drop immediately
+    if TRADER_BUSY.load(Ordering::Relaxed) {
+        log::debug!(
+            "Trader busy, dropping buy order for {}",
+            buy_order.pair_name
+        );
+        return;
+    }
+
+    // Try to send the buy order to the trading thread
+    match trade_tx.try_send(buy_order.clone()) {
+        Ok(()) => {
+            // Successfully sent
+        }
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            // Channel buffer full (shouldn't happen if trader is idle, but handle gracefully)
+            log::debug!(
+                "Channel buffer full, dropping buy order for {}",
+                buy_order.pair_name
+            );
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            log::error!("Trading channel closed, cannot send buy order");
+        }
+    }
 }

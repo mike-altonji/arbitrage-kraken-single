@@ -12,6 +12,7 @@ pub struct PairData {
 }
 pub type PairDataVec = Vec<PairData>;
 
+#[derive(Clone)]
 pub struct BuyOrder {
     pub pair_name: &'static str,
     pub volume: f64,

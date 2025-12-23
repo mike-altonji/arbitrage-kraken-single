@@ -1,8 +1,10 @@
+use crate::structs::BuyOrder;
 use dotenv::dotenv;
 use std::env;
-use std::sync::atomic::{AtomicI16, AtomicU16};
+use std::sync::atomic::{AtomicBool, AtomicI16, AtomicU16};
 use std::thread;
 use telegram::send_telegram_message;
+use tokio::sync::mpsc;
 
 mod asset_pairs;
 mod evaluate_arbitrage;
@@ -10,6 +12,7 @@ mod kraken_rest;
 mod listener;
 mod structs;
 mod telegram;
+mod trade;
 mod utils;
 
 // Static atomic variables for fees and balances
@@ -17,6 +20,9 @@ pub static FEE_SPOT: AtomicU16 = AtomicU16::new(40); // Default 0.40% (in bps)
 pub static FEE_STABLECOIN: AtomicU16 = AtomicU16::new(20); // Default 0.20% (in bps)
 pub static USD_BALANCE: AtomicI16 = AtomicI16::new(0);
 pub static EUR_BALANCE: AtomicI16 = AtomicI16::new(0);
+
+// Trader busy flag - used to drop orders if trader is processing
+pub static TRADER_BUSY: AtomicBool = AtomicBool::new(false);
 
 #[tokio::main]
 async fn main() {
@@ -49,6 +55,9 @@ async fn main() {
     // Get available cores for pinning
     let cores = core_affinity::get_core_ids().expect("Could not get core IDs");
 
+    // Create bounded channel for sending BuyOrder to trading thread
+    let (trade_tx, trade_rx) = mpsc::channel::<BuyOrder>(1);
+
     // Create 6 listener threads
     let asset_indices = vec![
         (&asset_pairs::ASSET_INDEX_0, 0),
@@ -69,6 +78,7 @@ async fn main() {
             panic!("Core {} not available", target_core_id)
         };
         let core_id = core_affinity::CoreId { id: target_core_id };
+        let trade_tx_clone = trade_tx.clone();
         let handle = thread::spawn(move || {
             // Pin thread to core
             if core_affinity::set_for_current(core_id) {
@@ -101,6 +111,7 @@ async fn main() {
                     &mut public_online,
                     &public_ws_url_clone,
                     &pair_names,
+                    trade_tx_clone,
                 )
                 .await
             });
@@ -158,9 +169,29 @@ async fn main() {
         });
     });
 
+    // Create trading thread (pinned to core 3)
+    let trading_handle = thread::spawn(move || {
+        // Pin thread to core 3
+        if core_affinity::set_for_current(core_3_id) {
+            log::debug!("Trading thread pinned to core 3");
+        } else {
+            #[cfg(target_os = "macos")]
+            log::warn!("Thread pinning not supported on macOS. Continuing without pinning");
+            #[cfg(not(target_os = "macos"))]
+            panic!("Trading thread failed to pin to core 3");
+        }
+
+        // Create a tokio runtime on this thread for async websocket operations
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        rt.block_on(async move {
+            trade::run_trading_thread(trade_rx).await;
+        });
+    });
+
     // Wait for all threads (they run indefinitely)
     handles.push(balance_handle);
     handles.push(fee_handle);
+    handles.push(trading_handle);
     for handle in handles {
         handle.join().expect("Thread panicked");
     }
