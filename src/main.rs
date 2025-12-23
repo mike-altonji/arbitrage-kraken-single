@@ -4,6 +4,7 @@ use std::thread;
 use telegram::send_telegram_message;
 
 mod asset_pairs;
+mod kraken_rest;
 mod listener;
 mod structs;
 mod telegram;
