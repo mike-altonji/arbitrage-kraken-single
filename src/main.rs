@@ -190,7 +190,7 @@ async fn main() {
         // Create a tokio runtime on this thread for async websocket operations
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         rt.block_on(async move {
-            trade::run_trading_thread(token, private_ws_url_clone, trade_rx).await;
+            trade::run_trading_thread(token, private_ws_url_clone, trade_rx, allow_trades).await;
         });
     });
 

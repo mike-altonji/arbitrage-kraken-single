@@ -47,6 +47,7 @@ pub async fn run_trading_thread(
     token: String,
     private_ws_url: String,
     mut trade_rx: mpsc::Receiver<OrderInfo>,
+    allow_trades: bool,
 ) {
     log::debug!("Starting trading thread");
 
@@ -54,14 +55,21 @@ pub async fn run_trading_thread(
     let (mut write, _read) = setup_private_websocket(&token, &private_ws_url).await;
 
     while let Some(order) = trade_rx.recv().await {
-        // Mark trader as busy before processing
-        TRADER_BUSY.store(true, Ordering::Relaxed);
+        if allow_trades {
+            // Mark trader as busy before processing
+            TRADER_BUSY.store(true, Ordering::Relaxed);
 
-        log::debug!("Sending order starting with {}", order.pair1_name);
-        make_trades(&mut write, &token, &order).await;
+            log::debug!("Sending order starting with {}", order.pair1_name);
+            make_trades(&mut write, &token, &order).await;
 
-        // Mark trader as idle after processing
-        TRADER_BUSY.store(false, Ordering::Relaxed);
+            // Mark trader as idle after processing
+            TRADER_BUSY.store(false, Ordering::Relaxed);
+        } else {
+            log::debug!(
+                "Trading is disabled, skipping order for {}",
+                order.pair1_name
+            );
+        }
     }
     log::debug!("Trading channel closed, exiting trading thread");
 }
