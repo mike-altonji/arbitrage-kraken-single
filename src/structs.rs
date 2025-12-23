@@ -6,8 +6,8 @@ pub struct PairData {
     pub ask_volume: f64,
     pub order_min: f64,
     pub cost_min: f64,
-    pub price_decimals: u8,
-    pub volume_decimals: u8,
+    pub price_decimals: usize,
+    pub volume_decimals: usize,
     pub pair_status: bool,
 }
 pub type PairDataVec = Vec<PairData>;
@@ -20,6 +20,6 @@ pub struct OrderInfo {
     pub pair2_stable_name: &'static str,
     pub volume_coin: f64,
     pub volume_stable: f64,
-    pub volume_decimals_coin: u8,
-    pub volume_decimals_stable: u8,
+    pub volume_decimals_coin: usize,
+    pub volume_decimals_stable: usize,
 }

@@ -1,5 +1,5 @@
 use crate::evaluate_arbitrage;
-use crate::structs::BuyOrder;
+use crate::structs::OrderInfo;
 use crate::structs::PairDataVec;
 use crate::telegram::send_telegram_message;
 use evaluate_arbitrage::evaluate_arbitrage;
@@ -18,7 +18,7 @@ pub async fn start_listener(
     public_online: &mut bool,
     ws_url: &str,
     pair_names: &[&'static str],
-    trade_tx: mpsc::Sender<BuyOrder>,
+    trade_tx: mpsc::Sender<OrderInfo>,
 ) {
     const SLEEP_DURATION: Duration = Duration::from_secs(5);
 

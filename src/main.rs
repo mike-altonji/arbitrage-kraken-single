@@ -1,4 +1,4 @@
-use crate::structs::BuyOrder;
+use crate::structs::OrderInfo;
 use dotenv::dotenv;
 use std::env;
 use std::sync::atomic::{AtomicBool, AtomicI16, AtomicU16};
@@ -55,8 +55,8 @@ async fn main() {
     // Get available cores for pinning
     let cores = core_affinity::get_core_ids().expect("Could not get core IDs");
 
-    // Create bounded channel for sending BuyOrder to trading thread
-    let (trade_tx, trade_rx) = mpsc::channel::<BuyOrder>(1);
+    // Create bounded channel for sending OrderInfo to trading thread
+    let (trade_tx, trade_rx) = mpsc::channel::<OrderInfo>(1);
 
     // Create 6 listener threads
     let asset_indices = vec![

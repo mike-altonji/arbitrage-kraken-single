@@ -54,7 +54,7 @@ pub async fn initialize_pair_data(asset_index: &phf::Map<&'static str, usize>) -
     let pairs_obj = data["result"].as_object().expect("No pairs in response");
 
     // Create a map from wsname to pair data for quick lookup
-    let mut wsname_to_data: std::collections::HashMap<String, (u8, u8, f64, f64, bool)> =
+    let mut wsname_to_data: std::collections::HashMap<String, (usize, usize, f64, f64, bool)> =
         std::collections::HashMap::new();
 
     for (key, details) in pairs_obj {
@@ -68,10 +68,12 @@ pub async fn initialize_pair_data(asset_index: &phf::Map<&'static str, usize>) -
             == "online";
         let price_decimals = details["pair_decimals"]
             .as_u64()
-            .expect(&format!("No pair_decimals for {}", wsname)) as u8;
+            .expect(&format!("No pair_decimals for {}", wsname))
+            as usize;
         let volume_decimals = details["lot_decimals"]
             .as_u64()
-            .expect(&format!("No lot_decimals for {}", wsname)) as u8;
+            .expect(&format!("No lot_decimals for {}", wsname))
+            as usize;
         let order_min = details["ordermin"]
             .as_str()
             .expect(&format!("No ordermin for {}", wsname))
