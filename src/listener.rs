@@ -15,6 +15,7 @@ pub async fn start_listener(
     pair_data_vec: &mut PairDataVec,
     public_online: &mut bool,
     ws_url: &str,
+    pair_names: &[&'static str],
 ) {
     const SLEEP_DURATION: Duration = Duration::from_secs(5);
 
@@ -32,7 +33,7 @@ pub async fn start_listener(
                     if let Some(idx) = idx {
                         // Only evaluate arbitrage for non-stablecoin pairs and if the websocket is online
                         if idx > 1 && *public_online {
-                            evaluate_arbitrage(pair_data_vec, idx);
+                            evaluate_arbitrage(pair_data_vec, idx, pair_names);
                         }
                     }
                 }

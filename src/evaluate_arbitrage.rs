@@ -1,7 +1,7 @@
-use crate::structs::{PairData, PairDataVec};
+use crate::structs::{BuyOrder, PairData, PairDataVec};
 use crate::{EUR_BALANCE, FEE_SPOT, FEE_STABLECOIN, USD_BALANCE};
 
-pub fn evaluate_arbitrage(pair_data_vec: &PairDataVec, idx: usize) {
+pub fn evaluate_arbitrage(pair_data_vec: &PairDataVec, idx: usize, pair_names: &[&'static str]) {
     let usd_pair = pair_data_vec.get(idx - (idx % 2));
     let eur_pair = pair_data_vec.get(idx + 1 - (idx % 2));
     let usd_stable_pair = pair_data_vec.get(0);
@@ -67,6 +67,14 @@ pub fn evaluate_arbitrage(pair_data_vec: &PairDataVec, idx: usize) {
         let volume = limiting_volume(usd_pair, eur_pair, balance, fee_spot);
         if check_guardrails(volume, usd_pair, eur_pair) {
             log::info!("Volume is valid: Trade!");
+            let usd_pair_idx = idx - (idx % 2);
+            if let Some(pair_name) = pair_names.get(usd_pair_idx).copied() {
+                trigger_trades(&BuyOrder {
+                    pair_name,
+                    volume,
+                    price: usd_pair.ask_price,
+                });
+            }
         } else {
             log::debug!("Not enough volume to trade");
         }
@@ -85,6 +93,14 @@ pub fn evaluate_arbitrage(pair_data_vec: &PairDataVec, idx: usize) {
         let volume = limiting_volume(eur_pair, usd_pair, balance, fee_spot);
         if check_guardrails(volume, eur_pair, usd_pair) {
             log::info!("Volume is valid: Trade!");
+            let eur_pair_idx = idx + 1 - (idx % 2);
+            if let Some(pair_name) = pair_names.get(eur_pair_idx).copied() {
+                trigger_trades(&BuyOrder {
+                    pair_name,
+                    volume,
+                    price: eur_pair.ask_price,
+                });
+            }
         } else {
             log::debug!("Not enough volume to trade");
         }
@@ -133,4 +149,13 @@ fn check_guardrails(volume: f64, pair1: &PairData, pair2: &PairData) -> bool {
         return false;
     }
     return true;
+}
+
+/// Send the signal to start the arbitrage trades. Might replace this with an actual trade function later.
+/// Only need to specify the first buy order: Other buy orders are implied by the first buy order.
+fn trigger_trades(buy_order: &BuyOrder) {
+    println!(
+        "Sending buy order: {} {} {}",
+        buy_order.pair_name, buy_order.volume, buy_order.price
+    );
 }

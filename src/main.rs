@@ -85,6 +85,10 @@ async fn main() {
             rt.block_on(async move {
                 log::debug!("Initializing listener thread {}", thread_id);
 
+                // Build pair names vector from asset_index (built once per thread)
+                // Separate from pair_data_vec to keep pair_data_vec slim to fit on one cache line
+                let pair_names = utils::build_pair_names_vec(asset_index);
+
                 // Initialize pair data from Kraken API
                 let mut pair_data_vec = utils::initialize_pair_data(asset_index).await;
                 let mut public_online = true;
@@ -96,6 +100,7 @@ async fn main() {
                     &mut pair_data_vec,
                     &mut public_online,
                     &public_ws_url_clone,
+                    &pair_names,
                 )
                 .await
             });

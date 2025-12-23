@@ -27,6 +27,21 @@ pub fn init_logging() {
     log4rs::init_config(log_config).expect("Unable to build log file");
 }
 
+/// Build a vector of pair names indexed by their position in the asset_index map
+/// Returns a vector where pair_names[idx] gives the pair name for that index
+pub fn build_pair_names_vec(asset_index: &phf::Map<&'static str, usize>) -> Vec<&'static str> {
+    let max_idx = asset_index
+        .values()
+        .max()
+        .copied()
+        .expect("No pairs in asset_index");
+    let mut names = vec![""; max_idx + 1];
+    for (name, &idx) in asset_index.entries() {
+        names[idx] = name;
+    }
+    names
+}
+
 /// Fetch asset pairs metadata from Kraken API and initialize PairDataVec
 /// Returns a vector of PairData with default values for prices/volumes and real metadata from API
 /// The vector is ordered by the indices in the asset_index map
