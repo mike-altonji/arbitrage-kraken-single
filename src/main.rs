@@ -1,5 +1,4 @@
 use dotenv::dotenv;
-// use kraken_private::get_auth_token;
 use std::env;
 use telegram::send_telegram_message;
 
@@ -35,11 +34,6 @@ async fn main() {
         "🚀 Launching Kraken arbitrage: Evaluation-only mode"
     };
     send_telegram_message(mode_message).await;
-    // let token = if allow_trades {
-    //     Some(get_auth_token().await.expect("Could not pull auth token."))
-    // } else {
-    //     None
-    // };
 
     // Initialize the listener threads
     let listener_handle0 = {
