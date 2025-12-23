@@ -63,7 +63,7 @@ async fn main() {
         let handle = thread::spawn(move || {
             // Pin thread to core
             if core_affinity::set_for_current(core_id) {
-                log::info!("Thread {} pinned to core {}", thread_id, core_id.id);
+                log::debug!("Thread {} pinned to core {}", thread_id, core_id.id);
             } else {
                 #[cfg(target_os = "macos")]
                 log::warn!("Thread pinning not supported on macOS. Continuing without pinning");
@@ -74,7 +74,7 @@ async fn main() {
             // Create a tokio runtime on this thread
             let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
             rt.block_on(async move {
-                log::info!("Initializing listener thread {}", thread_id);
+                log::debug!("Initializing listener thread {}", thread_id);
 
                 // Initialize pair data from Kraken API
                 let mut pair_data_vec = utils::initialize_pair_data(asset_index).await;

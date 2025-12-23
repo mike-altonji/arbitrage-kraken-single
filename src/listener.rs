@@ -113,7 +113,7 @@ async fn handle_event(
         "systemStatus" => {
             let status = data["status"].as_str().unwrap_or("") == "online";
             *public_online = status;
-            log::info!("System status updated: online = {}", status);
+            log::debug!("System status updated: online = {}", status);
         }
         "subscriptionStatus" => {
             let pair = data["pair"].as_str().unwrap_or("");
@@ -121,7 +121,7 @@ async fn handle_event(
             if let Some(&idx) = asset_index.get(pair) {
                 if let Some(pair_data) = pair_data_vec.get_mut(idx) {
                     pair_data.pair_status = status;
-                    log::info!("Pair {} subscription status: {}", pair, status);
+                    log::debug!("Pair {} subscription status: {}", pair, status);
                 }
             }
         }
