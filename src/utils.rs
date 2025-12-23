@@ -39,7 +39,7 @@ pub async fn initialize_pair_data(asset_index: &phf::Map<&'static str, usize>) -
     let pairs_obj = data["result"].as_object().expect("No pairs in response");
 
     // Create a map from wsname to pair data for quick lookup
-    let mut wsname_to_data: std::collections::HashMap<String, (u8, u8, f32, f32, bool)> =
+    let mut wsname_to_data: std::collections::HashMap<String, (u8, u8, f64, f64, bool)> =
         std::collections::HashMap::new();
 
     for (key, details) in pairs_obj {
@@ -60,12 +60,12 @@ pub async fn initialize_pair_data(asset_index: &phf::Map<&'static str, usize>) -
         let order_min = details["ordermin"]
             .as_str()
             .expect(&format!("No ordermin for {}", wsname))
-            .parse::<f32>()
+            .parse::<f64>()
             .expect(&format!("Failed to parse ordermin for {}", wsname));
         let cost_min = details["costmin"]
             .as_str()
             .expect(&format!("No costmin for {}", wsname))
-            .parse::<f32>()
+            .parse::<f64>()
             .expect(&format!("Failed to parse costmin for {}", wsname));
 
         wsname_to_data.insert(
