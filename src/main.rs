@@ -4,6 +4,7 @@ use std::thread;
 use telegram::send_telegram_message;
 
 mod asset_pairs;
+mod listener;
 mod structs;
 mod telegram;
 mod utils;
@@ -76,18 +77,18 @@ async fn main() {
                 log::info!("Initializing listener thread {}", thread_id);
 
                 // Initialize pair data from Kraken API
-                let pair_data_vec = utils::initialize_pair_data(asset_index).await;
+                let mut pair_data_vec = utils::initialize_pair_data(asset_index).await;
+                let mut public_online = true;
 
-                // TODO: Start listener with pair_data_vec and public_ws_url_clone
-                log::info!(
-                    "Thread {} ready, waiting for listener implementation.",
-                    thread_id,
-                );
-
-                // Keep the thread alive
-                loop {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                }
+                // Start listener
+                let public_ws_url_clone = public_ws_url.to_string();
+                listener::start_listener(
+                    asset_index,
+                    &mut pair_data_vec,
+                    &mut public_online,
+                    &public_ws_url_clone,
+                )
+                .await
             });
         });
 
