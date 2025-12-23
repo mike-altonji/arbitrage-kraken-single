@@ -1,5 +1,7 @@
+use crate::evaluate_arbitrage;
 use crate::structs::PairDataVec;
 use crate::telegram::send_telegram_message;
+use evaluate_arbitrage::evaluate_arbitrage;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use std::time::Duration;
@@ -25,7 +27,14 @@ pub async fn start_listener(
         while let Some(msg) = read.next().await {
             match msg {
                 Ok(Message::Text(text)) => {
-                    handle_message(&text, pair_data_vec, public_online, asset_index).await;
+                    let idx =
+                        handle_message(&text, pair_data_vec, public_online, asset_index).await;
+                    if let Some(idx) = idx {
+                        // Only evaluate arbitrage for non-stablecoin pairs
+                        if idx > 1 {
+                            evaluate_arbitrage(pair_data_vec, idx);
+                        }
+                    }
                 }
                 Ok(_) => {
                     let msg = "Websocket connection closed or stopped sending data";
@@ -82,23 +91,26 @@ async fn handle_message(
     pair_data_vec: &mut PairDataVec,
     public_online: &mut bool,
     asset_index: &phf::Map<&'static str, usize>,
-) {
+) -> Option<usize> {
     let data = match serde_json::from_str::<serde_json::Value>(text) {
         Ok(d) => d,
         Err(e) => {
             log::warn!("Failed to parse message: {:?}", e);
-            return;
+            return None;
         }
     };
 
     // Handle event messages (systemStatus, subscriptionStatus)
     if let Some(event) = data["event"].as_str() {
         handle_event(event, &data, pair_data_vec, public_online, asset_index).await;
+        return None;
     }
     // Handle spread data messages (arrays)
     else if let Some(array) = data.as_array() {
-        handle_spread_data(array, pair_data_vec, asset_index).await;
+        let idx = handle_spread_data(array, pair_data_vec, asset_index).await;
+        return idx;
     }
+    return None;
 }
 
 /// Handle event messages (systemStatus, subscriptionStatus)
@@ -139,14 +151,14 @@ async fn handle_spread_data(
     array: &[serde_json::Value],
     pair_data_vec: &mut PairDataVec,
     asset_index: &phf::Map<&'static str, usize>,
-) {
+) -> Option<usize> {
     if array.len() != 4 {
-        return;
+        return None;
     }
 
     let pair = match array[3].as_str() {
         Some(p) => p,
-        None => return,
+        None => return None,
     };
 
     // Get index for this pair
@@ -154,35 +166,35 @@ async fn handle_spread_data(
         Some(&idx) => idx,
         None => {
             // Pair not in our index, skip it silently
-            return;
+            return None;
         }
     };
 
     let inner_array = match array[1].as_array() {
         Some(arr) => arr,
-        None => return,
+        None => return None,
     };
 
     // Parse values, skip message if any fail
     let bid = match get_f64_from_array(inner_array, 0) {
         Some(v) => v,
-        None => return,
+        None => return None,
     };
     let ask = match get_f64_from_array(inner_array, 1) {
         Some(v) => v,
-        None => return,
+        None => return None,
     };
     let _kraken_ts = match get_f64_from_array(inner_array, 2) {
         Some(v) => v,
-        None => return,
+        None => return None,
     };
     let bid_volume = match get_f64_from_array(inner_array, 3) {
         Some(v) => v,
-        None => return,
+        None => return None,
     };
     let ask_volume = match get_f64_from_array(inner_array, 4) {
         Some(v) => v,
-        None => return,
+        None => return None,
     };
 
     // Update the pair data in the vec
@@ -192,6 +204,8 @@ async fn handle_spread_data(
         pair_data.bid_volume = bid_volume;
         pair_data.ask_volume = ask_volume;
     }
+
+    return Some(idx);
 }
 
 /// Extract f64 value from JSON array at given index
