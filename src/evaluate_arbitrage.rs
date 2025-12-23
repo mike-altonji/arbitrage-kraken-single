@@ -63,108 +63,111 @@ pub fn evaluate_arbitrage(
     let arb_fee =
         ((1.0 - fee_spot) * (1.0 - fee_stablecoin)) / ((1.0 + fee_spot) * (1.0 + fee_stablecoin));
 
-    let arb_roi_usd_start = compute_roi(
+    // Check USD -> EUR arbitrage opportunity
+    let arb_roi_usd = compute_roi(
         usd_pair,
         eur_pair,
         usd_stable_pair,
         eur_stable_pair,
         arb_fee,
     );
-    if arb_roi_usd_start > 1.0 {
-        log::info!("Arbitrage opportunity found w/ROI {}", arb_roi_usd_start);
-        let balance = USD_BALANCE.load(std::sync::atomic::Ordering::Relaxed) as f64;
-        let volume = limiting_volume(usd_pair, eur_pair, balance, fee_spot);
-        let volume_stable =
-            compute_volume_stable(volume, eur_pair, eur_stable_pair, fee_spot, fee_stablecoin);
-        if check_guardrails(volume, usd_pair, eur_pair) {
-            log::info!("Volume is valid: Trade!");
-            let pair1_name = pair_names.get(usd_pair_idx).copied();
-            let pair2_name = pair_names.get(eur_pair_idx).copied();
-            let pair1_stable_name = pair_names.get(0).copied();
-            let pair2_stable_name = pair_names.get(1).copied();
-            let volume_decimals_coin = usd_pair.volume_decimals;
-            let volume_decimals_stable = usd_stable_pair.volume_decimals;
-            let volume_coin = volume;
-            if let (
-                Some(pair1_name),
-                Some(pair2_name),
-                Some(pair1_stable_name),
-                Some(pair2_stable_name),
-            ) = (pair1_name, pair2_name, pair1_stable_name, pair2_stable_name)
-            {
-                trigger_trades(
-                    &OrderInfo {
-                        pair1_name,
-                        pair2_name,
-                        pair1_stable_name,
-                        pair2_stable_name,
-                        volume_coin,
-                        volume_stable,
-                        volume_decimals_coin,
-                        volume_decimals_stable,
-                    },
-                    trade_tx.clone(),
-                );
-            } else {
-                log::error!("Failed to get pair names. Cannot trade.");
-                return;
-            }
-        } else {
-            log::debug!("Not enough volume to trade. Cannot trade.");
-            return;
-        }
+    if arb_roi_usd > 1.0 {
+        process_arbitrage_opportunity(
+            arb_roi_usd,
+            usd_pair,
+            eur_pair,
+            usd_stable_pair,
+            eur_stable_pair,
+            USD_BALANCE.load(std::sync::atomic::Ordering::Relaxed) as f64,
+            usd_pair_idx,
+            eur_pair_idx,
+            0,
+            1,
+            fee_spot,
+            fee_stablecoin,
+            pair_names,
+            trade_tx.clone(),
+        );
     }
 
-    let arb_roi_eur_start = compute_roi(
+    // Check EUR -> USD arbitrage opportunity
+    let arb_roi_eur = compute_roi(
         eur_pair,
         usd_pair,
         eur_stable_pair,
         usd_stable_pair,
         arb_fee,
     );
-    if arb_roi_eur_start > 1.0 {
-        log::info!("Arbitrage opportunity found w/ROI {}", arb_roi_eur_start);
-        let balance = EUR_BALANCE.load(std::sync::atomic::Ordering::Relaxed) as f64;
-        let volume = limiting_volume(eur_pair, usd_pair, balance, fee_spot);
-        let volume_stable =
-            compute_volume_stable(volume, usd_pair, usd_stable_pair, fee_spot, fee_stablecoin);
-        if check_guardrails(volume, eur_pair, usd_pair) {
-            log::info!("Volume is valid: Trade!");
-            let pair1_name = pair_names.get(eur_pair_idx).copied();
-            let pair2_name = pair_names.get(usd_pair_idx).copied();
-            let pair1_stable_name = pair_names.get(1).copied();
-            let pair2_stable_name = pair_names.get(0).copied();
-            let volume_decimals_coin = eur_pair.volume_decimals;
-            let volume_decimals_stable = eur_stable_pair.volume_decimals;
-            let volume_coin = volume;
-            if let (
-                Some(pair1_name),
-                Some(pair2_name),
-                Some(pair1_stable_name),
-                Some(pair2_stable_name),
-            ) = (pair1_name, pair2_name, pair1_stable_name, pair2_stable_name)
-            {
-                trigger_trades(
-                    &OrderInfo {
-                        pair1_name,
-                        pair2_name,
-                        pair1_stable_name,
-                        pair2_stable_name,
-                        volume_coin,
-                        volume_stable,
-                        volume_decimals_coin,
-                        volume_decimals_stable,
-                    },
-                    trade_tx.clone(),
-                );
-            } else {
-                log::error!("Failed to get pair names. Cannot trade.");
-                return;
-            }
-        } else {
-            log::debug!("Not enough volume to trade. Cannot trade.");
-            return;
-        }
+    if arb_roi_eur > 1.0 {
+        process_arbitrage_opportunity(
+            arb_roi_eur,
+            eur_pair,
+            usd_pair,
+            eur_stable_pair,
+            usd_stable_pair,
+            EUR_BALANCE.load(std::sync::atomic::Ordering::Relaxed) as f64,
+            eur_pair_idx,
+            usd_pair_idx,
+            1,
+            0,
+            fee_spot,
+            fee_stablecoin,
+            pair_names,
+            trade_tx.clone(),
+        );
+    }
+}
+
+/// Process an arbitrage opportunity: check volumes, guardrails, and trigger trades
+fn process_arbitrage_opportunity(
+    roi: f64,
+    pair1: &PairData,
+    pair2: &PairData,
+    pair1_stable: &PairData,
+    pair2_stable: &PairData,
+    balance: f64,
+    pair1_idx: usize,
+    pair2_idx: usize,
+    pair1_stable_idx: usize,
+    pair2_stable_idx: usize,
+    fee_spot: f64,
+    fee_stablecoin: f64,
+    pair_names: &[&'static str],
+    trade_tx: mpsc::Sender<OrderInfo>,
+) {
+    log::info!("Arbitrage opportunity found w/ROI {}", roi);
+    let volume = limiting_volume(pair1, pair2, balance, fee_spot);
+    let volume_stable =
+        compute_volume_stable(volume, pair2, pair2_stable, fee_spot, fee_stablecoin);
+
+    if !check_guardrails(volume, pair1, pair2) {
+        log::debug!("Not enough volume to trade. Cannot trade.");
+        return;
+    }
+
+    let pair1_name = pair_names.get(pair1_idx).copied();
+    let pair2_name = pair_names.get(pair2_idx).copied();
+    let pair1_stable_name = pair_names.get(pair1_stable_idx).copied();
+    let pair2_stable_name = pair_names.get(pair2_stable_idx).copied();
+
+    if let (Some(pair1_name), Some(pair2_name), Some(pair1_stable_name), Some(pair2_stable_name)) =
+        (pair1_name, pair2_name, pair1_stable_name, pair2_stable_name)
+    {
+        trigger_trades(
+            &OrderInfo {
+                pair1_name,
+                pair2_name,
+                pair1_stable_name,
+                pair2_stable_name,
+                volume_coin: volume,
+                volume_stable,
+                volume_decimals_coin: pair1.volume_decimals,
+                volume_decimals_stable: pair1_stable.volume_decimals,
+            },
+            trade_tx,
+        );
+    } else {
+        log::error!("Failed to get pair names. Cannot trade.");
     }
 }
 
@@ -202,10 +205,10 @@ fn compute_volume_stable(
     pair2: &PairData,
     pair2_stable: &PairData,
     fee_spot: f64,
-    fee_stable: f64,
+    fee_stablecoin: f64,
 ) -> f64 {
     let pair2_amount = volume * pair2.bid_price * (1.0 - fee_spot);
-    let volume_stable = pair2_amount / (pair2_stable.ask_price * (1.0 + fee_stable));
+    let volume_stable = pair2_amount / (pair2_stable.ask_price * (1.0 + fee_stablecoin));
     return volume_stable * 0.95;
 }
 
@@ -228,32 +231,28 @@ fn check_guardrails(volume: f64, pair1: &PairData, pair2: &PairData) -> bool {
 }
 
 /// Send the signal to start the arbitrage trades.
-/// Only need to specify the first buy order: Other buy orders are implied by the first buy order.
 /// Drops the message immediately if trader is busy (no queuing of stale orders).
-fn trigger_trades(buy_order: &BuyOrder, trade_tx: mpsc::Sender<BuyOrder>) {
+fn trigger_trades(order_info: &OrderInfo, trade_tx: mpsc::Sender<OrderInfo>) {
     // Check if trader is busy first - if so, drop immediately
     if TRADER_BUSY.load(Ordering::Relaxed) {
-        log::debug!(
-            "Trader busy, dropping buy order for {}",
-            buy_order.pair_name
-        );
+        log::debug!("Trader busy, dropping order for {}", order_info.pair1_name);
         return;
     }
 
-    // Try to send the buy order to the trading thread
-    match trade_tx.try_send(buy_order.clone()) {
+    // Try to send the order info to the trading thread
+    match trade_tx.try_send(order_info.clone()) {
         Ok(()) => {
             // Successfully sent
         }
         Err(mpsc::error::TrySendError::Full(_)) => {
             // Channel buffer full (shouldn't happen if trader is idle, but handle gracefully)
             log::debug!(
-                "Channel buffer full, dropping buy order for {}",
-                buy_order.pair_name
+                "Channel buffer full, dropping order for {}",
+                order_info.pair1_name
             );
         }
         Err(mpsc::error::TrySendError::Closed(_)) => {
-            log::error!("Trading channel closed, cannot send buy order");
+            log::error!("Trading channel closed, cannot send order");
         }
     }
 }
