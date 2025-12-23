@@ -86,7 +86,7 @@ async fn handle_message(
     let data = match serde_json::from_str::<serde_json::Value>(text) {
         Ok(d) => d,
         Err(e) => {
-            log::debug!("Failed to parse message: {:?}", e);
+            log::warn!("Failed to parse message: {:?}", e);
             return;
         }
     };
