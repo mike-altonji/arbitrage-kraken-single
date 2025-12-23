@@ -1,6 +1,7 @@
 use crate::structs::OrderInfo;
 use crate::TRADER_BUSY;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// Trading thread main loop
@@ -21,14 +22,53 @@ pub async fn run_trading_thread(mut trade_rx: mpsc::Receiver<OrderInfo>) {
 }
 
 async fn make_trades(order: &OrderInfo) {
-    let trade_msg1: String;
-    trade_msg1 = serde_json::json!({
+    let trade_msg: String;
+    let vol_coin_formatted = format!("{:.*}", order.volume_decimals_coin, order.volume_coin);
+    trade_msg = serde_json::json!({
         "event": "addOrder",
         "token": token,
         "type": "buy",
         "ordertype": "market",
-        "volume": format!("{:.*}", order.volume_decimals_coin, order.volume_coin),
+        "volume": vol_coin_formatted,
         "pair": order.pair1_name,
     })
     .to_string();
+    // TODO: TRADE
+    tokio::time::sleep(Duration::from_millis(1)).await; // TODO: Make this 1ms in a better way soon
+
+    trade_msg = serde_json::json!({
+        "event": "addOrder",
+        "token": token,
+        "type": "sell",
+        "ordertype": "market",
+        "volume": vol_coin_formatted,
+        "pair": order.pair2_name,
+    })
+    .to_string();
+    // TODO: TRADE
+    tokio::time::sleep(Duration::from_millis(1)).await; // TODO: Make this 1ms in a better way soon
+
+    let vol_stable_formatted = format!("{:.*}", order.volume_decimals_stable, order.volume_stable);
+    trade_msg = serde_json::json!({
+        "event": "addOrder",
+        "token": token,
+        "type": "buy",
+        "ordertype": "market",
+        "volume": vol_stable_formatted,
+        "pair": order.pair2_stable_name,
+    })
+    .to_string();
+    // TODO: TRADE
+    tokio::time::sleep(Duration::from_millis(1)).await; // TODO: Make this 1ms in a better way soon
+
+    trade_msg = serde_json::json!({
+        "event": "addOrder",
+        "token": token,
+        "type": "sell",
+        "ordertype": "market",
+        "volume": vol_stable_formatted,
+        "pair": order.pair1_stable_name,
+    })
+    .to_string();
+    // TODO: TRADE
 }
