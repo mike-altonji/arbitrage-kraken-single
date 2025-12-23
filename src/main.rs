@@ -5,11 +5,18 @@ use std::thread;
 use telegram::send_telegram_message;
 
 mod asset_pairs;
+mod evaluate_arbitrage;
 mod kraken_rest;
 mod listener;
 mod structs;
 mod telegram;
 mod utils;
+
+// Static atomic variables for fees and balances
+pub static FEE_SPOT: AtomicU16 = AtomicU16::new(40); // Default 0.40% (in bps)
+pub static FEE_STABLECOIN: AtomicU16 = AtomicU16::new(20); // Default 0.20% (in bps)
+pub static USD_BALANCE: AtomicI16 = AtomicI16::new(0);
+pub static EUR_BALANCE: AtomicI16 = AtomicI16::new(0);
 
 #[tokio::main]
 async fn main() {
@@ -78,6 +85,10 @@ async fn main() {
             rt.block_on(async move {
                 log::debug!("Initializing listener thread {}", thread_id);
 
+                // Build pair names vector from asset_index (built once per thread)
+                // Separate from pair_data_vec to keep pair_data_vec slim to fit on one cache line
+                let pair_names = utils::build_pair_names_vec(asset_index);
+
                 // Initialize pair data from Kraken API
                 let mut pair_data_vec = utils::initialize_pair_data(asset_index).await;
                 let mut public_online = true;
@@ -89,6 +100,7 @@ async fn main() {
                     &mut pair_data_vec,
                     &mut public_online,
                     &public_ws_url_clone,
+                    &pair_names,
                 )
                 .await
             });
@@ -103,8 +115,6 @@ async fn main() {
         panic!("Core 3 not available");
     }
     let core_3_id = core_affinity::CoreId { id: 3 };
-    let usd_balance = AtomicI16::new(0);
-    let eur_balance = AtomicI16::new(0);
     let balance_handle = thread::spawn(move || {
         // Pin thread to core 3
         if core_affinity::set_for_current(core_3_id) {
@@ -120,15 +130,13 @@ async fn main() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         rt.block_on(async move {
             log::debug!("Starting balance fetcher thread");
-            if let Err(e) = kraken_rest::fetch_asset_balances(&usd_balance, &eur_balance).await {
+            if let Err(e) = kraken_rest::fetch_asset_balances(&USD_BALANCE, &EUR_BALANCE).await {
                 log::error!("Balance fetcher error: {:?}", e);
             }
         });
     });
 
     // Create fee fetcher thread (pinned to core 3)
-    let fee_spot = AtomicU16::new(40); // Default 0.40% (formatted in bps as 40)
-    let fee_stablecoin = AtomicU16::new(20); // Default 0.20% (formatted in bps as 20)
     let fee_handle = thread::spawn(move || {
         // Pin thread to core 3
         if core_affinity::set_for_current(core_3_id) {
@@ -144,7 +152,7 @@ async fn main() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         rt.block_on(async move {
             log::debug!("Starting fee fetcher thread");
-            if let Err(e) = kraken_rest::fetch_trading_fees(&fee_spot, &fee_stablecoin).await {
+            if let Err(e) = kraken_rest::fetch_trading_fees(&FEE_SPOT, &FEE_STABLECOIN).await {
                 log::error!("Fee fetcher error: {:?}", e);
             }
         });
