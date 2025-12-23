@@ -12,6 +12,12 @@ mod structs;
 mod telegram;
 mod utils;
 
+// Static atomic variables for fees and balances
+pub static FEE_SPOT: AtomicU16 = AtomicU16::new(40); // Default 0.40% (in bps)
+pub static FEE_STABLECOIN: AtomicU16 = AtomicU16::new(20); // Default 0.20% (in bps)
+pub static USD_BALANCE: AtomicI16 = AtomicI16::new(0);
+pub static EUR_BALANCE: AtomicI16 = AtomicI16::new(0);
+
 #[tokio::main]
 async fn main() {
     // Initialize setup
@@ -104,8 +110,6 @@ async fn main() {
         panic!("Core 3 not available");
     }
     let core_3_id = core_affinity::CoreId { id: 3 };
-    let usd_balance = AtomicI16::new(0);
-    let eur_balance = AtomicI16::new(0);
     let balance_handle = thread::spawn(move || {
         // Pin thread to core 3
         if core_affinity::set_for_current(core_3_id) {
@@ -121,15 +125,13 @@ async fn main() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         rt.block_on(async move {
             log::debug!("Starting balance fetcher thread");
-            if let Err(e) = kraken_rest::fetch_asset_balances(&usd_balance, &eur_balance).await {
+            if let Err(e) = kraken_rest::fetch_asset_balances(&USD_BALANCE, &EUR_BALANCE).await {
                 log::error!("Balance fetcher error: {:?}", e);
             }
         });
     });
 
     // Create fee fetcher thread (pinned to core 3)
-    let fee_spot = AtomicU16::new(40); // Default 0.40% (formatted in bps as 40)
-    let fee_stablecoin = AtomicU16::new(20); // Default 0.20% (formatted in bps as 20)
     let fee_handle = thread::spawn(move || {
         // Pin thread to core 3
         if core_affinity::set_for_current(core_3_id) {
@@ -145,7 +147,7 @@ async fn main() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         rt.block_on(async move {
             log::debug!("Starting fee fetcher thread");
-            if let Err(e) = kraken_rest::fetch_trading_fees(&fee_spot, &fee_stablecoin).await {
+            if let Err(e) = kraken_rest::fetch_trading_fees(&FEE_SPOT, &FEE_STABLECOIN).await {
                 log::error!("Fee fetcher error: {:?}", e);
             }
         });
