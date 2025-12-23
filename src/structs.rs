@@ -13,8 +13,13 @@ pub struct PairData {
 pub type PairDataVec = Vec<PairData>;
 
 #[derive(Clone)]
-pub struct BuyOrder {
-    pub pair_name: &'static str,
-    pub volume: f64,
-    pub price: f64,
+pub struct OrderInfo {
+    pub pair1_name: &'static str,
+    pub pair2_name: &'static str,
+    pub pair1_stable_name: &'static str,
+    pub pair2_stable_name: &'static str,
+    pub volume_coin: f64,
+    pub volume_stable: f64,
+    pub volume_decimals_coin: u8,
+    pub volume_decimals_stable: u8,
 }

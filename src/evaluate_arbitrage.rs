@@ -1,4 +1,4 @@
-use crate::structs::{BuyOrder, PairData, PairDataVec};
+use crate::structs::{OrderInfo, PairData, PairDataVec};
 use crate::{EUR_BALANCE, FEE_SPOT, FEE_STABLECOIN, TRADER_BUSY, USD_BALANCE};
 use std::sync::atomic::Ordering;
 use tokio::sync::mpsc;
@@ -7,10 +7,12 @@ pub fn evaluate_arbitrage(
     pair_data_vec: &PairDataVec,
     idx: usize,
     pair_names: &[&'static str],
-    trade_tx: mpsc::Sender<BuyOrder>,
+    trade_tx: mpsc::Sender<OrderInfo>,
 ) {
-    let usd_pair = pair_data_vec.get(idx - (idx % 2));
-    let eur_pair = pair_data_vec.get(idx + 1 - (idx % 2));
+    let usd_pair_idx = idx - (idx % 2);
+    let eur_pair_idx = idx + 1 - (idx % 2);
+    let usd_pair = pair_data_vec.get(usd_pair_idx);
+    let eur_pair = pair_data_vec.get(eur_pair_idx);
     let usd_stable_pair = pair_data_vec.get(0);
     let eur_stable_pair = pair_data_vec.get(1);
     if usd_pair.is_none()
@@ -72,21 +74,44 @@ pub fn evaluate_arbitrage(
         log::info!("Arbitrage opportunity found w/ROI {}", arb_roi_usd_start);
         let balance = USD_BALANCE.load(std::sync::atomic::Ordering::Relaxed) as f64;
         let volume = limiting_volume(usd_pair, eur_pair, balance, fee_spot);
+        let volume_stable =
+            compute_volume_stable(volume, eur_pair, eur_stable_pair, fee_spot, fee_stablecoin);
         if check_guardrails(volume, usd_pair, eur_pair) {
             log::info!("Volume is valid: Trade!");
-            let usd_pair_idx = idx - (idx % 2);
-            if let Some(pair_name) = pair_names.get(usd_pair_idx).copied() {
+            let pair1_name = pair_names.get(usd_pair_idx).copied();
+            let pair2_name = pair_names.get(eur_pair_idx).copied();
+            let pair1_stable_name = pair_names.get(0).copied();
+            let pair2_stable_name = pair_names.get(1).copied();
+            let volume_decimals_coin = usd_pair.volume_decimals;
+            let volume_decimals_stable = usd_stable_pair.volume_decimals;
+            let volume_coin = volume;
+            if let (
+                Some(pair1_name),
+                Some(pair2_name),
+                Some(pair1_stable_name),
+                Some(pair2_stable_name),
+            ) = (pair1_name, pair2_name, pair1_stable_name, pair2_stable_name)
+            {
                 trigger_trades(
-                    &BuyOrder {
-                        pair_name,
-                        volume,
-                        price: usd_pair.ask_price,
+                    &OrderInfo {
+                        pair1_name,
+                        pair2_name,
+                        pair1_stable_name,
+                        pair2_stable_name,
+                        volume_coin,
+                        volume_stable,
+                        volume_decimals_coin,
+                        volume_decimals_stable,
                     },
                     trade_tx.clone(),
                 );
+            } else {
+                log::error!("Failed to get pair names. Cannot trade.");
+                return;
             }
         } else {
-            log::debug!("Not enough volume to trade");
+            log::debug!("Not enough volume to trade. Cannot trade.");
+            return;
         }
     }
 
@@ -101,21 +126,44 @@ pub fn evaluate_arbitrage(
         log::info!("Arbitrage opportunity found w/ROI {}", arb_roi_eur_start);
         let balance = EUR_BALANCE.load(std::sync::atomic::Ordering::Relaxed) as f64;
         let volume = limiting_volume(eur_pair, usd_pair, balance, fee_spot);
+        let volume_stable =
+            compute_volume_stable(volume, usd_pair, usd_stable_pair, fee_spot, fee_stablecoin);
         if check_guardrails(volume, eur_pair, usd_pair) {
             log::info!("Volume is valid: Trade!");
-            let eur_pair_idx = idx + 1 - (idx % 2);
-            if let Some(pair_name) = pair_names.get(eur_pair_idx).copied() {
+            let pair1_name = pair_names.get(eur_pair_idx).copied();
+            let pair2_name = pair_names.get(usd_pair_idx).copied();
+            let pair1_stable_name = pair_names.get(1).copied();
+            let pair2_stable_name = pair_names.get(0).copied();
+            let volume_decimals_coin = eur_pair.volume_decimals;
+            let volume_decimals_stable = eur_stable_pair.volume_decimals;
+            let volume_coin = volume;
+            if let (
+                Some(pair1_name),
+                Some(pair2_name),
+                Some(pair1_stable_name),
+                Some(pair2_stable_name),
+            ) = (pair1_name, pair2_name, pair1_stable_name, pair2_stable_name)
+            {
                 trigger_trades(
-                    &BuyOrder {
-                        pair_name,
-                        volume,
-                        price: eur_pair.ask_price,
+                    &OrderInfo {
+                        pair1_name,
+                        pair2_name,
+                        pair1_stable_name,
+                        pair2_stable_name,
+                        volume_coin,
+                        volume_stable,
+                        volume_decimals_coin,
+                        volume_decimals_stable,
                     },
                     trade_tx.clone(),
                 );
+            } else {
+                log::error!("Failed to get pair names. Cannot trade.");
+                return;
             }
         } else {
-            log::debug!("Not enough volume to trade");
+            log::debug!("Not enough volume to trade. Cannot trade.");
+            return;
         }
     }
 }
@@ -144,6 +192,21 @@ fn limiting_volume(pair1: &PairData, pair2: &PairData, balance: f64, fee_spot: f
     let min_volume = volume_balance.min(pair1.ask_volume).min(pair2.bid_volume);
 
     return min_volume;
+}
+
+/// Compute the volume of the stablecoin that we can trade
+/// Based on how much we make from selling for pair2, then how much we can afford to buy for pair2_stable
+/// Small factor of safety to account for minor slippage
+fn compute_volume_stable(
+    volume: f64,
+    pair2: &PairData,
+    pair2_stable: &PairData,
+    fee_spot: f64,
+    fee_stable: f64,
+) -> f64 {
+    let pair2_amount = volume * pair2.bid_price * (1.0 - fee_spot);
+    let volume_stable = pair2_amount / (pair2_stable.ask_price * (1.0 + fee_stable));
+    return volume_stable * 0.95;
 }
 
 /// Check if the volume is greater than the minimum order size and minimum cost
