@@ -13,7 +13,7 @@ pub async fn start_listener(
     pair_data_vec: &mut PairDataVec,
     public_online: &mut bool,
     ws_url: &str,
-) -> () {
+) {
     const SLEEP_DURATION: Duration = Duration::from_secs(5);
 
     loop {
