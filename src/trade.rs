@@ -1,9 +1,9 @@
 use crate::structs::OrderInfo;
+use crate::utils::wait_approx_1ms;
 use crate::TRADER_BUSY;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
@@ -74,6 +74,7 @@ pub async fn run_trading_thread(
     log::debug!("Trading channel closed, exiting trading thread");
 }
 
+/// Fire-and-forget trade implementation, with a short wait time between each trade to ensure order.
 async fn make_trades(
     write: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
     token: &str,
@@ -95,7 +96,7 @@ async fn make_trades(
         return;
     }
     log::debug!("Sent buy order for {}", order.pair1_name);
-    tokio::time::sleep(Duration::from_millis(1)).await; // TODO: Make this 1ms in a better way soon
+    wait_approx_1ms().await;
 
     let trade_msg = serde_json::json!({
         "event": "addOrder",
@@ -116,7 +117,7 @@ async fn make_trades(
         return;
     }
     log::debug!("Sent sell order for {}", order.pair2_name);
-    tokio::time::sleep(Duration::from_millis(1)).await; // TODO: Make this 1ms in a better way soon
+    wait_approx_1ms().await;
 
     let vol_stable_formatted = format!("{:.*}", order.volume_decimals_stable, order.volume_stable);
     let trade_msg = serde_json::json!({
@@ -138,7 +139,7 @@ async fn make_trades(
         return;
     }
     log::debug!("Sent buy order for {}", order.pair2_stable_name);
-    tokio::time::sleep(Duration::from_millis(1)).await; // TODO: Make this 1ms in a better way soon
+    wait_approx_1ms().await;
 
     let trade_msg = serde_json::json!({
         "event": "addOrder",
