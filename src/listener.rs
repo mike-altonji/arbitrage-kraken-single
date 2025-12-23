@@ -30,8 +30,8 @@ pub async fn start_listener(
                     let idx =
                         handle_message(&text, pair_data_vec, public_online, asset_index).await;
                     if let Some(idx) = idx {
-                        // Only evaluate arbitrage for non-stablecoin pairs
-                        if idx > 1 {
+                        // Only evaluate arbitrage for non-stablecoin pairs and if the websocket is online
+                        if idx > 1 && *public_online {
                             evaluate_arbitrage(pair_data_vec, idx);
                         }
                     }
