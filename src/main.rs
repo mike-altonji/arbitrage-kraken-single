@@ -175,6 +175,7 @@ async fn main() {
     });
 
     // Create trading thread (pinned to core 3)
+    let private_ws_url_clone = private_ws_url.to_string();
     let trading_handle = thread::spawn(move || {
         // Pin thread to core 3
         if core_affinity::set_for_current(core_3_id) {
@@ -189,7 +190,7 @@ async fn main() {
         // Create a tokio runtime on this thread for async websocket operations
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         rt.block_on(async move {
-            trade::run_trading_thread(token, trade_rx).await;
+            trade::run_trading_thread(token, private_ws_url_clone, trade_rx).await;
         });
     });
 
