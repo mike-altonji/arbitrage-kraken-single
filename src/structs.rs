@@ -8,7 +8,7 @@ pub struct PairData {
     pub volume_decimals: u8,
     pub order_min: f32,
     pub cost_min: f32,
-    pub public_online: bool,
     pub pair_status: bool,
+    pub public_online: bool,
 }
 pub type PairDataVec = Vec<PairData>;

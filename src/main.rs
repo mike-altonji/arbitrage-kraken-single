@@ -1,5 +1,6 @@
 use dotenv::dotenv;
 use std::env;
+use std::thread;
 use telegram::send_telegram_message;
 
 mod asset_pairs;
@@ -35,15 +36,68 @@ async fn main() {
     };
     send_telegram_message(mode_message).await;
 
-    // Initialize the listener threads
-    let listener_handle0 = {
-        let pairs0 = asset_pairs::ASSET_INDEX_0.keys();
-        let pair_data_vec0 = Vec::new();
+    // Get available cores for pinning
+    let cores = core_affinity::get_core_ids().expect("Could not get core IDs");
 
-        tokio::spawn(async move {
-            listener(pairs0, pair_data_vec0, public_ws_url)
-                .await
-                .expect("Listener failed");
-        })
-    };
+    // Create 6 listener threads
+    let asset_indices = vec![
+        (&asset_pairs::ASSET_INDEX_0, 0),
+        (&asset_pairs::ASSET_INDEX_1, 1),
+        (&asset_pairs::ASSET_INDEX_2, 2),
+        (&asset_pairs::ASSET_INDEX_3, 3),
+        (&asset_pairs::ASSET_INDEX_4, 4),
+        (&asset_pairs::ASSET_INDEX_5, 5),
+    ];
+
+    let mut handles = Vec::new();
+
+    for (asset_index, thread_id) in asset_indices {
+        // Determine which core to pin to (cycling)
+        let target_core_id = thread_id % 3;
+        let core_available = cores.iter().any(|c| c.id == target_core_id);
+        if !core_available {
+            panic!("Core {} not available", target_core_id)
+        };
+        let core_id = core_affinity::CoreId { id: target_core_id };
+        let handle = thread::spawn(move || {
+            // Pin thread to core
+            if core_affinity::set_for_current(core_id) {
+                log::info!("Thread {} pinned to core {}", thread_id, core_id.id);
+            } else {
+                #[cfg(target_os = "macos")]
+                log::warn!("Thread pinning not supported on macOS. Continuing without pinning");
+                #[cfg(not(target_os = "macos"))]
+                panic!("Thread {} failed to pin to core {}", thread_id, core_id.id);
+            }
+
+            // Create a tokio runtime on this thread
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            rt.block_on(async move {
+                log::info!("Initializing listener thread {}", thread_id);
+
+                // Initialize pair data from Kraken API
+                let pair_data_vec = utils::initialize_pair_data(asset_index).await;
+
+                // TODO: Start listener with pair_data_vec and public_ws_url_clone
+                log::info!(
+                    "Thread {} ready, waiting for listener implementation.",
+                    thread_id,
+                );
+
+                // Keep the thread alive
+                loop {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                }
+            });
+        });
+
+        handles.push(handle);
+    }
+
+    log::info!("Started listener threads");
+
+    // Wait for all threads (they run indefinitely)
+    for handle in handles {
+        handle.join().expect("Thread panicked");
+    }
 }

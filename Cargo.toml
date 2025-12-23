@@ -24,6 +24,7 @@ base64 = "0.13.0"
 hmac = "0.10.1"
 sha2 = "0.9.5"
 rand = "0.8.4"
+core_affinity = "0.8"
 [dependencies.uuid]
 version = "1.6.1"
 features = [
