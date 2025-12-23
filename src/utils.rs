@@ -1,5 +1,11 @@
 use crate::structs::{PairData, PairDataVec};
+use base64::{decode_config, encode_config, STANDARD};
+use hmac::{Hmac, Mac, NewMac};
 use log4rs::{append::file::FileAppender, config};
+use reqwest::header::{HeaderMap, HeaderValue};
+use serde_json::Value;
+use sha2::{Digest, Sha256, Sha512};
+use std::env;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Initialize logging. Will create a file in `logs/arbitrage_log_{timestamp}.log`
@@ -98,4 +104,67 @@ pub async fn initialize_pair_data(asset_index: &phf::Map<&'static str, usize>) -
     }
 
     pair_data_vec
+}
+
+/// Helper function to get API post, signature and headers for private API calls
+pub fn get_api_params(
+    api_key: &str,
+    api_secret: &str,
+    api_path: &str,
+    api_post_body: Option<&str>,
+) -> Result<(String, HeaderMap), Box<dyn std::error::Error>> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)?
+        .as_millis()
+        .to_string();
+
+    // Build api_post with optional body appended
+    let api_post = match api_post_body {
+        Some(body) if !body.is_empty() => format!("nonce={}&{}", nonce, body),
+        _ => format!("nonce={}", nonce),
+    };
+
+    let nonce_bytes = nonce.as_bytes();
+    let api_post_bytes = api_post.as_bytes();
+
+    let mut hasher = Sha256::new();
+    hasher.update(nonce_bytes);
+    hasher.update(api_post_bytes);
+    let api_sha256 = hasher.finalize();
+    let api_secret_decoded = decode_config(&api_secret, STANDARD).unwrap();
+    let mut mac = Hmac::<Sha512>::new_varkey(&api_secret_decoded).unwrap();
+    mac.update(api_path.as_bytes());
+    mac.update(&api_sha256);
+    let api_hmac = mac.finalize();
+    let api_signature = encode_config(&api_hmac.into_bytes(), STANDARD);
+    let mut headers = HeaderMap::new();
+    headers.insert("API-Key", HeaderValue::from_str(&api_key.to_string())?);
+    headers.insert(
+        "API-Sign",
+        HeaderValue::from_str(&api_signature.to_string())?,
+    );
+
+    Ok((api_post, headers))
+}
+
+/// Get Kraken authentication token for private API
+pub async fn get_ws_auth_token() -> Result<String, Box<dyn std::error::Error>> {
+    let api_key = env::var("KRAKEN_KEY").expect("KRAKEN_KEY must be set");
+    let api_secret = env::var("KRAKEN_SECRET").expect("KRAKEN_SECRET must be set");
+    let api_path = "/0/private/GetWebSocketsToken";
+    let (post, headers) = get_api_params(&api_key, &api_secret, api_path, None)?;
+
+    let client = reqwest::Client::new();
+    let res = client
+        .post("https://api.kraken.com/0/private/GetWebSocketsToken")
+        .headers(headers)
+        .body(post)
+        .send()
+        .await?;
+
+    let response_text = res.text().await?;
+    let v: Value = serde_json::from_str(&response_text)?;
+    let token = v["result"]["token"].as_str().unwrap().to_string();
+
+    Ok(token.to_string())
 }

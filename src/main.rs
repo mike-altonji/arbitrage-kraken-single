@@ -1,9 +1,11 @@
 use dotenv::dotenv;
 use std::env;
+use std::sync::atomic::{AtomicI16, AtomicU16};
 use std::thread;
 use telegram::send_telegram_message;
 
 mod asset_pairs;
+mod kraken_rest;
 mod listener;
 mod structs;
 mod telegram;
@@ -95,9 +97,62 @@ async fn main() {
         handles.push(handle);
     }
 
-    log::info!("Started listener threads");
+    // Create balance fetcher thread (pinned to core 3)
+    let core_3_available = cores.iter().any(|c| c.id == 3);
+    if !core_3_available {
+        panic!("Core 3 not available");
+    }
+    let core_3_id = core_affinity::CoreId { id: 3 };
+    let usd_balance = AtomicI16::new(0);
+    let eur_balance = AtomicI16::new(0);
+    let balance_handle = thread::spawn(move || {
+        // Pin thread to core 3
+        if core_affinity::set_for_current(core_3_id) {
+            log::debug!("Balance fetcher thread pinned to core 3");
+        } else {
+            #[cfg(target_os = "macos")]
+            log::warn!("Thread pinning not supported on macOS. Continuing without pinning");
+            #[cfg(not(target_os = "macos"))]
+            panic!("Balance fetcher thread failed to pin to core 3");
+        }
+
+        // Create a tokio runtime on this thread
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        rt.block_on(async move {
+            log::debug!("Starting balance fetcher thread");
+            if let Err(e) = kraken_rest::fetch_asset_balances(&usd_balance, &eur_balance).await {
+                log::error!("Balance fetcher error: {:?}", e);
+            }
+        });
+    });
+
+    // Create fee fetcher thread (pinned to core 3)
+    let fee_spot = AtomicU16::new(40); // Default 0.40% (formatted in bps as 40)
+    let fee_stablecoin = AtomicU16::new(20); // Default 0.20% (formatted in bps as 20)
+    let fee_handle = thread::spawn(move || {
+        // Pin thread to core 3
+        if core_affinity::set_for_current(core_3_id) {
+            log::debug!("Fee fetcher thread pinned to core 3");
+        } else {
+            #[cfg(target_os = "macos")]
+            log::warn!("Thread pinning not supported on macOS. Continuing without pinning");
+            #[cfg(not(target_os = "macos"))]
+            panic!("Fee fetcher thread failed to pin to core 3");
+        }
+
+        // Create a tokio runtime on this thread
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        rt.block_on(async move {
+            log::debug!("Starting fee fetcher thread");
+            if let Err(e) = kraken_rest::fetch_trading_fees(&fee_spot, &fee_stablecoin).await {
+                log::error!("Fee fetcher error: {:?}", e);
+            }
+        });
+    });
 
     // Wait for all threads (they run indefinitely)
+    handles.push(balance_handle);
+    handles.push(fee_handle);
     for handle in handles {
         handle.join().expect("Thread panicked");
     }
