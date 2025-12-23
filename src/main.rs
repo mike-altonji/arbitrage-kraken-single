@@ -1,6 +1,6 @@
 use dotenv::dotenv;
 use std::env;
-use std::sync::atomic::AtomicU16;
+use std::sync::atomic::{AtomicI16, AtomicU16};
 use std::thread;
 use telegram::send_telegram_message;
 
@@ -103,6 +103,8 @@ async fn main() {
         panic!("Core 3 not available");
     }
     let core_3_id = core_affinity::CoreId { id: 3 };
+    let usd_balance = AtomicI16::new(0);
+    let eur_balance = AtomicI16::new(0);
     let balance_handle = thread::spawn(move || {
         // Pin thread to core 3
         if core_affinity::set_for_current(core_3_id) {
@@ -118,8 +120,7 @@ async fn main() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         rt.block_on(async move {
             log::debug!("Starting balance fetcher thread");
-            let mut asset_balances = (0i16, 0i16);
-            if let Err(e) = kraken_rest::fetch_asset_balances(&mut asset_balances).await {
+            if let Err(e) = kraken_rest::fetch_asset_balances(&usd_balance, &eur_balance).await {
                 log::error!("Balance fetcher error: {:?}", e);
             }
         });
