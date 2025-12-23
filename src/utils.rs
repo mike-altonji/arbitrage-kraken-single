@@ -6,7 +6,8 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::Value;
 use sha2::{Digest, Sha256, Sha512};
 use std::env;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::task;
 
 /// Initialize logging. Will create a file in `logs/arbitrage_log_{timestamp}.log`
 pub fn init_logging() {
@@ -54,7 +55,7 @@ pub async fn initialize_pair_data(asset_index: &phf::Map<&'static str, usize>) -
     let pairs_obj = data["result"].as_object().expect("No pairs in response");
 
     // Create a map from wsname to pair data for quick lookup
-    let mut wsname_to_data: std::collections::HashMap<String, (u8, u8, f64, f64, bool)> =
+    let mut wsname_to_data: std::collections::HashMap<String, (usize, usize, f64, f64, bool)> =
         std::collections::HashMap::new();
 
     for (key, details) in pairs_obj {
@@ -68,10 +69,12 @@ pub async fn initialize_pair_data(asset_index: &phf::Map<&'static str, usize>) -
             == "online";
         let price_decimals = details["pair_decimals"]
             .as_u64()
-            .expect(&format!("No pair_decimals for {}", wsname)) as u8;
+            .expect(&format!("No pair_decimals for {}", wsname))
+            as usize;
         let volume_decimals = details["lot_decimals"]
             .as_u64()
-            .expect(&format!("No lot_decimals for {}", wsname)) as u8;
+            .expect(&format!("No lot_decimals for {}", wsname))
+            as usize;
         let order_min = details["ordermin"]
             .as_str()
             .expect(&format!("No ordermin for {}", wsname))
@@ -182,4 +185,29 @@ pub async fn get_ws_auth_token() -> Result<String, Box<dyn std::error::Error>> {
     let token = v["result"]["token"].as_str().unwrap().to_string();
 
     Ok(token.to_string())
+}
+
+/// Wait for approximately N milliseconds using a high-resolution timer.
+/// This is more accurate than OS sleep for sub-millisecond timing.
+/// Yields periodically to avoid blocking the async runtime.
+pub async fn wait_approx_ms(milliseconds: u64) {
+    // First yield to ensure previous operations are processed
+    task::yield_now().await;
+
+    let target_duration = Duration::from_nanos(milliseconds * 1_000_000);
+    let start = Instant::now();
+
+    // Busy-wait with periodic yields for accuracy
+    // Yield every ~100us to avoid blocking the executor
+    let yield_interval = Duration::from_nanos(100_000);
+    let mut last_yield = start;
+
+    while start.elapsed() < target_duration {
+        if last_yield.elapsed() >= yield_interval {
+            task::yield_now().await;
+            last_yield = Instant::now();
+        }
+        // Small spin loop to check time without yielding too frequently
+        std::hint::spin_loop();
+    }
 }

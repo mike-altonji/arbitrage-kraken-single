@@ -1,4 +1,5 @@
 use crate::evaluate_arbitrage;
+use crate::structs::OrderInfo;
 use crate::structs::PairDataVec;
 use crate::telegram::send_telegram_message;
 use evaluate_arbitrage::evaluate_arbitrage;
@@ -6,6 +7,7 @@ use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use std::time::Duration;
 use tokio::net::TcpStream;
+use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
@@ -16,6 +18,7 @@ pub async fn start_listener(
     public_online: &mut bool,
     ws_url: &str,
     pair_names: &[&'static str],
+    trade_tx: mpsc::Sender<OrderInfo>,
 ) {
     const SLEEP_DURATION: Duration = Duration::from_secs(5);
 
@@ -33,7 +36,7 @@ pub async fn start_listener(
                     if let Some(idx) = idx {
                         // Only evaluate arbitrage for non-stablecoin pairs and if the websocket is online
                         if idx > 1 && *public_online {
-                            evaluate_arbitrage(pair_data_vec, idx, pair_names);
+                            evaluate_arbitrage(pair_data_vec, idx, pair_names, trade_tx.clone());
                         }
                     }
                 }
