@@ -6,6 +6,8 @@ use std::thread;
 use telegram::send_telegram_message;
 use tokio::sync::mpsc;
 
+use utils::get_ws_auth_token;
+
 mod asset_pairs;
 mod evaluate_arbitrage;
 mod kraken_rest;
@@ -51,6 +53,9 @@ async fn main() {
         "🚀 Launching Kraken arbitrage: Evaluation-only mode"
     };
     send_telegram_message(mode_message).await;
+    let token = get_ws_auth_token()
+        .await
+        .expect("Could not pull auth token.");
 
     // Get available cores for pinning
     let cores = core_affinity::get_core_ids().expect("Could not get core IDs");
@@ -184,7 +189,7 @@ async fn main() {
         // Create a tokio runtime on this thread for async websocket operations
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         rt.block_on(async move {
-            trade::run_trading_thread(trade_rx).await;
+            trade::run_trading_thread(token, trade_rx).await;
         });
     });
 
