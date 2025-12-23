@@ -1,7 +1,7 @@
 use crate::structs::OrderInfo;
 use dotenv::dotenv;
 use std::env;
-use std::sync::atomic::{AtomicBool, AtomicI16, AtomicU16};
+use std::sync::atomic::{AtomicBool, AtomicI16};
 use std::thread;
 use telegram::send_telegram_message;
 use tokio::sync::mpsc;
@@ -18,8 +18,8 @@ mod trade;
 mod utils;
 
 // Static atomic variables for fees and balances
-pub static FEE_SPOT: AtomicU16 = AtomicU16::new(40); // Default 0.40% (in bps)
-pub static FEE_STABLECOIN: AtomicU16 = AtomicU16::new(20); // Default 0.20% (in bps)
+pub static FEE_SPOT: AtomicI16 = AtomicI16::new(40); // Default 0.40% (in bps)
+pub static FEE_STABLECOIN: AtomicI16 = AtomicI16::new(20); // Default 0.20% (in bps)
 pub static USD_BALANCE: AtomicI16 = AtomicI16::new(0);
 pub static EUR_BALANCE: AtomicI16 = AtomicI16::new(0);
 

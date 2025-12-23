@@ -1,7 +1,7 @@
 use crate::utils;
 use dotenv::dotenv;
 use std::env;
-use std::sync::atomic::{AtomicI16, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicI16, Ordering};
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -65,10 +65,10 @@ async fn update_balances(
 }
 
 /// Fetch trading fees from Kraken API every 5 minutes
-/// fee: atomic u16 representing basis points (e.g., 40 = 0.40%)
+/// fee: atomic i16 representing basis points (e.g., 40 = 0.40%)
 pub async fn fetch_trading_fees(
-    fee_spot: &AtomicU16,
-    fee_stablecoin: &AtomicU16,
+    fee_spot: &AtomicI16,
+    fee_stablecoin: &AtomicI16,
 ) -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
     let api_key = env::var("KRAKEN_KEY").expect("KRAKEN_KEY must be set");
@@ -87,8 +87,8 @@ pub async fn fetch_trading_fees(
 async fn update_fees(
     api_key: &str,
     api_secret: &str,
-    fee_spot: &AtomicU16,
-    fee_stablecoin: &AtomicU16,
+    fee_spot: &AtomicI16,
+    fee_stablecoin: &AtomicI16,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let api_path = "/0/private/TradeVolume";
     let (api_post, headers) =
@@ -119,14 +119,14 @@ async fn update_fees(
     // Extract spot fee
     if let Some(fee_f64) = extract_fee_from_pair(fees, "XXBTZUSD") {
         // Convert percentage to basis points (0.40% = 40)
-        let fee_basis_points = (fee_f64 * 100.0).round() as u16;
+        let fee_basis_points = (fee_f64 * 100.0).round() as i16;
         fee_spot.store(fee_basis_points, Ordering::Relaxed);
     }
 
     // Extract stablecoin fee
     if let Some(fee_f64) = extract_fee_from_pair(fees, "USDTZUSD") {
         // Convert percentage to basis points (0.20% = 20)
-        let fee_basis_points = (fee_f64 * 100.0).round() as u16;
+        let fee_basis_points = (fee_f64 * 100.0).round() as i16;
         fee_stablecoin.store(fee_basis_points, Ordering::Relaxed);
     }
 
