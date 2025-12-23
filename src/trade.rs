@@ -1,5 +1,5 @@
 use crate::structs::OrderInfo;
-use crate::utils::wait_approx_1ms;
+use crate::utils::wait_approx_ms;
 use crate::TRADER_BUSY;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
@@ -96,8 +96,8 @@ async fn make_trades(
         return;
     }
     log::debug!("Sent buy order for {}", order.pair1_name);
-    wait_approx_1ms().await;
 
+    wait_approx_ms(1).await;
     let trade_msg = serde_json::json!({
         "event": "addOrder",
         "token": token,
@@ -117,8 +117,9 @@ async fn make_trades(
         return;
     }
     log::debug!("Sent sell order for {}", order.pair2_name);
-    wait_approx_1ms().await;
 
+    // Wait 50ms b/c the stablecoin price shouldn't slip. Ensures the prior order has been filled.
+    wait_approx_ms(50).await;
     let vol_stable_formatted = format!("{:.*}", order.volume_decimals_stable, order.volume_stable);
     let trade_msg = serde_json::json!({
         "event": "addOrder",
@@ -139,8 +140,9 @@ async fn make_trades(
         return;
     }
     log::debug!("Sent buy order for {}", order.pair2_stable_name);
-    wait_approx_1ms().await;
 
+    // Wait 50ms b/c the stablecoin price shouldn't slip. Ensures the prior order has been filled.
+    wait_approx_ms(50).await;
     let trade_msg = serde_json::json!({
         "event": "addOrder",
         "token": token,

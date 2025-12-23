@@ -187,14 +187,14 @@ pub async fn get_ws_auth_token() -> Result<String, Box<dyn std::error::Error>> {
     Ok(token.to_string())
 }
 
-/// Wait for approximately 1ms using a high-resolution timer.
+/// Wait for approximately N milliseconds using a high-resolution timer.
 /// This is more accurate than OS sleep for sub-millisecond timing.
 /// Yields periodically to avoid blocking the async runtime.
-pub async fn wait_approx_1ms() {
+pub async fn wait_approx_ms(milliseconds: u64) {
     // First yield to ensure previous operations are processed
     task::yield_now().await;
 
-    let target_duration = Duration::from_nanos(1_000_000); // 1ms
+    let target_duration = Duration::from_nanos(milliseconds * 1_000_000);
     let start = Instant::now();
 
     // Busy-wait with periodic yields for accuracy
