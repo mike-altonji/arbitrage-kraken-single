@@ -94,7 +94,6 @@ pub async fn initialize_pair_data(asset_index: &phf::Map<&'static str, usize>) -
             order_min,
             cost_min,
             pair_status,
-            public_online: true,
         });
     }
 

@@ -9,6 +9,5 @@ pub struct PairData {
     pub order_min: f32,
     pub cost_min: f32,
     pub pair_status: bool,
-    pub public_online: bool,
 }
 pub type PairDataVec = Vec<PairData>;
