@@ -111,12 +111,19 @@ pub fn get_api_params(
     api_key: &str,
     api_secret: &str,
     api_path: &str,
+    api_post_body: Option<&str>,
 ) -> Result<(String, HeaderMap), Box<dyn std::error::Error>> {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)?
         .as_millis()
         .to_string();
-    let api_post = format!("nonce={}", nonce);
+
+    // Build api_post with optional body appended
+    let api_post = match api_post_body {
+        Some(body) if !body.is_empty() => format!("nonce={}&{}", nonce, body),
+        _ => format!("nonce={}", nonce),
+    };
+
     let nonce_bytes = nonce.as_bytes();
     let api_post_bytes = api_post.as_bytes();
 
@@ -145,7 +152,7 @@ pub async fn get_ws_auth_token() -> Result<String, Box<dyn std::error::Error>> {
     let api_key = env::var("KRAKEN_KEY").expect("KRAKEN_KEY must be set");
     let api_secret = env::var("KRAKEN_SECRET").expect("KRAKEN_SECRET must be set");
     let api_path = "/0/private/GetWebSocketsToken";
-    let (post, headers) = get_api_params(&api_key, &api_secret, api_path)?;
+    let (post, headers) = get_api_params(&api_key, &api_secret, api_path, None)?;
 
     let client = reqwest::Client::new();
     let res = client
