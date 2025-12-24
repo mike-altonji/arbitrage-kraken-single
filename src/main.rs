@@ -4,9 +4,6 @@ use std::env;
 use std::sync::atomic::{AtomicBool, AtomicI16};
 use std::thread;
 use tokio::sync::mpsc;
-use utils::send_telegram_message;
-
-use utils::get_ws_auth_token;
 
 mod asset_pairs;
 mod evaluate_arbitrage;
@@ -52,8 +49,8 @@ async fn main() {
     } else {
         "🚀 Launching Kraken arbitrage: Evaluation-only mode"
     };
-    send_telegram_message(mode_message).await;
-    let token = get_ws_auth_token()
+    utils::send_telegram_message(mode_message).await;
+    let token = utils::get_ws_auth_token()
         .await
         .expect("Could not pull auth token.");
 
