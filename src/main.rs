@@ -31,7 +31,8 @@ async fn main() {
     let use_colocated = args.contains(&"--colocated".to_string());
     let debug_mode = args.contains(&"--debug".to_string());
 
-    // Determine WebSocket URLs based on --colocated flag
+    utils::init_logging(debug_mode);
+
     let public_ws_url = if use_colocated {
         "wss://colo-london.vip-ws.kraken.com"
     } else {
@@ -43,13 +44,14 @@ async fn main() {
         "wss://ws-auth.kraken.com"
     };
 
-    utils::init_logging(debug_mode);
     let mode_message = if allow_trades {
         "💰 Launching Kraken arbitrage: Trade mode"
     } else {
         "🚀 Launching Kraken arbitrage: Evaluation-only mode"
     };
     utils::send_telegram_message(mode_message).await;
+
+    // Get Kraken auth token for private websocket API
     let token = utils::get_ws_auth_token()
         .await
         .expect("Could not pull auth token.");
