@@ -13,16 +13,25 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 async fn setup_private_websocket(
     token: &str,
     ws_url: &str,
-) -> (
-    SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
-    SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
-) {
-    let url = url::Url::parse(ws_url).expect("Failed to parse URL");
+) -> Result<
+    (
+        SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+        SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+    ),
+    String,
+> {
+    // Parse URL
+    let url = url::Url::parse(ws_url)
+        .map_err(|e| format!("Failed to parse WebSocket URL '{}': {}", ws_url, e))?;
+
+    // Connect to websocket
     let (ws_stream, _) = connect_async(url)
         .await
-        .expect("Failed to connect to private websocket");
+        .map_err(|e| format!("Failed to connect to private websocket: {}", e))?;
+
     let (mut write, read) = ws_stream.split();
 
+    // Create subscription message
     let sub_msg = serde_json::json!({
         "event": "subscribe",
         "subscription": {
@@ -31,14 +40,15 @@ async fn setup_private_websocket(
         }
     });
 
+    // Send subscription message
     write
         .send(Message::Text(sub_msg.to_string()))
         .await
-        .expect("Failed to send message to begin websocket subscription");
+        .map_err(|e| format!("Failed to send subscription message: {}", e))?;
 
     log::info!("Subscribed to own trades via private websocket.");
 
-    (write, read)
+    Ok((write, read))
 }
 
 /// Trading thread main loop
@@ -49,10 +59,19 @@ pub async fn run_trading_thread(
     mut trade_rx: mpsc::Receiver<OrderInfo>,
     allow_trades: bool,
 ) {
-    log::debug!("Starting trading thread");
-
     // Set up private WebSocket connection
-    let (mut write, _read) = setup_private_websocket(&token, &private_ws_url).await;
+    // If setup fails, panic since trading cannot proceed without a connection
+    let (mut write, _read) = match setup_private_websocket(&token, &private_ws_url).await {
+        Ok(streams) => streams,
+        Err(e) => {
+            let msg = format!(
+                "Failed to set up private websocket: {}. Trading thread cannot continue.",
+                e
+            );
+            log::error!("{}", msg);
+            panic!("{}", msg);
+        }
+    };
 
     while let Some(order) = trade_rx.recv().await {
         if allow_trades {
@@ -64,14 +83,9 @@ pub async fn run_trading_thread(
 
             // Mark trader as idle after processing
             TRADER_BUSY.store(false, Ordering::Relaxed);
-        } else {
-            log::debug!(
-                "Trading is disabled, skipping order for {}",
-                order.pair1_name
-            );
         }
     }
-    log::debug!("Trading channel closed, exiting trading thread");
+    log::info!("Trading channel closed, exiting trading thread");
 }
 
 /// Fire-and-forget trade implementation, with a short wait time between each trade to ensure order.
@@ -91,13 +105,15 @@ async fn make_trades(
     })
     .to_string();
 
+    // Trade 1: Buy pair1
     if let Err(e) = write.send(Message::Text(trade_msg)).await {
         log::error!("Failed to send buy order for {}: {:?}", order.pair1_name, e);
         return;
     }
-    log::debug!("Sent buy order for {}", order.pair1_name);
 
     wait_approx_ms(1).await;
+
+    // Trade 2: Sell pair2
     let trade_msg = serde_json::json!({
         "event": "addOrder",
         "token": token,
@@ -116,10 +132,11 @@ async fn make_trades(
         );
         return;
     }
-    log::debug!("Sent sell order for {}", order.pair2_name);
 
     // Wait 50ms b/c the stablecoin price shouldn't slip. Ensures the prior order has been filled.
     wait_approx_ms(50).await;
+
+    // Trade 3: Buy pair2_stable
     let vol_stable_formatted = format!("{:.*}", order.volume_decimals_stable, order.volume_stable);
     let trade_msg = serde_json::json!({
         "event": "addOrder",
@@ -139,10 +156,11 @@ async fn make_trades(
         );
         return;
     }
-    log::debug!("Sent buy order for {}", order.pair2_stable_name);
 
     // Wait 50ms b/c the stablecoin price shouldn't slip. Ensures the prior order has been filled.
     wait_approx_ms(50).await;
+
+    // Trade 4: Sell pair1_stable
     let trade_msg = serde_json::json!({
         "event": "addOrder",
         "token": token,
@@ -161,5 +179,8 @@ async fn make_trades(
         );
         return;
     }
-    log::debug!("Sent sell order for {}", order.pair1_stable_name);
+    log::debug!(
+        "Successfully completed all 4 trades for arbitrage starting with {}",
+        order.pair1_name
+    );
 }
