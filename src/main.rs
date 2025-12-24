@@ -32,6 +32,7 @@ async fn main() {
     let args: Vec<String> = env::args().collect();
     let allow_trades = args.contains(&"--trade".to_string());
     let use_colocated = args.contains(&"--colocated".to_string());
+    let debug_mode = args.contains(&"--debug".to_string());
 
     // Determine WebSocket URLs based on --colocated flag
     let public_ws_url = if use_colocated {
@@ -45,7 +46,7 @@ async fn main() {
         "wss://ws-auth.kraken.com"
     };
 
-    utils::init_logging();
+    utils::init_logging(debug_mode);
     let mode_message = if allow_trades {
         "💰 Launching Kraken arbitrage: Trade mode"
     } else {

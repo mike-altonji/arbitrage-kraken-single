@@ -10,7 +10,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::task;
 
 /// Initialize logging. Will create a file in `logs/arbitrage_log_{timestamp}.log`
-pub fn init_logging() {
+/// If debug_mode is true, will log at Debug level. Otherwise, will log at Info level.
+pub fn init_logging(debug_mode: bool) {
     let now = SystemTime::now();
     let since_the_epoch = now.duration_since(UNIX_EPOCH).expect("Time invalid");
     let timestamp = since_the_epoch.as_secs();
@@ -22,7 +23,11 @@ pub fn init_logging() {
         .build(
             config::Root::builder()
                 .appender("default")
-                .build(log::LevelFilter::Info),
+                .build(if debug_mode {
+                    log::LevelFilter::Debug
+                } else {
+                    log::LevelFilter::Info
+                }),
         )
         .expect("Unable to build log file");
     log4rs::init_config(log_config).expect("Unable to build log file");
