@@ -106,7 +106,7 @@ pub fn spawn_listener_threads(
 pub fn spawn_balance_fetcher_thread(cores: &[core_affinity::CoreId]) -> thread::JoinHandle<()> {
     ensure_core_available(cores, 3);
     spawn_pinned_thread(3, "Balance Fetcher".to_string(), || async move {
-        let _ = kraken_rest::fetch_asset_balances(&USD_BALANCE, &EUR_BALANCE).await;
+        kraken_rest::fetch_asset_balances(&USD_BALANCE, &EUR_BALANCE).await;
     })
 }
 

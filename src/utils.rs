@@ -169,8 +169,10 @@ pub fn get_api_params(
     hasher.update(nonce_bytes);
     hasher.update(api_post_bytes);
     let api_sha256 = hasher.finalize();
-    let api_secret_decoded = decode_config(&api_secret, STANDARD).unwrap();
-    let mut mac = Hmac::<Sha512>::new_varkey(&api_secret_decoded).unwrap();
+    let api_secret_decoded = decode_config(&api_secret, STANDARD)
+        .map_err(|e| format!("Invalid base64 in API secret: {}", e))?;
+    let mut mac = Hmac::<Sha512>::new_varkey(&api_secret_decoded)
+        .map_err(|_| "Invalid HMAC key: secret is empty or wrong length")?;
     mac.update(api_path.as_bytes());
     mac.update(&api_sha256);
     let api_hmac = mac.finalize();
