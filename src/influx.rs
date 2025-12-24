@@ -175,7 +175,7 @@ pub fn log_arbitrage_opportunity(
     let pair1_name = pair1_name.to_string();
     let pair2_name = pair2_name.to_string();
     tokio::spawn(async move {
-        let (client, retention_policy, _, _) = setup_influx().await;
+        let (client, _retention_policy, _, _) = setup_influx().await;
         let point = Point::new("arbitrage_opportunity")
             .add_tag("pair1", Value::String(pair1_name))
             .add_tag("pair2", Value::String(pair2_name))
@@ -195,11 +195,7 @@ pub fn log_arbitrage_opportunity(
                 Value::Boolean(volume_limited_by_balance),
             );
         let _ = client
-            .write_points(
-                vec![point],
-                Some(Precision::Nanoseconds),
-                Some(&retention_policy),
-            )
+            .write_points(vec![point], Some(Precision::Nanoseconds), None)
             .await;
     });
 }
