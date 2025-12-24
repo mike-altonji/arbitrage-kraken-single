@@ -9,12 +9,18 @@ use std::thread;
 use tokio::sync::mpsc;
 
 /// Creates a pinned thread with a tokio runtime that runs the provided async function
-fn spawn_pinned_thread<F, Fut>(core_id: usize, thread_name: String, f: F) -> thread::JoinHandle<()>
+fn spawn_pinned_thread<F, Fut>(
+    cores: &[core_affinity::CoreId],
+    core_id: usize,
+    thread_name: String,
+    f: F,
+) -> thread::JoinHandle<()>
 where
     F: FnOnce() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
     log::debug!("Spawning thread {} on core {}", thread_name, core_id);
+    ensure_core_available(cores, core_id);
     let core_id_obj = core_affinity::CoreId { id: core_id };
     thread::spawn(move || {
         // Pin thread to core
@@ -66,13 +72,12 @@ pub fn spawn_listener_threads(
         .into_iter()
         .map(|(asset_index, thread_id)| {
             let target_core_id = thread_id % 3;
-            ensure_core_available(cores, target_core_id);
-
             let trade_tx_clone = trade_tx.clone();
             let public_ws_url_clone = public_ws_url.clone();
             let asset_index_clone = asset_index;
 
             spawn_pinned_thread(
+                cores,
                 target_core_id,
                 format!("Listener {}", thread_id),
                 move || {
@@ -104,16 +109,14 @@ pub fn spawn_listener_threads(
 
 /// Creates the balance fetcher
 pub fn spawn_balance_fetcher_thread(cores: &[core_affinity::CoreId]) -> thread::JoinHandle<()> {
-    ensure_core_available(cores, 3);
-    spawn_pinned_thread(3, "Balance Fetcher".to_string(), || async move {
+    spawn_pinned_thread(cores, 3, "Balance Fetcher".to_string(), || async move {
         kraken_rest::fetch_asset_balances(&USD_BALANCE, &EUR_BALANCE).await;
     })
 }
 
 /// Creates the fee fetcher
 pub fn spawn_fee_fetcher_thread(cores: &[core_affinity::CoreId]) -> thread::JoinHandle<()> {
-    ensure_core_available(cores, 3);
-    spawn_pinned_thread(3, "Fee Fetcher".to_string(), || async move {
+    spawn_pinned_thread(cores, 3, "Fee Fetcher".to_string(), || async move {
         kraken_rest::fetch_trading_fees(&FEE_SPOT, &FEE_STABLECOIN).await;
     })
 }
@@ -126,8 +129,7 @@ pub fn spawn_trading_thread(
     trade_rx: mpsc::Receiver<OrderInfo>,
     allow_trades: bool,
 ) -> thread::JoinHandle<()> {
-    ensure_core_available(cores, 3);
-    spawn_pinned_thread(3, "Trader".to_string(), move || async move {
+    spawn_pinned_thread(cores, 3, "Trader".to_string(), move || async move {
         trade::run_trading_thread(token, private_ws_url, trade_rx, allow_trades).await;
     })
 }
