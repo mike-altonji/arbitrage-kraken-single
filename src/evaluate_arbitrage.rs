@@ -23,6 +23,7 @@ pub fn evaluate_arbitrage(
         log::error!("Failed to get pair for index {} or stablecoin", idx);
         return;
     }
+    // Should be safe to unwrap since we checked for None above, but may want to revisit.
     let usd_pair = usd_pair.unwrap();
     let eur_pair = eur_pair.unwrap();
     let usd_stable_pair = usd_stable_pair.unwrap();
@@ -34,6 +35,7 @@ pub fn evaluate_arbitrage(
         || !usd_stable_pair.pair_status
         || !eur_stable_pair.pair_status
     {
+        // Not logging because it could be very noisy.
         return;
     }
 
@@ -135,7 +137,11 @@ fn process_arbitrage_opportunity(
     pair_names: &[&'static str],
     trade_tx: mpsc::Sender<OrderInfo>,
 ) {
-    log::info!("Arbitrage opportunity found w/ROI {}", roi);
+    log::info!(
+        "Opportunity found starting with pair {}. ROI: {}",
+        pair_names[pair1_idx],
+        roi
+    );
     let volume = limiting_volume(pair1, pair2, balance, fee_spot);
     let volume_stable =
         compute_volume_stable(volume, pair2, pair2_stable, fee_spot, fee_stablecoin);
@@ -193,6 +199,14 @@ fn limiting_volume(pair1: &PairData, pair2: &PairData, balance: f64, fee_spot: f
 
     // Take the minimum of effective balance, max ask size, and max bid size
     let min_volume = volume_balance.min(pair1.ask_volume).min(pair2.bid_volume);
+
+    log::debug!(
+        "Limiting volume: {}, Balance volume: {}, Pair1 ask volume: {}, Pair2 bid volume: {}",
+        min_volume,
+        volume_balance,
+        pair1.ask_volume,
+        pair2.bid_volume
+    );
 
     return min_volume;
 }
