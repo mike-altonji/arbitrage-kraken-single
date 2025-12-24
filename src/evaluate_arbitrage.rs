@@ -1,3 +1,4 @@
+use crate::influx::log_arbitrage_opportunity;
 use crate::structs::{OrderInfo, PairData, PairDataVec};
 use crate::{EUR_BALANCE, FEE_SPOT, FEE_STABLECOIN, TRADER_BUSY, USD_BALANCE};
 use std::sync::atomic::Ordering;
@@ -158,15 +159,38 @@ fn process_arbitrage_opportunity(
         pair1_name,
         roi
     );
-    let volume = limiting_volume(pair1, pair2, balance, fee_spot);
+    let (volume, volume_limited_by_balance) = limiting_volume(pair1, pair2, balance, fee_spot);
+    let pair1_amount_in = volume * pair1.ask_price * (1.0 + fee_spot);
     let volume_stable =
         compute_volume_stable(volume, pair2, pair2_stable, fee_spot, fee_stablecoin);
+
+    // Log opportunity even if we can't trade
+    log_arbitrage_opportunity(
+        pair1_name,
+        pair2_name,
+        pair1.bid_price,
+        pair1.ask_price,
+        pair2.bid_price,
+        pair2.ask_price,
+        pair1_stable.bid_price,
+        pair1_stable.ask_price,
+        pair2_stable.bid_price,
+        pair2_stable.ask_price,
+        roi,
+        volume,
+        pair1_amount_in,
+        volume_limited_by_balance,
+    );
 
     if !check_guardrails(volume, pair1, pair2) {
         log::debug!("Not enough volume to trade. Cannot trade.");
         return;
     }
 
+    let send_timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
     trigger_trades(
         &OrderInfo {
             pair1_name,
@@ -177,6 +201,7 @@ fn process_arbitrage_opportunity(
             volume_stable,
             volume_decimals_coin: pair1.volume_decimals,
             volume_decimals_stable: pair1_stable.volume_decimals,
+            send_timestamp,
         },
         trade_tx,
     );
@@ -197,8 +222,9 @@ fn compute_roi(
 }
 
 /// Find the largest amount of volume of COIN we can trade to get the best price levels
+/// Also returns whether the volume is limited by the balance, which is useful for logging
 /// Assumes the stablecoin has infinite liquidity with no slippage (fair for our purposes)
-fn limiting_volume(pair1: &PairData, pair2: &PairData, balance: f64, fee_spot: f64) -> f64 {
+fn limiting_volume(pair1: &PairData, pair2: &PairData, balance: f64, fee_spot: f64) -> (f64, bool) {
     // Compute the effective volume we can spend based on balance and ask price (with fee)
     let volume_balance = balance / (pair1.ask_price * (1.0 + fee_spot));
 
@@ -213,7 +239,7 @@ fn limiting_volume(pair1: &PairData, pair2: &PairData, balance: f64, fee_spot: f
         pair2.bid_volume
     );
 
-    return min_volume;
+    return (min_volume, min_volume == volume_balance);
 }
 
 /// Compute the volume of the stablecoin that we can trade

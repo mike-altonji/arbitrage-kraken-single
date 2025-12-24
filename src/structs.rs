@@ -23,4 +23,5 @@ pub struct OrderInfo {
     pub volume_stable: f64,
     pub volume_decimals_coin: usize,
     pub volume_decimals_stable: usize,
+    pub send_timestamp: u128,
 }

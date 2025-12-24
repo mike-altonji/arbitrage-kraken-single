@@ -40,32 +40,13 @@ pub fn log_kraken_ingestion_latency(pair: &str, kraken_ts: f64, ingestion_ts: f6
     });
 }
 
-/// Log spread data handling speed (time to process a spread message)
-pub fn log_spread_handling_speed(pair: &str, duration_ms: f64) {
-    let pair = pair.to_string();
-    tokio::spawn(async move {
-        let (client, retention_policy, _, _) = setup_influx().await;
-        let point = Point::new("spread_handling_speed")
-            .add_tag("pair", Value::String(pair))
-            .add_field("duration_ms", Value::Float(duration_ms));
-        let _ = client
-            .write_points(
-                vec![point],
-                Some(Precision::Nanoseconds),
-                Some(&retention_policy),
-            )
-            .await;
-    });
-}
-
 /// Log arbitrage evaluation speed
-pub fn log_arbitrage_evaluation_speed(pair: &str, duration_ms: f64) {
-    let pair = pair.to_string();
+pub fn log_arbitrage_evaluation_speed(start_ts: u128, end_ts: u128) {
+    let duration = (end_ts - start_ts) as f64 / 1_000_000_000.0;
     tokio::spawn(async move {
         let (client, retention_policy, _, _) = setup_influx().await;
-        let point = Point::new("arbitrage_evaluation_speed")
-            .add_tag("pair", Value::String(pair))
-            .add_field("duration_ms", Value::Float(duration_ms));
+        let point =
+            Point::new("arbitrage_evaluation_speed").add_field("duration", Value::Float(duration));
         let _ = client
             .write_points(
                 vec![point],
@@ -77,11 +58,11 @@ pub fn log_arbitrage_evaluation_speed(pair: &str, duration_ms: f64) {
 }
 
 /// Log overall listener loop speed
-pub fn log_listener_loop_speed(duration_ms: f64) {
+pub fn log_listener_loop_speed(loop_start: u128, loop_end: u128) {
+    let duration = (loop_end - loop_start) as f64 / 1_000_000_000.0;
     tokio::spawn(async move {
         let (client, retention_policy, _, _) = setup_influx().await;
-        let point =
-            Point::new("listener_loop_speed").add_field("duration_ms", Value::Float(duration_ms));
+        let point = Point::new("listener_loop_speed").add_field("duration", Value::Float(duration));
         let _ = client
             .write_points(
                 vec![point],
@@ -93,27 +74,12 @@ pub fn log_listener_loop_speed(duration_ms: f64) {
 }
 
 /// Log trade thread message receive speed (time from send to receive)
-pub fn log_trade_message_receive_speed(duration_ms: f64) {
-    tokio::spawn(async move {
-        let (client, retention_policy, _, _) = setup_influx().await;
-        let point = Point::new("trade_message_receive_speed")
-            .add_field("duration_ms", Value::Float(duration_ms));
-        let _ = client
-            .write_points(
-                vec![point],
-                Some(Precision::Nanoseconds),
-                Some(&retention_policy),
-            )
-            .await;
-    });
-}
-
-/// Log time from message received by trader to first trade placed
-pub fn log_trade_execution_start(duration_ms: f64) {
+pub fn log_trade_message_receive_speed(send_timestamp: u128, receive_timestamp: u128) {
+    let duration = (receive_timestamp - send_timestamp) as f64 / 1_000_000_000.0;
     tokio::spawn(async move {
         let (client, retention_policy, _, _) = setup_influx().await;
         let point =
-            Point::new("trade_execution_start").add_field("duration_ms", Value::Float(duration_ms));
+            Point::new("trade_message_receive_speed").add_field("duration", Value::Float(duration));
         let _ = client
             .write_points(
                 vec![point],
@@ -124,13 +90,14 @@ pub fn log_trade_execution_start(duration_ms: f64) {
     });
 }
 
-/// Log time between trades (1-2, 2-3, 3-4)
-pub fn log_trade_interval(trade_pair: &str, duration_ms: f64) {
-    let trade_pair = trade_pair.to_string();
+/// Log time between trades (1-2, 2-3, 3-4) to ensure our wait times are correct
+/// Currently only used for 1-2, which is the only time-sensitive interval
+pub fn log_trade_interval(interval_name: &str, duration_ms: f64) {
+    let interval_name = interval_name.to_string();
     tokio::spawn(async move {
         let (client, retention_policy, _, _) = setup_influx().await;
         let point = Point::new("trade_interval")
-            .add_tag("trade_pair", Value::String(trade_pair))
+            .add_tag("interval_name", Value::String(interval_name))
             .add_field("duration_ms", Value::Float(duration_ms));
         let _ = client
             .write_points(
@@ -156,9 +123,8 @@ pub fn log_arbitrage_opportunity(
     stable2_ask: f64,
     roi: f64,
     limiting_volume: f64,
-    limiting_volume_converted: f64,
-    is_limited_by_balance: bool,
-    trade_attempted: bool,
+    pair1_amount_in: f64,
+    volume_limited_by_balance: bool,
 ) {
     let pair1_name = pair1_name.to_string();
     let pair2_name = pair2_name.to_string();
@@ -177,15 +143,11 @@ pub fn log_arbitrage_opportunity(
             .add_field("stable2_ask", Value::Float(stable2_ask))
             .add_field("roi", Value::Float(roi))
             .add_field("limiting_volume", Value::Float(limiting_volume))
+            .add_field("pair1_amount_in", Value::Float(pair1_amount_in))
             .add_field(
-                "limiting_volume_converted",
-                Value::Float(limiting_volume_converted),
-            )
-            .add_field(
-                "is_limited_by_balance",
-                Value::Boolean(is_limited_by_balance),
-            )
-            .add_field("trade_attempted", Value::Boolean(trade_attempted));
+                "volume_limited_by_balance",
+                Value::Boolean(volume_limited_by_balance),
+            );
         let _ = client
             .write_points(
                 vec![point],
