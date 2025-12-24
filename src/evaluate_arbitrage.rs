@@ -15,19 +15,14 @@ pub fn evaluate_arbitrage(
     let eur_pair = pair_data_vec.get(eur_pair_idx);
     let usd_stable_pair = pair_data_vec.get(0);
     let eur_stable_pair = pair_data_vec.get(1);
-    if usd_pair.is_none()
-        || eur_pair.is_none()
-        || usd_stable_pair.is_none()
-        || eur_stable_pair.is_none()
-    {
-        log::error!("Failed to get pair for index {} or stablecoin", idx);
-        return;
-    }
-    // Should be safe to unwrap since we checked for None above, but may want to revisit.
-    let usd_pair = usd_pair.unwrap();
-    let eur_pair = eur_pair.unwrap();
-    let usd_stable_pair = usd_stable_pair.unwrap();
-    let eur_stable_pair = eur_stable_pair.unwrap();
+    let (usd_pair, eur_pair, usd_stable_pair, eur_stable_pair) =
+        match (usd_pair, eur_pair, usd_stable_pair, eur_stable_pair) {
+            (Some(usd), Some(eur), Some(usd_s), Some(eur_s)) => (usd, eur, usd_s, eur_s),
+            _ => {
+                log::error!("Failed to get pair for index {} or stablecoin", idx);
+                return;
+            }
+        };
 
     // Skip if any pair is offline
     if !usd_pair.pair_status
@@ -137,9 +132,30 @@ fn process_arbitrage_opportunity(
     pair_names: &[&'static str],
     trade_tx: mpsc::Sender<OrderInfo>,
 ) {
+    // Get pair names safely - return early if any are missing
+    let pair1_name = pair_names.get(pair1_idx).copied();
+    let pair2_name = pair_names.get(pair2_idx).copied();
+    let pair1_stable_name = pair_names.get(pair1_stable_idx).copied();
+    let pair2_stable_name = pair_names.get(pair2_stable_idx).copied();
+
+    let (pair1_name, pair2_name, pair1_stable_name, pair2_stable_name) =
+        match (pair1_name, pair2_name, pair1_stable_name, pair2_stable_name) {
+            (Some(p1), Some(p2), Some(p1s), Some(p2s)) => (p1, p2, p1s, p2s),
+            _ => {
+                log::error!(
+                    "Failed to get pair names for indices {}, {}, {}, {}. Cannot trade.",
+                    pair1_idx,
+                    pair2_idx,
+                    pair1_stable_idx,
+                    pair2_stable_idx
+                );
+                return;
+            }
+        };
+
     log::info!(
         "Opportunity found starting with pair {}. ROI: {}",
-        pair_names[pair1_idx],
+        pair1_name,
         roi
     );
     let volume = limiting_volume(pair1, pair2, balance, fee_spot);
@@ -151,30 +167,19 @@ fn process_arbitrage_opportunity(
         return;
     }
 
-    let pair1_name = pair_names.get(pair1_idx).copied();
-    let pair2_name = pair_names.get(pair2_idx).copied();
-    let pair1_stable_name = pair_names.get(pair1_stable_idx).copied();
-    let pair2_stable_name = pair_names.get(pair2_stable_idx).copied();
-
-    if let (Some(pair1_name), Some(pair2_name), Some(pair1_stable_name), Some(pair2_stable_name)) =
-        (pair1_name, pair2_name, pair1_stable_name, pair2_stable_name)
-    {
-        trigger_trades(
-            &OrderInfo {
-                pair1_name,
-                pair2_name,
-                pair1_stable_name,
-                pair2_stable_name,
-                volume_coin: volume,
-                volume_stable,
-                volume_decimals_coin: pair1.volume_decimals,
-                volume_decimals_stable: pair1_stable.volume_decimals,
-            },
-            trade_tx,
-        );
-    } else {
-        log::error!("Failed to get pair names. Cannot trade.");
-    }
+    trigger_trades(
+        &OrderInfo {
+            pair1_name,
+            pair2_name,
+            pair1_stable_name,
+            pair2_stable_name,
+            volume_coin: volume,
+            volume_stable,
+            volume_decimals_coin: pair1.volume_decimals,
+            volume_decimals_stable: pair1_stable.volume_decimals,
+        },
+        trade_tx,
+    );
 }
 
 /// Compute the ROI of an arbitrage opportunity
