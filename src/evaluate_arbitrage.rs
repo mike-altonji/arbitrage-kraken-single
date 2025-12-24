@@ -153,7 +153,7 @@ fn process_arbitrage_opportunity(
             }
         };
 
-    log::info!(
+    log::debug!(
         "Opportunity found starting with pair {}. ROI: {}",
         pair1_name,
         roi
