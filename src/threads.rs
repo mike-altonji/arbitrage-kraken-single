@@ -3,7 +3,7 @@ use crate::kraken_rest;
 use crate::listener;
 use crate::structs::OrderInfo;
 use crate::trade;
-use crate::utils;
+use crate::utils::{build_pair_names_vec, initialize_pair_data};
 use crate::{EUR_BALANCE, FEE_SPOT, FEE_STABLECOIN, USD_BALANCE};
 use std::thread;
 use tokio::sync::mpsc;
@@ -14,6 +14,7 @@ where
     F: FnOnce() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
+    log::debug!("Spawning thread {} on core {}", thread_name, core_id);
     let core_id_obj = core_affinity::CoreId { id: core_id };
     thread::spawn(move || {
         // Pin thread to core
@@ -23,6 +24,7 @@ where
             #[cfg(target_os = "macos")]
             log::warn!("Thread pinning not supported on macOS. Continuing without pinning");
             #[cfg(not(target_os = "macos"))]
+            log::error!("{} failed to pin to core {}", thread_name, core_id);
             panic!("{} failed to pin to core {}", thread_name, core_id);
         }
 
@@ -40,6 +42,7 @@ where
 /// Verifies that a core is available, panicking if not
 fn ensure_core_available(cores: &[core_affinity::CoreId], core_id: usize) {
     if !cores.iter().any(|c| c.id == core_id) {
+        log::error!("Core {} not available", core_id);
         panic!("Core {} not available", core_id);
     }
 }
@@ -71,18 +74,15 @@ pub fn spawn_listener_threads(
 
             spawn_pinned_thread(
                 target_core_id,
-                format!("Listener thread {}", thread_id),
+                format!("Listener {}", thread_id),
                 move || {
                     async move {
-                        log::debug!("Initializing listener thread {}", thread_id);
-
-                        // Build pair names vector from asset_index (built once per thread)
+                        // Build pair names vector from asset_index
                         // Separate from pair_data_vec to keep pair_data_vec slim to fit on one cache line
-                        let pair_names = utils::build_pair_names_vec(asset_index_clone);
+                        let pair_names = build_pair_names_vec(asset_index_clone);
 
                         // Initialize pair data from Kraken API
-                        let mut pair_data_vec =
-                            utils::initialize_pair_data(asset_index_clone).await;
+                        let mut pair_data_vec = initialize_pair_data(asset_index_clone).await;
                         let mut public_online = true;
 
                         // Start listener
@@ -105,10 +105,9 @@ pub fn spawn_listener_threads(
 /// Creates the balance fetcher thread
 pub fn spawn_balance_fetcher_thread(cores: &[core_affinity::CoreId]) -> thread::JoinHandle<()> {
     ensure_core_available(cores, 3);
-    spawn_pinned_thread(3, "Balance fetcher thread".to_string(), || async move {
-        log::debug!("Starting balance fetcher thread");
+    spawn_pinned_thread(3, "Balance Fetcher".to_string(), || async move {
         if let Err(e) = kraken_rest::fetch_asset_balances(&USD_BALANCE, &EUR_BALANCE).await {
-            log::error!("Balance fetcher error: {:?}", e);
+            log::error!("Balance Fetcher error: {:?}", e);
         }
     })
 }
@@ -116,10 +115,9 @@ pub fn spawn_balance_fetcher_thread(cores: &[core_affinity::CoreId]) -> thread::
 /// Creates the fee fetcher thread
 pub fn spawn_fee_fetcher_thread(cores: &[core_affinity::CoreId]) -> thread::JoinHandle<()> {
     ensure_core_available(cores, 3);
-    spawn_pinned_thread(3, "Fee fetcher thread".to_string(), || async move {
-        log::debug!("Starting fee fetcher thread");
+    spawn_pinned_thread(3, "Fee Fetcher".to_string(), || async move {
         if let Err(e) = kraken_rest::fetch_trading_fees(&FEE_SPOT, &FEE_STABLECOIN).await {
-            log::error!("Fee fetcher error: {:?}", e);
+            log::error!("Fee Fetcher error: {:?}", e);
         }
     })
 }
@@ -133,7 +131,7 @@ pub fn spawn_trading_thread(
     allow_trades: bool,
 ) -> thread::JoinHandle<()> {
     ensure_core_available(cores, 3);
-    spawn_pinned_thread(3, "Trading thread".to_string(), move || async move {
+    spawn_pinned_thread(3, "Trader".to_string(), move || async move {
         trade::run_trading_thread(token, private_ws_url, trade_rx, allow_trades).await;
     })
 }
