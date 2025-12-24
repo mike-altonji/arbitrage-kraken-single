@@ -7,10 +7,7 @@ use tokio::time::sleep;
 
 /// Fetch asset balances from Kraken API every 2 seconds
 /// balance: atomic i16 representing a fiat balance
-pub async fn fetch_asset_balances(
-    usd_balance: &AtomicI16,
-    eur_balance: &AtomicI16,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn fetch_asset_balances(usd_balance: &AtomicI16, eur_balance: &AtomicI16) {
     dotenv().ok();
     let api_key = env::var("KRAKEN_KEY").expect("KRAKEN_KEY must be set");
     let api_secret = env::var("KRAKEN_SECRET").expect("KRAKEN_SECRET must be set");
@@ -42,7 +39,24 @@ async fn update_balances(
         .send()
         .await?;
 
+    // Check HTTP status code
+    if !resp.status().is_success() {
+        return Err(format!("Kraken API returned status: {}", resp.status()).into());
+    }
+
     let data: serde_json::Value = resp.json().await?;
+
+    // Check for Kraken API errors
+    if let Some(errors) = data.get("error").and_then(|e| e.as_array()) {
+        if !errors.is_empty() {
+            let error_msg = errors
+                .iter()
+                .filter_map(|e| e.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!("Kraken API error: {}", error_msg).into());
+        }
+    }
 
     // Extract result object
     let result = data
@@ -50,15 +64,35 @@ async fn update_balances(
         .and_then(|r| r.as_object())
         .ok_or("Missing or invalid result in Balance response")?;
 
+    // Track if we found the balances we care about
+    let mut found_usd = false;
+    let mut found_eur = false;
+
     // Parse USD and EUR balances
     for (key, value) in result {
         let balance_str = value.as_str().ok_or("Balance value is not a string")?;
         let balance = balance_str.parse::<f64>()?.floor() as i16;
         match key.as_str() {
-            "ZUSD" => usd_balance.store(balance, Ordering::Relaxed),
-            "ZEUR" => eur_balance.store(balance, Ordering::Relaxed),
+            "ZUSD" => {
+                usd_balance.store(balance, Ordering::Relaxed);
+                found_usd = true;
+                log::debug!("USD balance: {}", balance);
+            }
+            "ZEUR" => {
+                eur_balance.store(balance, Ordering::Relaxed);
+                found_eur = true;
+                log::debug!("EUR balance: {}", balance);
+            }
             _ => {} // Ignore other currencies
         }
+    }
+
+    // Warn if expected balances are missing
+    if !found_usd {
+        log::warn!("USD balance (ZUSD) not found in API response");
+    }
+    if !found_eur {
+        log::warn!("EUR balance (ZEUR) not found in API response");
     }
 
     Ok(())
@@ -66,10 +100,7 @@ async fn update_balances(
 
 /// Fetch trading fees from Kraken API every 5 minutes
 /// fee: atomic i16 representing basis points (e.g., 40 = 0.40%)
-pub async fn fetch_trading_fees(
-    fee_spot: &AtomicI16,
-    fee_stablecoin: &AtomicI16,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn fetch_trading_fees(fee_spot: &AtomicI16, fee_stablecoin: &AtomicI16) {
     dotenv().ok();
     let api_key = env::var("KRAKEN_KEY").expect("KRAKEN_KEY must be set");
     let api_secret = env::var("KRAKEN_SECRET").expect("KRAKEN_SECRET must be set");
@@ -91,18 +122,35 @@ async fn update_fees(
     fee_stablecoin: &AtomicI16,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let api_path = "/0/private/TradeVolume";
-    let (api_post, headers) =
+    let (post, headers) =
         utils::get_api_params(api_key, api_secret, api_path, Some("pair=XBTUSD,USDTUSD"))?;
 
     let client = reqwest::Client::new();
     let resp = client
         .post("https://api.kraken.com/0/private/TradeVolume")
         .headers(headers)
-        .body(api_post)
+        .body(post)
         .send()
         .await?;
 
+    // Check HTTP status code
+    if !resp.status().is_success() {
+        return Err(format!("Kraken API returned status: {}", resp.status()).into());
+    }
+
     let data: serde_json::Value = resp.json().await?;
+
+    // Check for Kraken API errors
+    if let Some(errors) = data.get("error").and_then(|e| e.as_array()) {
+        if !errors.is_empty() {
+            let error_msg = errors
+                .iter()
+                .filter_map(|e| e.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!("Kraken API error: {}", error_msg).into());
+        }
+    }
 
     // Extract fees from result
     let result = data
@@ -121,6 +169,9 @@ async fn update_fees(
         // Convert percentage to basis points (0.40% = 40)
         let fee_basis_points = (fee_f64 * 100.0).round() as i16;
         fee_spot.store(fee_basis_points, Ordering::Relaxed);
+        log::debug!("Spot fee: {} bps", fee_basis_points);
+    } else {
+        log::warn!("Spot fee not found in API response");
     }
 
     // Extract stablecoin fee
@@ -128,6 +179,9 @@ async fn update_fees(
         // Convert percentage to basis points (0.20% = 20)
         let fee_basis_points = (fee_f64 * 100.0).round() as i16;
         fee_stablecoin.store(fee_basis_points, Ordering::Relaxed);
+        log::debug!("Stablecoin fee: {} bps", fee_basis_points);
+    } else {
+        log::warn!("Stablecoin fee not found in API response");
     }
 
     Ok(())

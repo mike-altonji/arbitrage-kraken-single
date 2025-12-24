@@ -10,7 +10,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::task;
 
 /// Initialize logging. Will create a file in `logs/arbitrage_log_{timestamp}.log`
-pub fn init_logging() {
+/// If debug_mode is true, will log at Debug level. Otherwise, will log at Info level.
+pub fn init_logging(debug_mode: bool) {
     let now = SystemTime::now();
     let since_the_epoch = now.duration_since(UNIX_EPOCH).expect("Time invalid");
     let timestamp = since_the_epoch.as_secs();
@@ -22,10 +23,29 @@ pub fn init_logging() {
         .build(
             config::Root::builder()
                 .appender("default")
-                .build(log::LevelFilter::Info),
+                .build(if debug_mode {
+                    log::LevelFilter::Debug
+                } else {
+                    log::LevelFilter::Info
+                }),
         )
         .expect("Unable to build log file");
     log4rs::init_config(log_config).expect("Unable to build log file");
+}
+
+/// Send a Telegram message to the configured chat ID.
+pub async fn send_telegram_message(message: &str) {
+    let bot_token = env::var("TELEGRAM_BOT_TOKEN").expect("TELEGRAM_BOT_TOKEN must be set");
+    let chat_id = env::var("TELEGRAM_CHAT_ID").expect("TELEGRAM_CHAT_ID must be set");
+
+    let url = format!(
+        "https://api.telegram.org/bot{}/sendMessage?chat_id={}&text={}",
+        bot_token, chat_id, message
+    );
+
+    if let Err(e) = reqwest::Client::new().post(&url).send().await {
+        log::error!("Failed to send Telegram message: {:?}", e);
+    }
 }
 
 /// Build a vector of pair names indexed by their position in the asset_index map
@@ -149,8 +169,10 @@ pub fn get_api_params(
     hasher.update(nonce_bytes);
     hasher.update(api_post_bytes);
     let api_sha256 = hasher.finalize();
-    let api_secret_decoded = decode_config(&api_secret, STANDARD).unwrap();
-    let mut mac = Hmac::<Sha512>::new_varkey(&api_secret_decoded).unwrap();
+    let api_secret_decoded = decode_config(&api_secret, STANDARD)
+        .map_err(|e| format!("Invalid base64 in API secret: {}", e))?;
+    let mut mac = Hmac::<Sha512>::new_varkey(&api_secret_decoded)
+        .map_err(|_| "Invalid HMAC key: secret is empty or wrong length")?;
     mac.update(api_path.as_bytes());
     mac.update(&api_sha256);
     let api_hmac = mac.finalize();

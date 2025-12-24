@@ -2,18 +2,14 @@ use crate::structs::OrderInfo;
 use dotenv::dotenv;
 use std::env;
 use std::sync::atomic::{AtomicBool, AtomicI16};
-use std::thread;
-use telegram::send_telegram_message;
 use tokio::sync::mpsc;
-
-use utils::get_ws_auth_token;
 
 mod asset_pairs;
 mod evaluate_arbitrage;
 mod kraken_rest;
 mod listener;
 mod structs;
-mod telegram;
+mod threads;
 mod trade;
 mod utils;
 
@@ -26,178 +22,94 @@ pub static EUR_BALANCE: AtomicI16 = AtomicI16::new(0);
 // Trader busy flag - used to drop orders if trader is processing
 pub static TRADER_BUSY: AtomicBool = AtomicBool::new(false);
 
-#[tokio::main]
-async fn main() {
-    // Initialize setup
+/// Application configuration parsed from command-line arguments
+struct Config {
+    allow_trades: bool,
+    debug_mode: bool,
+    public_ws_url: String,
+    private_ws_url: String,
+    token: String,
+}
+
+impl Config {
+    async fn initialize() -> Self {
+        let args: Vec<String> = env::args().collect();
+        let use_colocated = args.contains(&"--colocated".to_string());
+        let (public_ws_url, private_ws_url) = if use_colocated {
+            (
+                "wss://colo-london.vip-ws.kraken.com".to_string(),
+                "wss://colo-london.vip-ws-auth.kraken.com".to_string(),
+            )
+        } else {
+            (
+                "wss://ws.kraken.com".to_string(),
+                "wss://ws-auth.kraken.com".to_string(),
+            )
+        };
+
+        Self {
+            allow_trades: args.contains(&"--trade".to_string()),
+            debug_mode: args.contains(&"--debug".to_string()),
+            public_ws_url,
+            private_ws_url,
+            token: utils::get_ws_auth_token()
+                .await
+                .expect("Could not pull auth token."),
+        }
+    }
+}
+
+/// Initializes the application: logging, environment, and configuration
+async fn initialize_app() -> Config {
     dotenv().ok();
-    let args: Vec<String> = env::args().collect();
-    let allow_trades = args.contains(&"--trade".to_string());
-    let use_colocated = args.contains(&"--colocated".to_string());
+    let config = Config::initialize().await;
+    utils::init_logging(config.debug_mode);
 
-    // Determine WebSocket URLs based on --colocated flag
-    let public_ws_url = if use_colocated {
-        "wss://colo-london.vip-ws.kraken.com"
-    } else {
-        "wss://ws.kraken.com"
-    };
-    let private_ws_url = if use_colocated {
-        "wss://colo-london.vip-ws-auth.kraken.com"
-    } else {
-        "wss://ws-auth.kraken.com"
-    };
-
-    utils::init_logging();
-    let mode_message = if allow_trades {
+    let mode_message = if config.allow_trades {
         "💰 Launching Kraken arbitrage: Trade mode"
     } else {
         "🚀 Launching Kraken arbitrage: Evaluation-only mode"
     };
-    send_telegram_message(mode_message).await;
-    let token = get_ws_auth_token()
-        .await
-        .expect("Could not pull auth token.");
+    utils::send_telegram_message(mode_message).await;
 
-    // Get available cores for pinning
-    let cores = core_affinity::get_core_ids().expect("Could not get core IDs");
+    config
+}
+
+#[tokio::main]
+async fn main() {
+    // Initialize application
+    let config = initialize_app().await;
 
     // Create bounded channel for sending OrderInfo to trading thread
     let (trade_tx, trade_rx) = mpsc::channel::<OrderInfo>(1);
 
-    // Create 6 listener threads
-    let asset_indices = vec![
-        (&asset_pairs::ASSET_INDEX_0, 0),
-        (&asset_pairs::ASSET_INDEX_1, 1),
-        (&asset_pairs::ASSET_INDEX_2, 2),
-        (&asset_pairs::ASSET_INDEX_3, 3),
-        (&asset_pairs::ASSET_INDEX_4, 4),
-        (&asset_pairs::ASSET_INDEX_5, 5),
-    ];
+    // Get available cores for pinning
+    let cores = core_affinity::get_core_ids().expect("Could not get core IDs");
 
+    // Spawn all threads
     let mut handles = Vec::new();
 
-    for (asset_index, thread_id) in asset_indices {
-        // Determine which core to pin to (cycling)
-        let target_core_id = thread_id % 3;
-        let core_available = cores.iter().any(|c| c.id == target_core_id);
-        if !core_available {
-            panic!("Core {} not available", target_core_id)
-        };
-        let core_id = core_affinity::CoreId { id: target_core_id };
-        let trade_tx_clone = trade_tx.clone();
-        let handle = thread::spawn(move || {
-            // Pin thread to core
-            if core_affinity::set_for_current(core_id) {
-                log::debug!("Thread {} pinned to core {}", thread_id, core_id.id);
-            } else {
-                #[cfg(target_os = "macos")]
-                log::warn!("Thread pinning not supported on macOS. Continuing without pinning");
-                #[cfg(not(target_os = "macos"))]
-                panic!("Thread {} failed to pin to core {}", thread_id, core_id.id);
-            }
+    // Create listener threads
+    handles.extend(threads::spawn_listener_threads(
+        &cores,
+        config.public_ws_url.clone(),
+        trade_tx,
+    ));
 
-            // Create a tokio runtime on this thread
-            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-            rt.block_on(async move {
-                log::debug!("Initializing listener thread {}", thread_id);
+    // Create balance and fee fetcher threads
+    handles.push(threads::spawn_balance_fetcher_thread(&cores));
+    handles.push(threads::spawn_fee_fetcher_thread(&cores));
 
-                // Build pair names vector from asset_index (built once per thread)
-                // Separate from pair_data_vec to keep pair_data_vec slim to fit on one cache line
-                let pair_names = utils::build_pair_names_vec(asset_index);
-
-                // Initialize pair data from Kraken API
-                let mut pair_data_vec = utils::initialize_pair_data(asset_index).await;
-                let mut public_online = true;
-
-                // Start listener
-                let public_ws_url_clone = public_ws_url.to_string();
-                listener::start_listener(
-                    asset_index,
-                    &mut pair_data_vec,
-                    &mut public_online,
-                    &public_ws_url_clone,
-                    &pair_names,
-                    trade_tx_clone,
-                )
-                .await
-            });
-        });
-
-        handles.push(handle);
-    }
-
-    // Create balance fetcher thread (pinned to core 3)
-    let core_3_available = cores.iter().any(|c| c.id == 3);
-    if !core_3_available {
-        panic!("Core 3 not available");
-    }
-    let core_3_id = core_affinity::CoreId { id: 3 };
-    let balance_handle = thread::spawn(move || {
-        // Pin thread to core 3
-        if core_affinity::set_for_current(core_3_id) {
-            log::debug!("Balance fetcher thread pinned to core 3");
-        } else {
-            #[cfg(target_os = "macos")]
-            log::warn!("Thread pinning not supported on macOS. Continuing without pinning");
-            #[cfg(not(target_os = "macos"))]
-            panic!("Balance fetcher thread failed to pin to core 3");
-        }
-
-        // Create a tokio runtime on this thread
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-        rt.block_on(async move {
-            log::debug!("Starting balance fetcher thread");
-            if let Err(e) = kraken_rest::fetch_asset_balances(&USD_BALANCE, &EUR_BALANCE).await {
-                log::error!("Balance fetcher error: {:?}", e);
-            }
-        });
-    });
-
-    // Create fee fetcher thread (pinned to core 3)
-    let fee_handle = thread::spawn(move || {
-        // Pin thread to core 3
-        if core_affinity::set_for_current(core_3_id) {
-            log::debug!("Fee fetcher thread pinned to core 3");
-        } else {
-            #[cfg(target_os = "macos")]
-            log::warn!("Thread pinning not supported on macOS. Continuing without pinning");
-            #[cfg(not(target_os = "macos"))]
-            panic!("Fee fetcher thread failed to pin to core 3");
-        }
-
-        // Create a tokio runtime on this thread
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-        rt.block_on(async move {
-            log::debug!("Starting fee fetcher thread");
-            if let Err(e) = kraken_rest::fetch_trading_fees(&FEE_SPOT, &FEE_STABLECOIN).await {
-                log::error!("Fee fetcher error: {:?}", e);
-            }
-        });
-    });
-
-    // Create trading thread (pinned to core 3)
-    let private_ws_url_clone = private_ws_url.to_string();
-    let trading_handle = thread::spawn(move || {
-        // Pin thread to core 3
-        if core_affinity::set_for_current(core_3_id) {
-            log::debug!("Trading thread pinned to core 3");
-        } else {
-            #[cfg(target_os = "macos")]
-            log::warn!("Thread pinning not supported on macOS. Continuing without pinning");
-            #[cfg(not(target_os = "macos"))]
-            panic!("Trading thread failed to pin to core 3");
-        }
-
-        // Create a tokio runtime on this thread for async websocket operations
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-        rt.block_on(async move {
-            trade::run_trading_thread(token, private_ws_url_clone, trade_rx, allow_trades).await;
-        });
-    });
+    // Create trading thread
+    handles.push(threads::spawn_trading_thread(
+        &cores,
+        config.token.clone(),
+        config.private_ws_url.clone(),
+        trade_rx,
+        config.allow_trades,
+    ));
 
     // Wait for all threads (they run indefinitely)
-    handles.push(balance_handle);
-    handles.push(fee_handle);
-    handles.push(trading_handle);
     for handle in handles {
         handle.join().expect("Thread panicked");
     }

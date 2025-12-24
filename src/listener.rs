@@ -1,7 +1,7 @@
 use crate::evaluate_arbitrage;
 use crate::structs::OrderInfo;
 use crate::structs::PairDataVec;
-use crate::telegram::send_telegram_message;
+use crate::utils::send_telegram_message;
 use evaluate_arbitrage::evaluate_arbitrage;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
@@ -12,7 +12,7 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 /// Main listener function that sets up WebSocket connection and processes messages
-pub async fn start_listener(
+pub async fn run_listening_thread(
     asset_index: &phf::Map<&'static str, usize>,
     pair_data_vec: &mut PairDataVec,
     public_online: &mut bool,
@@ -21,18 +21,39 @@ pub async fn start_listener(
     trade_tx: mpsc::Sender<OrderInfo>,
 ) {
     const SLEEP_DURATION: Duration = Duration::from_secs(5);
+    const MAX_SETUP_ATTEMPTS: u32 = 3;
 
     loop {
-        // Set up WebSocket connection to listen to a set of pairs
+        let mut setup_attempts = 0;
         let pairs: Vec<String> = asset_index.keys().map(|s| s.to_string()).collect();
-        let (_write, mut read) = setup_websocket(&pairs, ws_url).await;
+
+        // Try to set up websocket connection, retry on failure. Panic after 3 failures.
+        let (_write, mut read) = loop {
+            match setup_websocket(&pairs, ws_url).await {
+                Ok(streams) => break streams,
+                Err(e) => {
+                    log::error!("Failed to set up websocket connection: {}", e);
+                    setup_attempts += 1;
+                    if setup_attempts >= MAX_SETUP_ATTEMPTS {
+                        let msg = format!(
+                            "Failed to set up websocket connection after {} attempts. Exiting.",
+                            MAX_SETUP_ATTEMPTS
+                        );
+                        log::error!("{}", msg);
+                        send_telegram_message(&msg).await;
+                        panic!("{}", msg);
+                    }
+                    tokio::time::sleep(SLEEP_DURATION).await;
+                    // Continue loop to retry connection
+                }
+            }
+        };
 
         // Process messages
         while let Some(msg) = read.next().await {
             match msg {
                 Ok(Message::Text(text)) => {
-                    let idx =
-                        handle_message(&text, pair_data_vec, public_online, asset_index).await;
+                    let idx = handle_message(&text, pair_data_vec, public_online, asset_index);
                     if let Some(idx) = idx {
                         // Only evaluate arbitrage for non-stablecoin pairs and if the websocket is online
                         if idx > 1 && *public_online {
@@ -62,35 +83,45 @@ pub async fn start_listener(
 async fn setup_websocket(
     pairs: &[String],
     ws_url: &str,
-) -> (
-    SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
-    SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
-) {
-    let url = url::Url::parse(ws_url).expect("Failed to parse URL");
+) -> Result<
+    (
+        SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+        SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+    ),
+    String,
+> {
+    // Parse URL
+    let url = url::Url::parse(ws_url)
+        .map_err(|e| format!("Failed to parse WebSocket URL '{}': {}", ws_url, e))?;
+
+    // Connect to websocket
     let (ws_stream, _) = connect_async(url)
         .await
-        .expect("Failed to connect to websocket");
+        .map_err(|e| format!("Failed to connect to websocket: {}", e))?;
+
     let (mut write, read) = ws_stream.split();
 
+    // Create subscription message
     let sub_msg = serde_json::json!({
         "event": "subscribe",
         "subscription": {"name": "spread"},
         "pair": pairs,
     });
 
+    // Send subscription message
     write
         .send(Message::Text(sub_msg.to_string()))
         .await
-        .expect("Failed to send message to begin websocket subscription");
+        .map_err(|e| format!("Failed to send subscription message: {}", e))?;
 
     log::info!("Subscribed to {} asset pairs", pairs.len());
 
-    (write, read)
+    Ok((write, read))
 }
 
 /// Handle incoming WebSocket messages
 /// Logs errors and continues processing
-async fn handle_message(
+fn handle_message(
     text: &str,
     pair_data_vec: &mut PairDataVec,
     public_online: &mut bool,
@@ -106,19 +137,23 @@ async fn handle_message(
 
     // Handle event messages (systemStatus, subscriptionStatus)
     if let Some(event) = data["event"].as_str() {
-        handle_event(event, &data, pair_data_vec, public_online, asset_index).await;
+        handle_event(event, &data, pair_data_vec, public_online, asset_index);
         return None;
     }
     // Handle spread data messages (arrays)
     else if let Some(array) = data.as_array() {
-        let idx = handle_spread_data(array, pair_data_vec, asset_index).await;
+        let idx = handle_spread_data(array, pair_data_vec, asset_index);
+        if idx.is_none() {
+            log::warn!("Failed to handle spread data. Skipping.");
+            return None;
+        }
         return idx;
     }
     return None;
 }
 
 /// Handle event messages (systemStatus, subscriptionStatus)
-async fn handle_event(
+fn handle_event(
     event: &str,
     data: &serde_json::Value,
     pair_data_vec: &mut PairDataVec,
@@ -129,7 +164,7 @@ async fn handle_event(
         "systemStatus" => {
             let status = data["status"].as_str().unwrap_or("") == "online";
             *public_online = status;
-            log::debug!("System status updated: online = {}", status);
+            log::info!("System status updated: online = {}", status);
         }
         "subscriptionStatus" => {
             let pair = data["pair"].as_str().unwrap_or("");
@@ -137,7 +172,7 @@ async fn handle_event(
             if let Some(&idx) = asset_index.get(pair) {
                 if let Some(pair_data) = pair_data_vec.get_mut(idx) {
                     pair_data.pair_status = status;
-                    log::debug!("Pair {} subscription status: {}", pair, status);
+                    log::debug!("Pair {} subscription status updated: {}", pair, status);
                 }
             }
         }
@@ -151,7 +186,7 @@ async fn handle_event(
 /// Handle spread data messages
 /// Silently skips invalid messages
 /// Message format: [channelID, [bid, ask, timestamp, bidVolume, askVolume], "spread", pair]
-async fn handle_spread_data(
+fn handle_spread_data(
     array: &[serde_json::Value],
     pair_data_vec: &mut PairDataVec,
     asset_index: &phf::Map<&'static str, usize>,
@@ -207,6 +242,8 @@ async fn handle_spread_data(
         pair_data.ask_price = ask;
         pair_data.bid_volume = bid_volume;
         pair_data.ask_volume = ask_volume;
+    } else {
+        return None;
     }
 
     return Some(idx);
