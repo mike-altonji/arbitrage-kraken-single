@@ -1,4 +1,6 @@
 use influx_db_client::{reqwest::Url, Client, Point, Precision, Value};
+use std::cell::RefCell;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub async fn setup_influx() -> (Client, String, usize, Vec<Point>) {
     dotenv::dotenv().ok();
@@ -19,25 +21,69 @@ pub async fn setup_influx() -> (Client, String, usize, Vec<Point>) {
     (client, retention_policy, batch_size, points)
 }
 
+// Per-thread batch buffer for kraken ingestion latency points
+thread_local! {
+    static KRAKEN_INGESTION_POINTS: RefCell<Vec<Point>> = RefCell::new(Vec::new());
+}
+
+static KRAKEN_INGESTION_ERROR_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
 /// Log kraken timestamp to ingestion timestamp latency
+/// Batches points per-thread and writes them when batch size is reached
 pub fn log_kraken_ingestion_latency(pair: &str, kraken_ts: f64, ingestion_ts: f64) {
     let latency = ingestion_ts - kraken_ts;
     let pair = pair.to_string();
-    tokio::spawn(async move {
-        let (client, retention_policy, _, _) = setup_influx().await;
-        let point = Point::new("kraken_ingestion_latency")
-            .add_tag("pair", Value::String(pair))
-            .add_field("kraken_ts", Value::Float(kraken_ts))
-            .add_field("ingestion_ts", Value::Float(ingestion_ts))
-            .add_field("latency", Value::Float(latency));
-        let _ = client
-            .write_points(
-                vec![point],
-                Some(Precision::Nanoseconds),
-                Some(&retention_policy),
-            )
-            .await;
+
+    // Add point to per-thread batch
+    let point = Point::new("kraken_ingestion_latency")
+        .add_tag("pair", Value::String(pair.clone()))
+        .add_field("kraken_ts", Value::Float(kraken_ts))
+        .add_field("ingestion_ts", Value::Float(ingestion_ts))
+        .add_field("latency", Value::Float(latency));
+
+    let mut should_flush = false;
+    let points_to_write = KRAKEN_INGESTION_POINTS.with(|points| {
+        let mut points = points.borrow_mut();
+        points.push(point);
+        if points.len() >= 500 {
+            // Batch size reached, prepare to flush
+            should_flush = true;
+            let points_clone = points.clone();
+            points.clear();
+            points_clone
+        } else {
+            Vec::new()
+        }
     });
+
+    // Flush batch if needed
+    if should_flush {
+        tokio::spawn(async move {
+            let (client, retention_policy, _, _) = setup_influx().await;
+            kraken_ingestion_latency_to_influx(client, &retention_policy, points_to_write).await;
+        });
+    }
+}
+
+/// Write batched kraken ingestion latency points to InfluxDB
+async fn kraken_ingestion_latency_to_influx(
+    client: Client,
+    retention_policy: &str,
+    points: Vec<Point>,
+) {
+    if points.is_empty() {
+        return;
+    }
+
+    if let Err(e) = client
+        .write_points(points, Some(Precision::Nanoseconds), Some(retention_policy))
+        .await
+    {
+        let error_count = KRAKEN_INGESTION_ERROR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        if error_count % 1000 == 0 {
+            log::error!("Failed to write to kraken_ingestion_latency: {:?}", e);
+        }
+    }
 }
 
 /// Log arbitrage evaluation speed
