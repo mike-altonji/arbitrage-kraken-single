@@ -1,9 +1,11 @@
+use crate::influx::{log_trade_interval, log_trade_message_receive_speed};
 use crate::structs::OrderInfo;
 use crate::utils::wait_approx_ms;
 use crate::TRADER_BUSY;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use std::sync::atomic::Ordering;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
@@ -75,6 +77,13 @@ pub async fn run_trading_thread(
 
     while let Some(order) = trade_rx.recv().await {
         if allow_trades {
+            // Log trade message receive speed
+            let receive_timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            log_trade_message_receive_speed(order.send_timestamp, receive_timestamp);
+
             // Mark trader as busy before processing
             TRADER_BUSY.store(true, Ordering::Relaxed);
 
@@ -111,7 +120,15 @@ async fn make_trades(
         return;
     }
 
+    let t1_0 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
     wait_approx_ms(1).await;
+    let t1_1 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
 
     // Trade 2: Sell pair2
     let trade_msg = serde_json::json!({
@@ -132,6 +149,10 @@ async fn make_trades(
         );
         return;
     }
+
+    // Log interval between trade 1-2
+    let interval_1_2_ms = (t1_1 - t1_0) * 1000.0;
+    log_trade_interval("1-2", interval_1_2_ms);
 
     // Wait 50ms b/c the stablecoin price shouldn't slip. Ensures the prior order has been filled.
     wait_approx_ms(50).await;

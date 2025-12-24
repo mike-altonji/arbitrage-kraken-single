@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 
 mod asset_pairs;
 mod evaluate_arbitrage;
+mod influx;
 mod kraken_rest;
 mod listener;
 mod structs;

@@ -1,4 +1,7 @@
 use crate::evaluate_arbitrage;
+use crate::influx::{
+    log_arbitrage_evaluation_speed, log_kraken_ingestion_latency, log_listener_loop_speed,
+};
 use crate::structs::OrderInfo;
 use crate::structs::PairDataVec;
 use crate::utils::send_telegram_message;
@@ -6,6 +9,7 @@ use evaluate_arbitrage::evaluate_arbitrage;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
@@ -22,6 +26,8 @@ pub async fn run_listening_thread(
 ) {
     const SLEEP_DURATION: Duration = Duration::from_secs(5);
     const MAX_SETUP_ATTEMPTS: u32 = 3;
+    let mut loop_counter: usize = 0;
+    let mut arbitrage_counter: usize = 0;
 
     loop {
         let mut setup_attempts = 0;
@@ -51,15 +57,44 @@ pub async fn run_listening_thread(
 
         // Process messages
         while let Some(msg) = read.next().await {
+            let loop_start = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
             match msg {
                 Ok(Message::Text(text)) => {
                     let idx = handle_message(&text, pair_data_vec, public_online, asset_index);
                     if let Some(idx) = idx {
                         // Only evaluate arbitrage for non-stablecoin pairs and if the websocket is online
                         if idx > 1 && *public_online {
+                            let arbitrage_ts_start = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_nanos();
                             evaluate_arbitrage(pair_data_vec, idx, pair_names, trade_tx.clone());
+                            let arbitrage_ts_end = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_nanos();
+                            if arbitrage_counter >= 10_000 {
+                                log_arbitrage_evaluation_speed(
+                                    arbitrage_ts_start,
+                                    arbitrage_ts_end,
+                                );
+                                arbitrage_counter = 0;
+                            }
+                            arbitrage_counter += 1;
                         }
                     }
+                    let loop_end = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos();
+                    if loop_counter >= 10_000 {
+                        log_listener_loop_speed(loop_start, loop_end);
+                        loop_counter = 0;
+                    }
+                    loop_counter += 1;
                 }
                 Ok(_) => {
                     let msg = "Websocket connection closed or stopped sending data";
@@ -223,7 +258,7 @@ fn handle_spread_data(
         Some(v) => v,
         None => return None,
     };
-    let _kraken_ts = match get_f64_from_array(inner_array, 2) {
+    let kraken_ts = match get_f64_from_array(inner_array, 2) {
         Some(v) => v,
         None => return None,
     };
@@ -235,6 +270,13 @@ fn handle_spread_data(
         Some(v) => v,
         None => return None,
     };
+
+    // Log kraken ts to ingestion ts latency
+    let ingestion_ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    log_kraken_ingestion_latency(pair, kraken_ts, ingestion_ts);
 
     // Update the pair data in the vec
     if let Some(pair_data) = pair_data_vec.get_mut(idx) {
