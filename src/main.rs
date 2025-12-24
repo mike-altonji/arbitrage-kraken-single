@@ -3,8 +3,8 @@ use dotenv::dotenv;
 use std::env;
 use std::sync::atomic::{AtomicBool, AtomicI16};
 use std::thread;
-use telegram::send_telegram_message;
 use tokio::sync::mpsc;
+use utils::send_telegram_message;
 
 use utils::get_ws_auth_token;
 
@@ -13,7 +13,6 @@ mod evaluate_arbitrage;
 mod kraken_rest;
 mod listener;
 mod structs;
-mod telegram;
 mod trade;
 mod utils;
 

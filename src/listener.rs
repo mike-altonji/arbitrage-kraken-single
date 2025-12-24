@@ -1,7 +1,7 @@
 use crate::evaluate_arbitrage;
 use crate::structs::OrderInfo;
 use crate::structs::PairDataVec;
-use crate::telegram::send_telegram_message;
+use crate::utils::send_telegram_message;
 use evaluate_arbitrage::evaluate_arbitrage;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};

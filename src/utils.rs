@@ -28,6 +28,21 @@ pub fn init_logging() {
     log4rs::init_config(log_config).expect("Unable to build log file");
 }
 
+/// Send a Telegram message to the configured chat ID.
+pub async fn send_telegram_message(message: &str) {
+    let bot_token = env::var("TELEGRAM_BOT_TOKEN").expect("TELEGRAM_BOT_TOKEN must be set");
+    let chat_id = env::var("TELEGRAM_CHAT_ID").expect("TELEGRAM_CHAT_ID must be set");
+
+    let url = format!(
+        "https://api.telegram.org/bot{}/sendMessage?chat_id={}&text={}",
+        bot_token, chat_id, message
+    );
+
+    if let Err(e) = reqwest::Client::new().post(&url).send().await {
+        log::error!("Failed to send Telegram message: {:?}", e);
+    }
+}
+
 /// Build a vector of pair names indexed by their position in the asset_index map
 /// Returns a vector where pair_names[idx] gives the pair name for that index
 pub fn build_pair_names_vec(asset_index: &phf::Map<&'static str, usize>) -> Vec<&'static str> {
