@@ -1,11 +1,13 @@
 use crate::structs::{PairData, PairDataVec};
 use base64::{decode_config, encode_config, STANDARD};
 use hmac::{Hmac, Mac, NewMac};
+use influx_db_client::{reqwest::Url, Client, Point};
 use log4rs::{append::file::FileAppender, config};
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::Value;
 use sha2::{Digest, Sha256, Sha512};
 use std::env;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::task;
 
@@ -232,4 +234,25 @@ pub async fn wait_approx_ms(milliseconds: u64) {
         // Small spin loop to check time without yielding too frequently
         std::hint::spin_loop();
     }
+}
+
+pub async fn setup_influx() -> (Arc<Client>, Arc<String>, usize, Vec<Point>) {
+    dotenv::dotenv().ok();
+    let host = std::env::var("INFLUXDB_HOST").expect("INFLUXDB_HOST must be set");
+    let port = std::env::var("INFLUXDB_PORT").expect("INFLUXDB_PORT must be set");
+    let db_name = std::env::var("DB_NAME").expect("DB_NAME must be set");
+    let user = std::env::var("DB_USER").expect("DB_USER must be set");
+    let password = std::env::var("DB_PASSWORD").expect("DB_PASSWORD must be set");
+    let retention_policy = Arc::new(std::env::var("RP_NAME").expect("RP_NAME must be set"));
+    let batch_size: usize = 500;
+    let points = Vec::new();
+    let client = Arc::new(
+        Client::new(
+            Url::parse(&format!("http://{}:{}", &host, &port)).expect("InfluxDB URL unparseable"),
+            &db_name,
+        )
+        .set_authentication(&user, &password),
+    );
+
+    (client, retention_policy, batch_size, points)
 }
