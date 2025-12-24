@@ -114,7 +114,7 @@ pub fn spawn_balance_fetcher_thread(cores: &[core_affinity::CoreId]) -> thread::
 pub fn spawn_fee_fetcher_thread(cores: &[core_affinity::CoreId]) -> thread::JoinHandle<()> {
     ensure_core_available(cores, 3);
     spawn_pinned_thread(3, "Fee Fetcher".to_string(), || async move {
-        let _ = kraken_rest::fetch_trading_fees(&FEE_SPOT, &FEE_STABLECOIN).await;
+        kraken_rest::fetch_trading_fees(&FEE_SPOT, &FEE_STABLECOIN).await;
     })
 }
 
