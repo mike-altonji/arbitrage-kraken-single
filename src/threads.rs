@@ -102,23 +102,19 @@ pub fn spawn_listener_threads(
         .collect()
 }
 
-/// Creates the balance fetcher thread
+/// Creates the balance fetcher
 pub fn spawn_balance_fetcher_thread(cores: &[core_affinity::CoreId]) -> thread::JoinHandle<()> {
     ensure_core_available(cores, 3);
     spawn_pinned_thread(3, "Balance Fetcher".to_string(), || async move {
-        if let Err(e) = kraken_rest::fetch_asset_balances(&USD_BALANCE, &EUR_BALANCE).await {
-            log::error!("Balance Fetcher error: {:?}", e);
-        }
+        let _ = kraken_rest::fetch_asset_balances(&USD_BALANCE, &EUR_BALANCE).await;
     })
 }
 
-/// Creates the fee fetcher thread
+/// Creates the fee fetcher
 pub fn spawn_fee_fetcher_thread(cores: &[core_affinity::CoreId]) -> thread::JoinHandle<()> {
     ensure_core_available(cores, 3);
     spawn_pinned_thread(3, "Fee Fetcher".to_string(), || async move {
-        if let Err(e) = kraken_rest::fetch_trading_fees(&FEE_SPOT, &FEE_STABLECOIN).await {
-            log::error!("Fee Fetcher error: {:?}", e);
-        }
+        let _ = kraken_rest::fetch_trading_fees(&FEE_SPOT, &FEE_STABLECOIN).await;
     })
 }
 
