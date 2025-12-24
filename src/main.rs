@@ -56,11 +56,11 @@ async fn main() {
         .await
         .expect("Could not pull auth token.");
 
-    // Get available cores for pinning
-    let cores = core_affinity::get_core_ids().expect("Could not get core IDs");
-
     // Create bounded channel for sending OrderInfo to trading thread
     let (trade_tx, trade_rx) = mpsc::channel::<OrderInfo>(1);
+
+    // Get available cores for pinning
+    let cores = core_affinity::get_core_ids().expect("Could not get core IDs");
 
     // Create 6 listener threads
     let asset_indices = vec![
