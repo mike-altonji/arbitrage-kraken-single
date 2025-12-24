@@ -1,24 +1,41 @@
 use influx_db_client::{reqwest::Url, Client, Point, Precision, Value};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 
-pub async fn setup_influx() -> (Client, String, usize, Vec<Point>) {
-    dotenv::dotenv().ok();
-    let host = std::env::var("INFLUXDB_HOST").expect("INFLUXDB_HOST must be set");
-    let port = std::env::var("INFLUXDB_PORT").expect("INFLUXDB_PORT must be set");
-    let db_name = std::env::var("DB_NAME").expect("DB_NAME must be set");
-    let user = std::env::var("DB_USER").expect("DB_USER must be set");
-    let password = std::env::var("DB_PASSWORD").expect("DB_PASSWORD must be set");
-    let retention_policy = std::env::var("RP_NAME").expect("RP_NAME must be set");
-    let batch_size: usize = 500;
-    let points = Vec::new();
-    let client = Client::new(
-        Url::parse(&format!("http://{}:{}", &host, &port)).expect("InfluxDB URL unparseable"),
-        &db_name,
-    )
-    .set_authentication(&user, &password);
+// Shared InfluxDB client and retention policy, initialized once
+static INFLUX_CLIENT: OnceLock<Arc<Client>> = OnceLock::new();
+static INFLUX_RETENTION_POLICY: OnceLock<Arc<String>> = OnceLock::new();
 
-    (client, retention_policy, batch_size, points)
+/// Initialize InfluxDB client and retention policy (called once, lazily)
+fn get_influx_client() -> Arc<Client> {
+    INFLUX_CLIENT
+        .get_or_init(|| {
+            dotenv::dotenv().ok();
+            let host = std::env::var("INFLUXDB_HOST").expect("INFLUXDB_HOST must be set");
+            let port = std::env::var("INFLUXDB_PORT").expect("INFLUXDB_PORT must be set");
+            let db_name = std::env::var("DB_NAME").expect("DB_NAME must be set");
+            let user = std::env::var("DB_USER").expect("DB_USER must be set");
+            let password = std::env::var("DB_PASSWORD").expect("DB_PASSWORD must be set");
+            Arc::new(
+                Client::new(
+                    Url::parse(&format!("http://{}:{}", &host, &port))
+                        .expect("InfluxDB URL unparseable"),
+                    &db_name,
+                )
+                .set_authentication(&user, &password),
+            )
+        })
+        .clone()
+}
+
+fn get_retention_policy() -> Arc<String> {
+    INFLUX_RETENTION_POLICY
+        .get_or_init(|| {
+            dotenv::dotenv().ok();
+            Arc::new(std::env::var("RP_NAME").expect("RP_NAME must be set"))
+        })
+        .clone()
 }
 
 // Per-thread batch buffer for kraken ingestion latency points
@@ -59,16 +76,17 @@ pub fn log_kraken_ingestion_latency(pair: &str, kraken_ts: f64, ingestion_ts: f6
     // Flush batch if needed
     if should_flush {
         tokio::spawn(async move {
-            let (client, retention_policy, _, _) = setup_influx().await;
-            kraken_ingestion_latency_to_influx(client, &retention_policy, points_to_write).await;
+            let client = get_influx_client();
+            let retention_policy = get_retention_policy();
+            kraken_ingestion_latency_to_influx(client, retention_policy, points_to_write).await;
         });
     }
 }
 
 /// Write batched kraken ingestion latency points to InfluxDB
 async fn kraken_ingestion_latency_to_influx(
-    client: Client,
-    retention_policy: &str,
+    client: Arc<Client>,
+    retention_policy: Arc<String>,
     points: Vec<Point>,
 ) {
     if points.is_empty() {
@@ -76,7 +94,11 @@ async fn kraken_ingestion_latency_to_influx(
     }
 
     if let Err(e) = client
-        .write_points(points, Some(Precision::Nanoseconds), Some(retention_policy))
+        .write_points(
+            points,
+            Some(Precision::Nanoseconds),
+            Some(&retention_policy),
+        )
         .await
     {
         let error_count = KRAKEN_INGESTION_ERROR_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -90,7 +112,8 @@ async fn kraken_ingestion_latency_to_influx(
 pub fn log_arbitrage_evaluation_speed(start_ts: u128, end_ts: u128) {
     let duration = (end_ts - start_ts) as f64 / 1_000_000_000.0;
     tokio::spawn(async move {
-        let (client, retention_policy, _, _) = setup_influx().await;
+        let client = get_influx_client();
+        let retention_policy = get_retention_policy();
         let point =
             Point::new("arbitrage_evaluation_speed").add_field("duration", Value::Float(duration));
         let _ = client
@@ -107,7 +130,8 @@ pub fn log_arbitrage_evaluation_speed(start_ts: u128, end_ts: u128) {
 pub fn log_listener_loop_speed(loop_start: u128, loop_end: u128) {
     let duration = (loop_end - loop_start) as f64 / 1_000_000_000.0;
     tokio::spawn(async move {
-        let (client, retention_policy, _, _) = setup_influx().await;
+        let client = get_influx_client();
+        let retention_policy = get_retention_policy();
         let point = Point::new("listener_loop_speed").add_field("duration", Value::Float(duration));
         let _ = client
             .write_points(
@@ -123,15 +147,11 @@ pub fn log_listener_loop_speed(loop_start: u128, loop_end: u128) {
 pub fn log_trade_message_receive_speed(send_timestamp: u128, receive_timestamp: u128) {
     let duration = (receive_timestamp - send_timestamp) as f64 / 1_000_000_000.0;
     tokio::spawn(async move {
-        let (client, retention_policy, _, _) = setup_influx().await;
+        let client = get_influx_client();
         let point =
             Point::new("trade_message_receive_speed").add_field("duration", Value::Float(duration));
         let _ = client
-            .write_points(
-                vec![point],
-                Some(Precision::Nanoseconds),
-                Some(&retention_policy),
-            )
+            .write_points(vec![point], Some(Precision::Nanoseconds), None)
             .await;
     });
 }
@@ -141,16 +161,12 @@ pub fn log_trade_message_receive_speed(send_timestamp: u128, receive_timestamp: 
 pub fn log_trade_interval(interval_name: &str, duration_ms: f64) {
     let interval_name = interval_name.to_string();
     tokio::spawn(async move {
-        let (client, retention_policy, _, _) = setup_influx().await;
+        let client = get_influx_client();
         let point = Point::new("trade_interval")
             .add_tag("interval_name", Value::String(interval_name))
             .add_field("duration_ms", Value::Float(duration_ms));
         let _ = client
-            .write_points(
-                vec![point],
-                Some(Precision::Nanoseconds),
-                Some(&retention_policy),
-            )
+            .write_points(vec![point], Some(Precision::Nanoseconds), None)
             .await;
     });
 }
@@ -175,7 +191,7 @@ pub fn log_arbitrage_opportunity(
     let pair1_name = pair1_name.to_string();
     let pair2_name = pair2_name.to_string();
     tokio::spawn(async move {
-        let (client, _retention_policy, _, _) = setup_influx().await;
+        let client = get_influx_client();
         let point = Point::new("arbitrage_opportunity")
             .add_tag("pair1", Value::String(pair1_name))
             .add_tag("pair2", Value::String(pair2_name))
