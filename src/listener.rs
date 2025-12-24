@@ -12,7 +12,7 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 /// Main listener function that sets up WebSocket connection and processes messages
-pub async fn start_listener(
+pub async fn run_listening_thread(
     asset_index: &phf::Map<&'static str, usize>,
     pair_data_vec: &mut PairDataVec,
     public_online: &mut bool,

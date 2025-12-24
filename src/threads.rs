@@ -90,8 +90,8 @@ pub fn spawn_listener_threads(
                         let mut pair_data_vec = initialize_pair_data(asset_index_clone).await;
                         let mut public_online = true;
 
-                        // Start listener
-                        listener::start_listener(
+                        // Run listener
+                        listener::run_listening_thread(
                             asset_index_clone,
                             &mut pair_data_vec,
                             &mut public_online,
