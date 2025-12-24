@@ -143,6 +143,10 @@ fn handle_message(
     // Handle spread data messages (arrays)
     else if let Some(array) = data.as_array() {
         let idx = handle_spread_data(array, pair_data_vec, asset_index);
+        if idx.is_none() {
+            log::warn!("Failed to handle spread data. Skipping.");
+            return None;
+        }
         return idx;
     }
     return None;
@@ -238,6 +242,8 @@ fn handle_spread_data(
         pair_data.ask_price = ask;
         pair_data.bid_volume = bid_volume;
         pair_data.ask_volume = ask_volume;
+    } else {
+        return None;
     }
 
     return Some(idx);
