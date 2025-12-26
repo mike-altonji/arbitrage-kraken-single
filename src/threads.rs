@@ -30,8 +30,10 @@ where
             #[cfg(target_os = "macos")]
             log::warn!("Thread pinning not supported on macOS. Continuing without pinning");
             #[cfg(not(target_os = "macos"))]
-            log::error!("{} failed to pin to core {}", thread_name, core_id);
-            panic!("{} failed to pin to core {}", thread_name, core_id);
+            {
+                log::error!("{} failed to pin to core {}", thread_name, core_id);
+                panic!("{} failed to pin to core {}", thread_name, core_id);
+            }
         }
 
         // Create a tokio runtime on this thread
