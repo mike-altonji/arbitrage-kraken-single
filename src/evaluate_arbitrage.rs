@@ -227,7 +227,7 @@ fn compute_roi(
 ) -> f64 {
     let arb_prices =
         (pair2.bid_price * pair1_stable.bid_price) / (pair1.ask_price * pair2_stable.ask_price);
-    return arb_prices * arb_fee;
+    arb_prices * arb_fee
 }
 
 /// Find the largest amount of volume of COIN we can trade to get the best price levels
@@ -248,7 +248,7 @@ fn limiting_volume(pair1: &PairData, pair2: &PairData, balance: f64, fee_spot: f
         pair2.bid_volume
     );
 
-    return (min_volume, min_volume == volume_balance);
+    (min_volume, min_volume == volume_balance)
 }
 
 /// Compute the volume of the stablecoin that we can trade
@@ -263,7 +263,7 @@ fn compute_volume_stable(
 ) -> f64 {
     let pair2_amount = volume * pair2.bid_price * (1.0 - fee_spot);
     let volume_stable = pair2_amount / (pair2_stable.ask_price * (1.0 + fee_stablecoin));
-    return volume_stable * 0.95;
+    volume_stable * 0.95
 }
 
 /// Check if the volume is greater than the minimum order size and minimum cost
@@ -281,7 +281,7 @@ fn check_guardrails(volume: f64, pair1: &PairData, pair2: &PairData) -> bool {
     {
         return false;
     }
-    return true;
+    true
 }
 
 /// Send the signal to start the arbitrage trades.

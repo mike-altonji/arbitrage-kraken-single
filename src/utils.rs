@@ -81,30 +81,30 @@ pub async fn initialize_pair_data(asset_index: &phf::Map<&'static str, usize>) -
     for (key, details) in pairs_obj {
         let wsname = details["wsname"]
             .as_str()
-            .expect(&format!("No wsname for {}", key))
+            .unwrap_or_else(|| panic!("No wsname for {}", key))
             .to_string();
         let status = details["status"]
             .as_str()
-            .expect(&format!("No status for {}", wsname))
+            .unwrap_or_else(|| panic!("No status for {}", wsname))
             == "online";
         let price_decimals = details["pair_decimals"]
             .as_u64()
-            .expect(&format!("No pair_decimals for {}", wsname))
+            .unwrap_or_else(|| panic!("No pair_decimals for {}", wsname))
             as usize;
         let volume_decimals = details["lot_decimals"]
             .as_u64()
-            .expect(&format!("No lot_decimals for {}", wsname))
+            .unwrap_or_else(|| panic!("No lot_decimals for {}", wsname))
             as usize;
         let order_min = details["ordermin"]
             .as_str()
-            .expect(&format!("No ordermin for {}", wsname))
+            .unwrap_or_else(|| panic!("No ordermin for {}", wsname))
             .parse::<f64>()
-            .expect(&format!("Failed to parse ordermin for {}", wsname));
+            .unwrap_or_else(|_| panic!("Failed to parse ordermin for {}", wsname));
         let cost_min = details["costmin"]
             .as_str()
-            .expect(&format!("No costmin for {}", wsname))
+            .unwrap_or_else(|| panic!("No costmin for {}", wsname))
             .parse::<f64>()
-            .expect(&format!("Failed to parse costmin for {}", wsname));
+            .unwrap_or_else(|_| panic!("Failed to parse costmin for {}", wsname));
 
         wsname_to_data.insert(
             wsname,
@@ -125,7 +125,7 @@ pub async fn initialize_pair_data(asset_index: &phf::Map<&'static str, usize>) -
         let (price_decimals, volume_decimals, order_min, cost_min, pair_status) = wsname_to_data
             .get(&pair)
             .copied()
-            .expect(&format!("No data for {}", pair));
+            .unwrap_or_else(|| panic!("No data for {}", pair));
 
         // Push default values which will be updated by ws events
         pair_data_vec.push(PairData {
@@ -169,16 +169,16 @@ pub fn get_api_params(
     hasher.update(nonce_bytes);
     hasher.update(api_post_bytes);
     let api_sha256 = hasher.finalize();
-    let api_secret_decoded = decode_config(&api_secret, STANDARD)
+    let api_secret_decoded = decode_config(api_secret, STANDARD)
         .map_err(|e| format!("Invalid base64 in API secret: {}", e))?;
     let mut mac = Hmac::<Sha512>::new_varkey(&api_secret_decoded)
         .map_err(|_| "Invalid HMAC key: secret is empty or wrong length")?;
     mac.update(api_path.as_bytes());
     mac.update(&api_sha256);
     let api_hmac = mac.finalize();
-    let api_signature = encode_config(&api_hmac.into_bytes(), STANDARD);
+    let api_signature = encode_config(api_hmac.into_bytes(), STANDARD);
     let mut headers = HeaderMap::new();
-    headers.insert("API-Key", HeaderValue::from_str(&api_key.to_string())?);
+    headers.insert("API-Key", HeaderValue::from_str(api_key)?);
     headers.insert(
         "API-Sign",
         HeaderValue::from_str(&api_signature.to_string())?,
