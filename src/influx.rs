@@ -179,10 +179,18 @@ pub fn log_arbitrage_opportunity(
     pair1_ask: f64,
     pair2_bid: f64,
     pair2_ask: f64,
+    pair1_bid_volume: f64,
+    pair1_ask_volume: f64,
+    pair2_bid_volume: f64,
+    pair2_ask_volume: f64,
     stable1_bid: f64,
     stable1_ask: f64,
     stable2_bid: f64,
     stable2_ask: f64,
+    stable1_bid_volume: f64,
+    stable1_ask_volume: f64,
+    stable2_bid_volume: f64,
+    stable2_ask_volume: f64,
     roi: f64,
     limiting_volume: f64,
     pair1_amount_in: f64,
@@ -199,10 +207,18 @@ pub fn log_arbitrage_opportunity(
             .add_field("pair1_ask", Value::Float(pair1_ask))
             .add_field("pair2_bid", Value::Float(pair2_bid))
             .add_field("pair2_ask", Value::Float(pair2_ask))
+            .add_field("pair1_bid_volume", Value::Float(pair1_bid_volume))
+            .add_field("pair1_ask_volume", Value::Float(pair1_ask_volume))
+            .add_field("pair2_bid_volume", Value::Float(pair2_bid_volume))
+            .add_field("pair2_ask_volume", Value::Float(pair2_ask_volume))
             .add_field("stable1_bid", Value::Float(stable1_bid))
             .add_field("stable1_ask", Value::Float(stable1_ask))
             .add_field("stable2_bid", Value::Float(stable2_bid))
             .add_field("stable2_ask", Value::Float(stable2_ask))
+            .add_field("stable1_bid_volume", Value::Float(stable1_bid_volume))
+            .add_field("stable1_ask_volume", Value::Float(stable1_ask_volume))
+            .add_field("stable2_bid_volume", Value::Float(stable2_bid_volume))
+            .add_field("stable2_ask_volume", Value::Float(stable2_ask_volume))
             .add_field("roi", Value::Float(roi))
             .add_field("limiting_volume", Value::Float(limiting_volume))
             .add_field("pair1_amount_in", Value::Float(pair1_amount_in))
