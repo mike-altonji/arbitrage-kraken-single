@@ -14,6 +14,7 @@ pub struct PairData {
 pub type PairDataVec = Vec<PairData>;
 
 #[derive(Clone)]
+#[allow(dead_code)] // Removed stablecoin trading for now, so these fields are unused
 pub struct OrderInfo {
     pub pair1_name: &'static str,
     pub pair2_name: &'static str,

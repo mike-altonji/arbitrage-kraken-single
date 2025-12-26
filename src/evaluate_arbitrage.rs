@@ -58,8 +58,9 @@ pub fn evaluate_arbitrage(
     let fee_stablecoin = fee_stablecoin / 10_000.0;
 
     // Calculate arbitrage opportunity
-    let arb_fee =
-        ((1.0 - fee_spot) * (1.0 - fee_stablecoin)) / ((1.0 + fee_spot) * (1.0 + fee_stablecoin));
+    // let arb_fee =
+    //     ((1.0 - fee_spot) * (1.0 - fee_stablecoin)) / ((1.0 + fee_spot) * (1.0 + fee_stablecoin));
+    let arb_fee = (1.0 - fee_spot) / (1.0 + fee_spot); // Remove stablecoin fees because we don't trade back
 
     // Check USD -> EUR arbitrage opportunity
     let arb_roi_usd = compute_roi(
