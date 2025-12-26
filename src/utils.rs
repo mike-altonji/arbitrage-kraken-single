@@ -75,8 +75,8 @@ pub async fn initialize_pair_data(asset_index: &phf::Map<&'static str, usize>) -
     let pairs_obj = data["result"].as_object().expect("No pairs in response");
 
     // Create a map from wsname to pair data for quick lookup
-    let mut wsname_to_data: std::collections::HashMap<String, (usize, usize, f64, f64, bool)> =
-        std::collections::HashMap::new();
+    let mut wsname_to_data: rustc_hash::FxHashMap<String, (usize, usize, f64, f64, bool)> =
+        rustc_hash::FxHashMap::default();
 
     for (key, details) in pairs_obj {
         let wsname = details["wsname"]
