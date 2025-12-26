@@ -10,6 +10,7 @@ pub struct PairData {
     pub price_decimals: usize,
     pub volume_decimals: usize,
     pub pair_status: bool,
+    pub kraken_ts: f64,
 }
 pub type PairDataVec = Vec<PairData>;
 
