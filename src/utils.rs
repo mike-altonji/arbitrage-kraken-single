@@ -133,7 +133,6 @@ pub async fn initialize_pair_data(asset_index: &phf::Map<&'static str, usize>) -
             ask_price: 0.0,
             bid_volume: 100.0,
             ask_volume: 100.0,
-            kraken_ts: 0.0,
             price_decimals,
             volume_decimals,
             order_min,

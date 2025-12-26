@@ -241,18 +241,14 @@ fn handle_spread_data(
         }
     };
 
-    // Parse values, skip message if any fail
     let inner_array = array[1].as_array()?;
+
+    // Parse values, skip message if any fail
     let bid = get_f64_from_array(inner_array, 0)?;
     let ask = get_f64_from_array(inner_array, 1)?;
     let kraken_ts = get_f64_from_array(inner_array, 2)?;
     let bid_volume = get_f64_from_array(inner_array, 3)?;
     let ask_volume = get_f64_from_array(inner_array, 4)?;
-
-    // Skip stale messages
-    if kraken_ts < pair_data_vec[idx].kraken_ts {
-        return None;
-    }
 
     // Log kraken ts to ingestion ts latency
     let ingestion_ts = SystemTime::now()
@@ -267,7 +263,6 @@ fn handle_spread_data(
         pair_data.ask_price = ask;
         pair_data.bid_volume = bid_volume;
         pair_data.ask_volume = ask_volume;
-        pair_data.kraken_ts = kraken_ts;
     } else {
         return None;
     }
