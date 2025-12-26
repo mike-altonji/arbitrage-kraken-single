@@ -76,23 +76,23 @@ pub async fn run_trading_thread(
     };
 
     while let Some(order) = trade_rx.recv().await {
+        // Mark trader as busy before processing
+        TRADER_BUSY.store(true, Ordering::Relaxed);
+
+        // Log trade message receive speed
+        let receive_timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        log_trade_message_receive_speed(order.send_timestamp, receive_timestamp);
+
         if allow_trades {
-            // Log trade message receive speed
-            let receive_timestamp = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos();
-            log_trade_message_receive_speed(order.send_timestamp, receive_timestamp);
-
-            // Mark trader as busy before processing
-            TRADER_BUSY.store(true, Ordering::Relaxed);
-
             log::debug!("Sending order starting with {}", order.pair1_name);
             make_trades(&mut write, &token, &order).await;
-
-            // Mark trader as idle after processing
-            TRADER_BUSY.store(false, Ordering::Relaxed);
         }
+
+        // Mark trader as idle after processing
+        TRADER_BUSY.store(false, Ordering::Relaxed);
     }
     log::info!("Trading channel closed, exiting trading thread");
 }
