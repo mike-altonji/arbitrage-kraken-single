@@ -209,4 +209,6 @@ async fn make_trades(
         "Successfully completed all 4 trades for arbitrage starting with {}",
         order.pair1_name
     );
+    // Block additional trades for 500ms to avoid race conditions (unsure if I want/need this)
+    wait_approx_ms(500).await;
 }
