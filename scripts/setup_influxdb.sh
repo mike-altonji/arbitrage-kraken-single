@@ -10,6 +10,9 @@ if [ -f .env ]; then
   export $(egrep -v '^#' .env | xargs)
 fi
 
+# Delete the existing InfluxDB database
+curl -XPOST "http://$INFLUXDB_HOST:$INFLUXDB_PORT/query" --data-urlencode "q=DROP DATABASE \"$DB_NAME\"" || true
+
 # Create the InfluxDB database
 curl -XPOST "http://$INFLUXDB_HOST:$INFLUXDB_PORT/query" --data-urlencode "q=CREATE DATABASE \"$DB_NAME\""
 
