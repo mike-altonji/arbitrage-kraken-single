@@ -103,6 +103,7 @@ async fn make_trades(
     token: &str,
     order: &OrderInfo,
 ) {
+    let userref = rand::random::<u32>() as i32;
     let vol_coin_formatted = format!("{:.*}", order.volume_decimals_coin, order.volume_coin);
     let trade_msg = serde_json::json!({
         "event": "addOrder",
@@ -111,6 +112,7 @@ async fn make_trades(
         "ordertype": "market",
         "volume": vol_coin_formatted,
         "pair": order.pair1_name,
+        "userref": userref.to_string(),
     })
     .to_string();
 
@@ -138,6 +140,7 @@ async fn make_trades(
         "ordertype": "market",
         "volume": vol_coin_formatted,
         "pair": order.pair2_name,
+        "userref": userref.to_string(),
     })
     .to_string();
 
@@ -166,6 +169,7 @@ async fn make_trades(
         "ordertype": "market",
         "volume": vol_stable_formatted,
         "pair": order.pair2_stable_name,
+        "userref": userref.to_string(),
     })
     .to_string();
 
@@ -189,6 +193,7 @@ async fn make_trades(
         "ordertype": "market",
         "volume": vol_stable_formatted,
         "pair": order.pair1_stable_name,
+        "userref": userref.to_string(),
     })
     .to_string();
 
