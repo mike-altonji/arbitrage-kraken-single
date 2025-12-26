@@ -184,7 +184,7 @@ fn handle_message(
         }
         return idx;
     }
-    return None;
+    None
 }
 
 /// Handle event messages (systemStatus, subscriptionStatus)
@@ -230,10 +230,7 @@ fn handle_spread_data(
         return None;
     }
 
-    let pair = match array[3].as_str() {
-        Some(p) => p,
-        None => return None,
-    };
+    let pair = array[3].as_str()?;
 
     // Get index for this pair
     let idx = match asset_index.get(pair) {
@@ -244,32 +241,14 @@ fn handle_spread_data(
         }
     };
 
-    let inner_array = match array[1].as_array() {
-        Some(arr) => arr,
-        None => return None,
-    };
+    let inner_array = array[1].as_array()?;
 
     // Parse values, skip message if any fail
-    let bid = match get_f64_from_array(inner_array, 0) {
-        Some(v) => v,
-        None => return None,
-    };
-    let ask = match get_f64_from_array(inner_array, 1) {
-        Some(v) => v,
-        None => return None,
-    };
-    let kraken_ts = match get_f64_from_array(inner_array, 2) {
-        Some(v) => v,
-        None => return None,
-    };
-    let bid_volume = match get_f64_from_array(inner_array, 3) {
-        Some(v) => v,
-        None => return None,
-    };
-    let ask_volume = match get_f64_from_array(inner_array, 4) {
-        Some(v) => v,
-        None => return None,
-    };
+    let bid = get_f64_from_array(inner_array, 0)?;
+    let ask = get_f64_from_array(inner_array, 1)?;
+    let kraken_ts = get_f64_from_array(inner_array, 2)?;
+    let bid_volume = get_f64_from_array(inner_array, 3)?;
+    let ask_volume = get_f64_from_array(inner_array, 4)?;
 
     // Log kraken ts to ingestion ts latency
     let ingestion_ts = SystemTime::now()
@@ -288,7 +267,7 @@ fn handle_spread_data(
         return None;
     }
 
-    return Some(idx);
+    Some(idx)
 }
 
 /// Extract f64 value from JSON array at given index

@@ -40,7 +40,7 @@ fn get_retention_policy() -> Arc<String> {
 
 // Per-thread batch buffer for kraken ingestion latency points
 thread_local! {
-    static KRAKEN_INGESTION_POINTS: RefCell<Vec<Point>> = RefCell::new(Vec::new());
+    static KRAKEN_INGESTION_POINTS: RefCell<Vec<Point>> = const { RefCell::new(Vec::new()) };
 }
 
 static KRAKEN_INGESTION_ERROR_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -102,7 +102,7 @@ async fn kraken_ingestion_latency_to_influx(
         .await
     {
         let error_count = KRAKEN_INGESTION_ERROR_COUNTER.fetch_add(1, Ordering::Relaxed);
-        if error_count % 1000 == 0 {
+        if error_count.is_multiple_of(1000) {
             log::error!("Failed to write to kraken_ingestion_latency: {:?}", e);
         }
     }
