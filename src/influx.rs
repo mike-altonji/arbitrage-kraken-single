@@ -62,7 +62,7 @@ pub fn log_kraken_ingestion_latency(pair: &str, kraken_ts: f64, ingestion_ts: f6
     let points_to_write = KRAKEN_INGESTION_POINTS.with(|points| {
         let mut points = points.borrow_mut();
         points.push(point);
-        if points.len() >= 500 {
+        if points.len() >= 2500 {
             // Batch size reached, prepare to flush
             should_flush = true;
             let points_clone = points.clone();
