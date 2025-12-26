@@ -157,56 +157,56 @@ async fn make_trades(
     let interval_1_2_ms = (t1_1 - t1_0) * 1000.0;
     log_trade_interval("1-2", interval_1_2_ms);
 
-    // Wait 50ms b/c the stablecoin price shouldn't slip. Ensures the prior order has been filled.
-    wait_approx_ms(50).await;
+    // // Wait 50ms b/c the stablecoin price shouldn't slip. Ensures the prior order has been filled.
+    // wait_approx_ms(50).await;
 
-    // Trade 3: Buy pair2_stable
-    let vol_stable_formatted = format!("{:.*}", order.volume_decimals_stable, order.volume_stable);
-    let trade_msg = serde_json::json!({
-        "event": "addOrder",
-        "token": token,
-        "type": "buy",
-        "ordertype": "market",
-        "volume": vol_stable_formatted,
-        "pair": order.pair2_stable_name,
-        "userref": userref.to_string(),
-    })
-    .to_string();
+    // // Trade 3: Buy pair2_stable
+    // let vol_stable_formatted = format!("{:.*}", order.volume_decimals_stable, order.volume_stable);
+    // let trade_msg = serde_json::json!({
+    //     "event": "addOrder",
+    //     "token": token,
+    //     "type": "buy",
+    //     "ordertype": "market",
+    //     "volume": vol_stable_formatted,
+    //     "pair": order.pair2_stable_name,
+    //     "userref": userref.to_string(),
+    // })
+    // .to_string();
 
-    if let Err(e) = write.send(Message::Text(trade_msg)).await {
-        log::error!(
-            "Failed to send buy order for {}: {:?}",
-            order.pair2_stable_name,
-            e
-        );
-        return;
-    }
+    // if let Err(e) = write.send(Message::Text(trade_msg)).await {
+    //     log::error!(
+    //         "Failed to send buy order for {}: {:?}",
+    //         order.pair2_stable_name,
+    //         e
+    //     );
+    //     return;
+    // }
 
-    // Wait 50ms b/c the stablecoin price shouldn't slip. Ensures the prior order has been filled.
-    wait_approx_ms(50).await;
+    // // Wait 50ms b/c the stablecoin price shouldn't slip. Ensures the prior order has been filled.
+    // wait_approx_ms(50).await;
 
-    // Trade 4: Sell pair1_stable
-    let trade_msg = serde_json::json!({
-        "event": "addOrder",
-        "token": token,
-        "type": "sell",
-        "ordertype": "market",
-        "volume": vol_stable_formatted,
-        "pair": order.pair1_stable_name,
-        "userref": userref.to_string(),
-    })
-    .to_string();
+    // // Trade 4: Sell pair1_stable
+    // let trade_msg = serde_json::json!({
+    //     "event": "addOrder",
+    //     "token": token,
+    //     "type": "sell",
+    //     "ordertype": "market",
+    //     "volume": vol_stable_formatted,
+    //     "pair": order.pair1_stable_name,
+    //     "userref": userref.to_string(),
+    // })
+    // .to_string();
 
-    if let Err(e) = write.send(Message::Text(trade_msg)).await {
-        log::error!(
-            "Failed to send sell order for {}: {:?}",
-            order.pair1_stable_name,
-            e
-        );
-        return;
-    }
+    // if let Err(e) = write.send(Message::Text(trade_msg)).await {
+    //     log::error!(
+    //         "Failed to send sell order for {}: {:?}",
+    //         order.pair1_stable_name,
+    //         e
+    //     );
+    //     return;
+    // }
     log::debug!(
-        "Successfully completed all 4 trades for arbitrage starting with {}",
+        "Successfully completed all trades for arbitrage starting with {}",
         order.pair1_name
     );
     // Block additional trades for 500ms to avoid race conditions (unsure if I want/need this)
