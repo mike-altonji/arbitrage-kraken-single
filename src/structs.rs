@@ -1,3 +1,10 @@
+/// Trade execution mode
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TradeMode {
+    Market,   // Market orders with 1ms delay between trades
+    LimitIoc, // LIMIT IOC buy, listen to ownTrades, then market sell
+}
+
 #[derive(Clone)]
 pub struct PairData {
     pub bid_price: f64,
@@ -6,7 +13,6 @@ pub struct PairData {
     pub ask_volume: f64,
     pub order_min: f64,
     pub cost_min: f64,
-    #[allow(dead_code)] // price_decimals needed for IOC trades, which I may implement later
     pub price_decimals: usize,
     pub volume_decimals: usize,
     pub pair_status: bool,
@@ -26,4 +32,6 @@ pub struct OrderInfo {
     pub volume_decimals_coin: usize,
     pub volume_decimals_stable: usize,
     pub send_timestamp: u128,
+    pub pair1_price: f64,
+    pub price_decimals: usize,
 }

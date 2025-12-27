@@ -211,6 +211,8 @@ fn process_arbitrage_opportunity(
             volume_decimals_coin: pair1.volume_decimals,
             volume_decimals_stable: pair1_stable.volume_decimals,
             send_timestamp,
+            pair1_price: pair1.ask_price,
+            price_decimals: pair1.price_decimals,
         },
         trade_tx,
     );

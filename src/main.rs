@@ -1,4 +1,4 @@
-use crate::structs::OrderInfo;
+use crate::structs::{OrderInfo, TradeMode};
 use dotenv::dotenv;
 use std::env;
 use std::sync::atomic::{AtomicBool, AtomicI16};
@@ -27,6 +27,7 @@ pub static TRADER_BUSY: AtomicBool = AtomicBool::new(false);
 struct Config {
     allow_trades: bool,
     debug_mode: bool,
+    trade_mode: TradeMode,
     public_ws_url: String,
     private_ws_url: String,
     token: String,
@@ -48,9 +49,29 @@ impl Config {
             )
         };
 
+        // Parse trade mode (default to Market if not specified)
+        let trade_mode = if let Some(pos) = args.iter().position(|a| a == "--trade-mode") {
+            if let Some(mode_str) = args.get(pos + 1) {
+                match mode_str.as_str() {
+                    "market" => TradeMode::Market,
+                    "limit-ioc" => TradeMode::LimitIoc,
+                    _ => {
+                        log::warn!("Unknown trade mode '{}', defaulting to 'market'", mode_str);
+                        TradeMode::Market
+                    }
+                }
+            } else {
+                log::warn!("--trade-mode specified without value, defaulting to 'market'");
+                TradeMode::Market
+            }
+        } else {
+            TradeMode::Market // Default
+        };
+
         Self {
             allow_trades: args.contains(&"--trade".to_string()),
             debug_mode: args.contains(&"--debug".to_string()),
+            trade_mode,
             public_ws_url,
             private_ws_url,
             token: utils::get_ws_auth_token()
@@ -108,6 +129,7 @@ async fn main() {
         config.private_ws_url.clone(),
         trade_rx,
         config.allow_trades,
+        config.trade_mode,
     ));
 
     // Wait for all threads (they run indefinitely)
