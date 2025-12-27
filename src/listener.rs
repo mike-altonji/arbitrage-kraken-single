@@ -179,7 +179,7 @@ fn handle_message(
     else if let Some(array) = data.as_array() {
         let idx = handle_spread_data(array, pair_data_vec, asset_index);
         if idx.is_none() {
-            log::warn!("Failed to handle spread data. Skipping.");
+            // Removed warn line b/c this will be common when the kraken ts is old
             return None;
         }
         return idx;
