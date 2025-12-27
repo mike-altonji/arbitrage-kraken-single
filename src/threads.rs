@@ -1,7 +1,7 @@
 use crate::asset_pairs;
 use crate::kraken_rest;
 use crate::listener;
-use crate::structs::OrderInfo;
+use crate::structs::{OrderInfo, TradeMode};
 use crate::trade;
 use crate::utils::{build_pair_names_vec, initialize_pair_data};
 use crate::{EUR_BALANCE, FEE_SPOT, FEE_STABLECOIN, USD_BALANCE};
@@ -130,8 +130,9 @@ pub fn spawn_trading_thread(
     private_ws_url: String,
     trade_rx: mpsc::Receiver<OrderInfo>,
     allow_trades: bool,
+    trade_mode: TradeMode,
 ) -> thread::JoinHandle<()> {
     spawn_pinned_thread(cores, 3, "Trader".to_string(), move || async move {
-        trade::run_trading_thread(token, private_ws_url, trade_rx, allow_trades).await;
+        trade::run_trading_thread(token, private_ws_url, trade_rx, allow_trades, trade_mode).await;
     })
 }
