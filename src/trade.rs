@@ -107,8 +107,23 @@ pub async fn run_trading_thread(
         if let (Some(ref mut write), Some(ref mut filled_volume_rx)) =
             (&mut write, &mut filled_volume_rx)
         {
-            log::debug!("Sending order starting with {}", order.pair1_name);
-            make_trades_limit_ioc(write, &token, &order, filled_volume_rx).await;
+            // Guardrail: Only trade if the data is fresh
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64();
+            let time_diff = now - order.updated_pair_kraken_ts;
+            if time_diff < 0.0015 {
+                // Less than 1.5ms difference
+                log::debug!("Sending order starting with {}", order.pair1_name);
+                make_trades_limit_ioc(write, &token, &order, filled_volume_rx).await;
+            } else {
+                log::warn!(
+                    "Skipping trade for {}: data too stale (time_diff={}s)",
+                    order.pair1_name,
+                    time_diff,
+                );
+            }
         }
 
         // Mark trader as idle after processing
