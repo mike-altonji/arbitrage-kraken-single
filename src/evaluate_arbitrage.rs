@@ -86,6 +86,7 @@ pub fn evaluate_arbitrage(
             fee_stablecoin,
             pair_names,
             trade_tx.clone(),
+            idx,
         );
     }
 
@@ -113,6 +114,7 @@ pub fn evaluate_arbitrage(
             fee_stablecoin,
             pair_names,
             trade_tx.clone(),
+            idx,
         );
     }
 }
@@ -133,6 +135,7 @@ fn process_arbitrage_opportunity(
     fee_stablecoin: f64,
     pair_names: &[&'static str],
     trade_tx: mpsc::Sender<OrderInfo>,
+    updated_pair_idx: usize,
 ) {
     // Get pair names safely - return early if any are missing
     let pair1_name = pair_names.get(pair1_idx).copied();
@@ -164,6 +167,16 @@ fn process_arbitrage_opportunity(
     let pair1_amount_in = volume * pair1.ask_price * (1.0 + fee_spot);
     let volume_stable =
         compute_volume_stable(volume, pair2, pair2_stable, fee_spot, fee_stablecoin);
+
+    // Get the updated pair's kraken_ts for guardrails
+    let updated_pair_kraken_ts = if updated_pair_idx == pair1_idx {
+        pair1.kraken_ts
+    } else if updated_pair_idx == pair2_idx {
+        pair2.kraken_ts
+    } else {
+        log::error!("Updated pair idx doesn't match pair1 or pair2 idx. Using pair1 kraken ts.");
+        pair1.kraken_ts
+    };
 
     // Log opportunity even if we can't trade
     log_arbitrage_opportunity(
@@ -200,6 +213,7 @@ fn process_arbitrage_opportunity(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
+
     trigger_trades(
         &OrderInfo {
             pair1_name,
@@ -213,6 +227,7 @@ fn process_arbitrage_opportunity(
             send_timestamp,
             pair1_price: pair1.ask_price,
             price_decimals: pair1.price_decimals,
+            updated_pair_kraken_ts,
         },
         trade_tx,
     );
@@ -291,7 +306,7 @@ fn check_guardrails(volume: f64, pair1: &PairData, pair2: &PairData) -> bool {
 fn trigger_trades(order_info: &OrderInfo, trade_tx: mpsc::Sender<OrderInfo>) {
     // Check if trader is busy first - if so, drop immediately
     if TRADER_BUSY.load(Ordering::Relaxed) {
-        log::debug!("Trader busy, dropping order for {}", order_info.pair1_name);
+        log::info!("Trader busy, dropping order for {}", order_info.pair1_name);
         return;
     }
 
@@ -302,7 +317,7 @@ fn trigger_trades(order_info: &OrderInfo, trade_tx: mpsc::Sender<OrderInfo>) {
         }
         Err(mpsc::error::TrySendError::Full(_)) => {
             // Channel buffer full (shouldn't happen if trader is idle, but handle gracefully)
-            log::debug!(
+            log::warn!(
                 "Channel buffer full, dropping order for {}",
                 order_info.pair1_name
             );
