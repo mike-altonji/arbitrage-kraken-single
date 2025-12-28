@@ -27,4 +27,5 @@ pub struct OrderInfo {
     pub send_timestamp: u128,
     pub pair1_price: f64,
     pub price_decimals: usize,
+    pub updated_pair_kraken_ts: f64,
 }
