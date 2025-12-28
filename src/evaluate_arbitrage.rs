@@ -291,7 +291,7 @@ fn check_guardrails(volume: f64, pair1: &PairData, pair2: &PairData) -> bool {
 fn trigger_trades(order_info: &OrderInfo, trade_tx: mpsc::Sender<OrderInfo>) {
     // Check if trader is busy first - if so, drop immediately
     if TRADER_BUSY.load(Ordering::Relaxed) {
-        log::debug!("Trader busy, dropping order for {}", order_info.pair1_name);
+        log::info!("Trader busy, dropping order for {}", order_info.pair1_name);
         return;
     }
 
@@ -302,7 +302,7 @@ fn trigger_trades(order_info: &OrderInfo, trade_tx: mpsc::Sender<OrderInfo>) {
         }
         Err(mpsc::error::TrySendError::Full(_)) => {
             // Channel buffer full (shouldn't happen if trader is idle, but handle gracefully)
-            log::debug!(
+            log::warn!(
                 "Channel buffer full, dropping order for {}",
                 order_info.pair1_name
             );
