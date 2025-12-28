@@ -1,10 +1,3 @@
-/// Trade execution mode
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TradeMode {
-    Market,   // Market orders with 1ms delay between trades
-    LimitIoc, // LIMIT IOC buy, listen to ownTrades, then market sell
-}
-
 #[derive(Clone)]
 pub struct PairData {
     pub bid_price: f64,

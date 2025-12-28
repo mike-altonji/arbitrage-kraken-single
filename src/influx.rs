@@ -156,21 +156,6 @@ pub fn log_trade_message_receive_speed(send_timestamp: u128, receive_timestamp: 
     });
 }
 
-/// Log time between trades (1-2, 2-3, 3-4) to ensure our wait times are correct
-/// Currently only used for 1-2, which is the only time-sensitive interval
-pub fn log_trade_interval(interval_name: &str, duration_ms: f64) {
-    let interval_name = interval_name.to_string();
-    tokio::spawn(async move {
-        let client = get_influx_client();
-        let point = Point::new("trade_interval")
-            .add_tag("interval_name", Value::String(interval_name))
-            .add_field("duration_ms", Value::Float(duration_ms));
-        let _ = client
-            .write_points(vec![point], Some(Precision::Nanoseconds), None)
-            .await;
-    });
-}
-
 /// Log arbitrage opportunity details
 pub fn log_arbitrage_opportunity(
     pair1_name: &str,
