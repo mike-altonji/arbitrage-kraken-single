@@ -16,7 +16,7 @@ A high-performance, low-latency cryptocurrency arbitrage trading system built in
 
 ## Architecture
 
-![System Architecture Diagram](assets/systems_diagram.png)
+![System Architecture Diagram](assets/system_design.png)
 
 ### Thread Structure
 
