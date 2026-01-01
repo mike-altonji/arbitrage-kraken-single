@@ -2,6 +2,8 @@
 
 A high-performance, low-latency cryptocurrency arbitrage trading system built in Rust for the Kraken exchange. Monitors price spreads across USD and EUR trading pairs in real-time, identifies arbitrage opportunities, and executes trades with sub-millisecond precision using CPU core pinning, lock-free data structures, and minimal allocation paths.
 
+Check out [this post]([url](https://open.substack.com/pub/mikealtonji/p/how-to-lose-money-really-really-fast?utm_campaign=post-expanded-share&utm_medium=web)) for a walkthrough of the entire project.
+
 ## Features
 
 - **Real-time Price Monitoring**: Subscribes to Kraken WebSocket spread feeds for hundreds of trading pairs
