@@ -1,6 +1,7 @@
 use crate::asset_pairs;
 use crate::kraken_rest;
 use crate::listener;
+use crate::orderbook::init_order_book_vec;
 use crate::structs::OrderInfo;
 use crate::trade;
 use crate::utils::{build_pair_names_vec, initialize_pair_data};
@@ -90,12 +91,14 @@ pub fn spawn_listener_threads(
 
                         // Initialize pair data from Kraken API
                         let mut pair_data_vec = initialize_pair_data(asset_index_clone).await;
+                        let mut order_book_vec = init_order_book_vec(pair_data_vec.len());
                         let mut public_online = true;
 
                         // Run listener
                         listener::run_listening_thread(
                             asset_index_clone,
                             &mut pair_data_vec,
+                            &mut order_book_vec,
                             &mut public_online,
                             &public_ws_url_clone,
                             &pair_names,

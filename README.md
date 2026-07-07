@@ -6,7 +6,7 @@ Check out [this post](https://open.substack.com/pub/mikealtonji/p/how-to-lose-mo
 
 ## Features
 
-- **Real-time Price Monitoring**: Subscribes to Kraken WebSocket spread feeds for hundreds of trading pairs
+- **Real-time Price Monitoring**: Subscribes to Kraken WebSocket L2 order book feeds (depth 10) for hundreds of trading pairs, with CRC32 checksum validation
 - **Multi-threaded Architecture**: 6 listener threads, separate trading thread, and background fetchers
 - **CPU Core Pinning**: Threads are pinned to specific CPU cores to minimize context switching and improve cache locality
 - **Low-latency Trading**: Executes trades with sub-1.5ms data staleness requirements
@@ -22,14 +22,14 @@ Check out [this post](https://open.substack.com/pub/mikealtonji/p/how-to-lose-mo
 
 ### Thread Structure
 
-- **6 Listener Threads**: Pinned to cores 0-2 (round-robin), maintain local `PairDataVec` state, subscribe to spread data for subsets of trading pairs
+- **6 Listener Threads**: Pinned to cores 0-2 (round-robin), maintain local `PairDataVec` and `OrderBookVec` state, subscribe to book-10 data for subsets of trading pairs
 - **Trading Thread**: Pinned to core 3, receives `OrderInfo` via bounded channel (size 1), manages private WebSocket for order execution
 - **Balance Fetcher Thread**: Pinned to core 3, polls Kraken REST API every 2 seconds for USD/EUR balances
 - **Fee Fetcher Thread**: Pinned to core 3, polls Kraken REST API every 5 minutes for trading fees
 
 ### Data Flow
 
-1. **Price Updates**: Kraken Public WebSocket → Listener Threads → Local PairDataVec
+1. **Price Updates**: Kraken Public WebSocket (book-10) → Listener Threads → Local OrderBookVec → BBO synced to PairDataVec (eval only on BBO change)
 2. **Arbitrage Evaluation**: PairDataVec → `evaluate_arbitrage()` → (if ROI > 1.0) → OrderInfo → Channel → Trading Thread
 3. **Trade Execution**: Trading Thread → Private WebSocket (LIMIT IOC buy) → ownTrades listener → (filled volume) → Private WebSocket (Market sell)
 4. **Balance/Fee Updates**: Kraken REST API → Fetcher Threads → Atomic Variables
@@ -38,7 +38,10 @@ Check out [this post](https://open.substack.com/pub/mikealtonji/p/how-to-lose-mo
 
 - **Lock-free Data Structures**: Atomic variables for shared state (balances, fees, trader busy flag)
 - **Bounded Channel**: Size 1 prevents order queue buildup; stale orders are dropped
-- **Local State**: Each listener thread maintains its own `PairDataVec` to avoid contention
+- **Local State**: Each listener thread maintains its own `PairDataVec` and `OrderBookVec` to avoid contention
+- **Book Checksum Validation**: CRC32 checksum verified on every book update; mismatch disables pair and triggers reconnect
+- **BBO-Only Evaluation**: Arbitrage evaluated only when best bid/ask price or volume changes, not on every depth update
+- **Message-Level Staleness**: `kraken_ts` set from max timestamp of updates in the triggering message (not per-level BBO timestamps)
 - **Staleness Guardrails**: Orders rejected if data is older than 1.5ms
 - **Trader Busy Flag**: Prevents concurrent trade execution and order queuing
 - **Batched Metrics**: InfluxDB writes batched (2500 points) to reduce overhead
