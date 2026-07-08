@@ -157,6 +157,7 @@ pub fn log_trade_message_receive_speed(send_timestamp: u128, receive_timestamp: 
 }
 
 /// Log arbitrage opportunity details
+#[allow(clippy::too_many_arguments)]
 pub fn log_arbitrage_opportunity(
     pair1_name: &str,
     pair2_name: &str,

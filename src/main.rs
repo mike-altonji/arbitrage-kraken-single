@@ -9,6 +9,7 @@ mod evaluate_arbitrage;
 mod influx;
 mod kraken_rest;
 mod listener;
+mod orderbook;
 mod structs;
 mod threads;
 mod trade;

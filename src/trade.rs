@@ -192,8 +192,9 @@ async fn listen_to_own_trades(
                                                                 volume,
                                                                 order_type
                                                             );
-                                                            if let Err(_) = filled_volume_tx
+                                                            if filled_volume_tx
                                                                 .send((userref, volume))
+                                                                .is_err()
                                                             {
                                                                 log::warn!(
                                                                     "filled_volume_tx receiver dropped"

@@ -14,7 +14,7 @@ pub fn evaluate_arbitrage(
     let eur_pair_idx = idx + 1 - (idx % 2);
     let usd_pair = pair_data_vec.get(usd_pair_idx);
     let eur_pair = pair_data_vec.get(eur_pair_idx);
-    let usd_stable_pair = pair_data_vec.get(0);
+    let usd_stable_pair = pair_data_vec.first();
     let eur_stable_pair = pair_data_vec.get(1);
     let (usd_pair, eur_pair, usd_stable_pair, eur_stable_pair) =
         match (usd_pair, eur_pair, usd_stable_pair, eur_stable_pair) {
@@ -120,6 +120,7 @@ pub fn evaluate_arbitrage(
 }
 
 /// Process an arbitrage opportunity: check volumes, guardrails, and trigger trades
+#[allow(clippy::too_many_arguments)]
 fn process_arbitrage_opportunity(
     roi: f64,
     pair1: &PairData,
