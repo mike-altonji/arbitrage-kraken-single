@@ -322,6 +322,8 @@ pub fn init_order_book_vec(len: usize) -> OrderBookVec {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::excessive_precision)]
+
     use super::*;
 
     fn kraken_doc_snapshot() -> OrderBook {
