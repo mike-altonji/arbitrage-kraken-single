@@ -227,12 +227,11 @@ fn side_to_vec(levels: &[PriceLevel], count: u8) -> Vec<(String, String, f64)> {
 
 fn vec_to_side(vec: &[(String, String, f64)], dest: &mut [PriceLevel; BOOK_DEPTH]) -> u8 {
     let count = vec.len().min(BOOK_DEPTH);
-    for i in 0..count {
-        let (p, v, ts) = &vec[i];
-        dest[i] = make_level(p, v, *ts);
+    for (dest_slot, (p, v, ts)) in dest.iter_mut().zip(vec.iter()).take(count) {
+        *dest_slot = make_level(p, v, *ts);
     }
-    for i in count..BOOK_DEPTH {
-        dest[i] = PriceLevel::default();
+    for dest_slot in &mut dest[count..] {
+        *dest_slot = PriceLevel::default();
     }
     count as u8
 }
@@ -243,29 +242,92 @@ fn apply_side_vec(
     is_ask: bool,
 ) {
     for &(price, vol, ts) in updates {
-        let vol_f: f64 = vol.parse().unwrap_or(0.0);
+        apply_level_to_sorted_vec(levels, price, vol, ts, is_ask);
+        levels.truncate(BOOK_DEPTH);
+    }
+}
+
+/// Apply one level update while keeping `levels` sorted (asks asc, bids desc).
+fn apply_level_to_sorted_vec(
+    levels: &mut Vec<(String, String, f64)>,
+    price: &str,
+    vol: &str,
+    ts: f64,
+    is_ask: bool,
+) {
+    let vol_f: f64 = vol.parse().unwrap_or(0.0);
+
+    if let Some(idx) = levels.iter().position(|(p, _, _)| p == price) {
         if vol_f == 0.0 {
-            levels.retain(|(p, _, _)| p != price);
-        } else if let Some(idx) = levels.iter().position(|(p, _, _)| p == price) {
+            levels.remove(idx);
+        } else {
             levels[idx] = (price.to_string(), vol.to_string(), ts);
-        } else {
-            levels.push((price.to_string(), vol.to_string(), ts));
         }
-        if is_ask {
-            levels.sort_by(|a, b| {
-                a.0.parse::<f64>()
-                    .unwrap_or(0.0)
-                    .partial_cmp(&b.0.parse::<f64>().unwrap_or(0.0))
-                    .unwrap()
-            });
-        } else {
-            levels.sort_by(|a, b| {
-                b.0.parse::<f64>()
-                    .unwrap_or(0.0)
-                    .partial_cmp(&a.0.parse::<f64>().unwrap_or(0.0))
-                    .unwrap()
-            });
-        }
+        return;
+    }
+
+    if vol_f == 0.0 {
+        return;
+    }
+
+    let price_f = price.parse::<f64>().unwrap_or(0.0);
+    let insert_idx = insert_position(levels, price_f, is_ask);
+    levels.insert(insert_idx, (price.to_string(), vol.to_string(), ts));
+}
+
+fn insert_position(levels: &[(String, String, f64)], price_f: f64, is_ask: bool) -> usize {
+    if is_ask {
+        levels.partition_point(|(p, _, _)| p.parse::<f64>().unwrap_or(0.0) <= price_f)
+    } else {
+        levels.partition_point(|(p, _, _)| p.parse::<f64>().unwrap_or(0.0) >= price_f)
+    }
+}
+
+#[cfg(test)]
+fn apply_level_to_vec_unsorted(
+    levels: &mut Vec<(String, String, f64)>,
+    price: &str,
+    vol: &str,
+    ts: f64,
+) {
+    let vol_f: f64 = vol.parse().unwrap_or(0.0);
+    if vol_f == 0.0 {
+        levels.retain(|(p, _, _)| p != price);
+    } else if let Some(idx) = levels.iter().position(|(p, _, _)| p == price) {
+        levels[idx] = (price.to_string(), vol.to_string(), ts);
+    } else {
+        levels.push((price.to_string(), vol.to_string(), ts));
+    }
+}
+
+#[cfg(test)]
+fn sort_side_vec(levels: &mut [(String, String, f64)], is_ask: bool) {
+    if is_ask {
+        levels.sort_by(|a, b| {
+            a.0.parse::<f64>()
+                .unwrap_or(0.0)
+                .partial_cmp(&b.0.parse::<f64>().unwrap_or(0.0))
+                .unwrap()
+        });
+    } else {
+        levels.sort_by(|a, b| {
+            b.0.parse::<f64>()
+                .unwrap_or(0.0)
+                .partial_cmp(&a.0.parse::<f64>().unwrap_or(0.0))
+                .unwrap()
+        });
+    }
+}
+
+#[cfg(test)]
+fn apply_side_vec_with_full_sort(
+    levels: &mut Vec<(String, String, f64)>,
+    updates: &[(&str, &str, f64)],
+    is_ask: bool,
+) {
+    for &(price, vol, ts) in updates {
+        apply_level_to_vec_unsorted(levels, price, vol, ts);
+        sort_side_vec(levels, is_ask);
         levels.truncate(BOOK_DEPTH);
     }
 }
@@ -395,5 +457,60 @@ mod tests {
         let mut book = kraken_doc_snapshot();
         book.apply_side_updates(true, &[("0.05005", "0.00000000", 100.0)]);
         assert_eq!(book.asks[0].price, 0.05010);
+    }
+
+    #[test]
+    fn binary_insert_matches_full_sort() {
+        let batches: &[&[(&str, &str, f64)]] = &[
+            &[("0.05005", "0.00000000", 100.0)],
+            &[
+                ("0.05003", "0.00001000", 101.0),
+                ("0.05001", "0.00002000", 102.0),
+            ],
+            &[
+                ("0.05060", "0.00000500", 103.0),
+                ("0.05055", "0.00000500", 104.0),
+                ("0.05005", "0.00000000", 105.0),
+            ],
+        ];
+
+        for updates in batches {
+            let base = side_to_vec(&kraken_doc_snapshot().asks, BOOK_DEPTH as u8);
+            let mut binary = base.clone();
+            let mut full_sort = base;
+            apply_side_vec(&mut binary, updates, true);
+            apply_side_vec_with_full_sort(&mut full_sort, updates, true);
+            assert_eq!(binary, full_sort, "ask batch {:?}", updates);
+        }
+    }
+
+    #[test]
+    fn per_level_sort_required_for_multi_update_batches() {
+        let updates = [
+            ("0.05060", "0.00000500", 103.0),
+            ("0.05055", "0.00000500", 104.0),
+            ("0.05005", "0.00000000", 105.0),
+        ];
+        let base = side_to_vec(&kraken_doc_snapshot().asks, BOOK_DEPTH as u8);
+        let mut per_level = base.clone();
+        let mut sort_once = base;
+        apply_side_vec(&mut per_level, &updates, true);
+        apply_side_vec_sort_once(&mut sort_once, &updates, true);
+        assert_ne!(
+            per_level, sort_once,
+            "sort-once diverges from Kraken semantics"
+        );
+    }
+
+    fn apply_side_vec_sort_once(
+        levels: &mut Vec<(String, String, f64)>,
+        updates: &[(&str, &str, f64)],
+        is_ask: bool,
+    ) {
+        for &(price, vol, ts) in updates {
+            apply_level_to_vec_unsorted(levels, price, vol, ts);
+        }
+        sort_side_vec(levels, is_ask);
+        levels.truncate(BOOK_DEPTH);
     }
 }
