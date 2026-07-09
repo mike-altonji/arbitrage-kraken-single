@@ -3,9 +3,23 @@ use crate::structs::PairData;
 pub const BOOK_DEPTH: usize = 10;
 pub const CHECKSUM_DEPTH: usize = 10;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct BboChange {
     pub changed: bool,
+    pub bid_price_changed: bool,
+    pub ask_price_changed: bool,
+    pub bid_volume_changed: bool,
+    pub ask_volume_changed: bool,
+}
+
+impl BboChange {
+    pub fn ask_changed(self) -> bool {
+        self.ask_price_changed || self.ask_volume_changed
+    }
+
+    pub fn bid_changed(self) -> bool {
+        self.bid_price_changed || self.bid_volume_changed
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -139,10 +153,14 @@ impl OrderBook {
         let (new_bid_price, new_bid_volume) = best_bid(self);
         let (new_ask_price, new_ask_volume) = best_ask(self);
 
-        let changed = new_bid_price != pair_data.bid_price
-            || new_ask_price != pair_data.ask_price
-            || new_bid_volume != pair_data.bid_volume
-            || new_ask_volume != pair_data.ask_volume;
+        let bid_price_changed = new_bid_price != pair_data.bid_price;
+        let ask_price_changed = new_ask_price != pair_data.ask_price;
+        let bid_volume_changed = new_bid_volume != pair_data.bid_volume;
+        let ask_volume_changed = new_ask_volume != pair_data.ask_volume;
+        let changed = bid_price_changed
+            || ask_price_changed
+            || bid_volume_changed
+            || ask_volume_changed;
 
         if changed {
             pair_data.bid_price = new_bid_price;
@@ -152,7 +170,13 @@ impl OrderBook {
             pair_data.kraken_ts = msg_ts;
         }
 
-        BboChange { changed }
+        BboChange {
+            changed,
+            bid_price_changed,
+            ask_price_changed,
+            bid_volume_changed,
+            ask_volume_changed,
+        }
     }
 
     /// CRC32 checksum over top 10 levels per Kraken v1 spec.

@@ -2,7 +2,7 @@ use crate::evaluate_arbitrage;
 use crate::influx::{
     log_arbitrage_evaluation_speed, log_kraken_ingestion_latency, log_listener_loop_speed,
 };
-use crate::orderbook::OrderBookVec;
+use crate::orderbook::{BboChange, OrderBookVec};
 use crate::structs::OrderInfo;
 use crate::structs::PairDataVec;
 use crate::utils::send_telegram_message;
@@ -19,7 +19,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 const CHECKSUM_MISMATCH_THRESHOLD: u32 = 3;
 
 enum BookHandleResult {
-    BboChanged(usize),
+    BboChanged(usize, BboChange),
     ChecksumMismatch,
     None,
 }
@@ -85,7 +85,7 @@ pub async fn run_listening_thread(
                         asset_index,
                     );
                     match result {
-                        BookHandleResult::BboChanged(idx) => {
+                        BookHandleResult::BboChanged(idx, bbo_change) => {
                             if idx > 1
                                 && *public_online
                                 && order_book_vec.get(idx).map(|b| b.ready).unwrap_or(false)
@@ -104,7 +104,9 @@ pub async fn run_listening_thread(
                                     .as_nanos();
                                 evaluate_arbitrage(
                                     pair_data_vec,
+                                    order_book_vec,
                                     idx,
+                                    bbo_change,
                                     pair_names,
                                     trade_tx.clone(),
                                 );
@@ -321,7 +323,7 @@ fn handle_book_data(
             let msg_ts = apply_snapshot(book, data);
             let change = book.sync_bbo(pair_data, msg_ts);
             return if change.changed {
-                BookHandleResult::BboChanged(idx)
+                BookHandleResult::BboChanged(idx, change)
             } else {
                 BookHandleResult::None
             };
@@ -416,7 +418,7 @@ fn apply_book_update(
 
     let change = book.sync_bbo(pair_data, msg_ts);
     if change.changed {
-        BookHandleResult::BboChanged(idx)
+        BookHandleResult::BboChanged(idx, change)
     } else {
         BookHandleResult::None
     }

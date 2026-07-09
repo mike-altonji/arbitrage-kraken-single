@@ -178,17 +178,24 @@ pub fn log_arbitrage_opportunity(
     stable2_bid_volume: f64,
     stable2_ask_volume: f64,
     roi: f64,
-    limiting_volume: f64,
+    depth_volume: f64,
     pair1_amount_in: f64,
     volume_limited_by_balance: bool,
+    walk_mode: &str,
+    vwap_ask: f64,
+    vwap_bid: f64,
+    blended_roi: f64,
+    limit_buy_price: f64,
 ) {
     let pair1_name = pair1_name.to_string();
     let pair2_name = pair2_name.to_string();
+    let walk_mode = walk_mode.to_string();
     tokio::spawn(async move {
         let client = get_influx_client();
         let point = Point::new("arbitrage_opportunity")
             .add_tag("pair1", Value::String(pair1_name))
             .add_tag("pair2", Value::String(pair2_name))
+            .add_tag("walk_mode", Value::String(walk_mode))
             .add_field("pair1_bid", Value::Float(pair1_bid))
             .add_field("pair1_ask", Value::Float(pair1_ask))
             .add_field("pair2_bid", Value::Float(pair2_bid))
@@ -206,12 +213,17 @@ pub fn log_arbitrage_opportunity(
             .add_field("stable2_bid_volume", Value::Float(stable2_bid_volume))
             .add_field("stable2_ask_volume", Value::Float(stable2_ask_volume))
             .add_field("roi", Value::Float(roi))
-            .add_field("limiting_volume", Value::Float(limiting_volume))
+            .add_field("depth_volume", Value::Float(depth_volume))
+            .add_field("limiting_volume", Value::Float(depth_volume))
             .add_field("pair1_amount_in", Value::Float(pair1_amount_in))
             .add_field(
                 "volume_limited_by_balance",
                 Value::Boolean(volume_limited_by_balance),
-            );
+            )
+            .add_field("vwap_ask", Value::Float(vwap_ask))
+            .add_field("vwap_bid", Value::Float(vwap_bid))
+            .add_field("blended_roi", Value::Float(blended_roi))
+            .add_field("limit_buy_price", Value::Float(limit_buy_price));
         let _ = client
             .write_points(vec![point], Some(Precision::Nanoseconds), None)
             .await;
