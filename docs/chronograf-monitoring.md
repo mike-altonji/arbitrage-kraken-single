@@ -139,7 +139,7 @@ Create new Chronograf cells with the queries below after deploying code that wri
 SELECT mean("depth_multiplier")
 FROM "arbitrage_opportunity"
 WHERE time > now() - 6h
-GROUP BY time(1m), "walk_mode" fill(null)
+GROUP BY time(1m), "trigger" fill(null)
 ```
 
 ### Tip ROI vs blended ROI
@@ -161,7 +161,7 @@ GROUP BY time(1m) fill(null)
 SELECT mean("roi_gap")
 FROM "arbitrage_opportunity"
 WHERE time > now() - 6h
-GROUP BY time(1m), "walk_mode" fill(null)
+GROUP BY time(1m), "trigger" fill(null)
 ```
 
 ### Depth volume vs L1 limiting volume
@@ -183,7 +183,7 @@ GROUP BY time(1m) fill(null)
 SELECT mean("expected_pnl")
 FROM "arbitrage_opportunity"
 WHERE time > now() - 6h
-GROUP BY time(1m), "walk_mode" fill(null)
+GROUP BY time(1m), "trigger" fill(null)
 ```
 
 ### Balance-capped rate
@@ -197,15 +197,15 @@ WHERE time > now() - 6h
 GROUP BY time(1m) fill(null)
 ```
 
-### Opportunity count by walk mode
+### Opportunity count by trigger
 
-**Visualizes:** Ask-triggered walks (`fixed_ask_walk_bids`) vs bid-triggered (`fixed_bid_walk_asks`).
+**Visualizes:** Buy-side triggers (`ask_improved`) vs sell-side triggers (`bid_improved`).
 
 ```sql
 SELECT count("depth_volume")
 FROM "arbitrage_opportunity"
 WHERE time > now() - 6h
-GROUP BY time(1m), "walk_mode" fill(null)
+GROUP BY time(1m), "trigger" fill(null)
 ```
 
 ### Extended Arbitrage Details table
@@ -230,7 +230,7 @@ FROM "arbitrage_opportunity"
 WHERE time > now() - 24h
 ```
 
-Also show tag **`walk_mode`** if Chronograf exposes it for the measurement.
+Also show tag **`trigger`** if Chronograf exposes it for the measurement.
 
 ---
 
@@ -246,9 +246,43 @@ Also show tag **`walk_mode`** if Chronograf exposes it for the measurement.
 | `roi_gap` | `roi - blended_roi` |
 | `expected_pnl` | Modeled PnL in pair1 quote (pair2 proceeds converted via stables) |
 | `pair1_amount_in` | Expected spend on buy leg |
-| `walk_mode` (tag) | `fixed_ask_walk_bids` or `fixed_bid_walk_asks` |
+| `trigger` (tag) | `ask_improved` (updated pair is buy leg) or `bid_improved` (updated pair is sell leg) |
 | `balance_limited_f` | 1.0 if balance-capped, else 0.0 |
 | `volume_limited_by_balance` | Boolean twin (less useful for `mean()`) |
+
+---
+
+## Momentum panels (`momentum_execution`, only with `--momentum`)
+
+Each point is one same-pair round trip: IOC buy, timed hold, market sell.
+Tags: `pair`, `trigger_pair`, `outcome`. The hold time is sampled log-uniformly
+in [1, 1000] ms per trade — regress `realized_pnl` against `hold_ms`.
+
+### Realized PnL vs hold time (scatter via table export)
+
+```sql
+SELECT "hold_ms", "realized_pnl", "gap_bps"
+FROM "momentum_execution"
+WHERE time > now() - 24h
+```
+
+### Momentum PnL over time
+
+```sql
+SELECT sum("realized_pnl")
+FROM "momentum_execution"
+WHERE time > now() - 6h
+GROUP BY time(5m), "pair" fill(null)
+```
+
+### Outcome mix
+
+```sql
+SELECT count("realized_pnl")
+FROM "momentum_execution"
+WHERE time > now() - 24h
+GROUP BY time(15m), "outcome" fill(null)
+```
 
 ---
 
@@ -270,7 +304,7 @@ That prints:
 
 1. **Decision funnel** — `sent` / `trader_busy` / `channel_full` / `below_min_*` / `no_depth_volume`
 2. **Walk `stop_reason`** — why the depth walk stopped
-3. **`walk_mode` mix**
+3. **`trigger` mix**
 4. **Expected PnL** distribution and top pairs
 5. **Executions** (only with `--trade`) — outcomes, expected vs realized PnL joined on `opportunity_id`, slippage bps
 

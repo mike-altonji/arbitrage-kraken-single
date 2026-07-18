@@ -50,10 +50,48 @@ def main() -> int:
 
     opps = [e for e in events if e.get("event") == "arb_opportunity"]
     execs = [e for e in events if e.get("event") == "arb_execution"]
+    momentum = [e for e in events if e.get("event") == "momentum_execution"]
 
     print(f"Files: {len(args.files)}")
-    print(f"Events: {len(events)}  opportunities={len(opps)}  executions={len(execs)}")
+    print(
+        f"Events: {len(events)}  opportunities={len(opps)}  "
+        f"executions={len(execs)}  momentum={len(momentum)}"
+    )
     print()
+
+    if momentum:
+        outcomes = Counter(e.get("outcome", "?") for e in momentum)
+        print("=== Momentum outcomes ===")
+        for key, count in outcomes.most_common():
+            print(f"  {key:20s}  {count:6d}  ({pct(count, len(momentum))})")
+        pnls_m = [
+            float(e["realized_pnl"]) for e in momentum if e.get("realized_pnl") is not None
+        ]
+        if pnls_m:
+            print(
+                f"  realized_pnl: sum={sum(pnls_m):.4f}  "
+                f"mean={sum(pnls_m)/len(pnls_m):.4f}"
+            )
+        holds = [(float(e.get("hold_ms", 0)), float(e.get("realized_pnl", 0))) for e in momentum]
+        if holds:
+            print("  hold_ms vs pnl (bucketed):")
+            buckets: defaultdict[str, list[float]] = defaultdict(list)
+            for hold_ms, pnl in holds:
+                if hold_ms < 10.0:
+                    label = "1-10ms"
+                elif hold_ms < 100.0:
+                    label = "10-100ms"
+                else:
+                    label = "100-1000ms"
+                buckets[label].append(pnl)
+            for label in ("1-10ms", "10-100ms", "100-1000ms"):
+                vals = buckets.get(label)
+                if vals:
+                    print(
+                        f"    {label:12s}  n={len(vals):5d}  "
+                        f"mean_pnl={sum(vals)/len(vals):.4f}"
+                    )
+        print()
 
     # --- Funnel / decisions ---
     decisions = Counter(e.get("decision", "?") for e in opps)
@@ -68,9 +106,9 @@ def main() -> int:
         print(f"  {key:24s}  {count:6d}  ({pct(count, len(opps))})")
     print()
 
-    walk_modes = Counter(e.get("walk_mode", "?") for e in opps)
-    print("=== walk_mode ===")
-    for key, count in walk_modes.most_common():
+    triggers = Counter(e.get("trigger", "?") for e in opps)
+    print("=== trigger ===")
+    for key, count in triggers.most_common():
         print(f"  {key:24s}  {count:6d}  ({pct(count, len(opps))})")
     print()
 

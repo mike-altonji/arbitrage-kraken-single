@@ -123,20 +123,29 @@ cargo build --release
 - `--trade`: Enable trading mode. Without this flag, runs in evaluation-only mode (no trades executed)
 - `--colocated`: Use Beeks colocation VIP endpoints for reduced latency. Requires separate purchase.
 - `--debug`: Enable debug-level logging (default is info level)
+- `--max-walk-depth N`: Max order-book levels consumed per side in the depth walk (default 10)
+- `--depth-haircut N`: Percent of displayed volume planned at levels beyond the top (default 70)
+- `--roi-buffer-bps N`: Marginal ROI must exceed 1 plus this buffer to keep walking (default 2)
+- `--momentum`: Enable the experimental momentum trade mode (takes priority over arbitrage)
 
 ## Trading Strategy
 
 The system implements cross-currency arbitrage:
 
-1. **Opportunity Detection**: Evaluates arbitrage in both directions when price updates occur:
-   - USD → EUR: Buy on USD pair, sell on EUR pair
-   - EUR → USD: Buy on EUR pair, sell on USD pair
+1. **Opportunity Detection**: On each BBO improvement, evaluates the single direction implied by the move:
+   - Ask improved (price down, or volume up at same price) → the updated pair is the buy leg
+   - Bid improved (price up, or volume up at same price) → the updated pair is the sell leg
+   - Both in one message → both directions evaluated
 
 2. **ROI Calculation**: Accounts for spot trading fees, price spreads, and stablecoin conversion rates (USDT/USD and USDT/EUR)
 
-3. **Volume Calculation**: Determines maximum tradeable volume based on available balance, ask volume on buy pair, and bid volume on sell pair
+3. **Volume Calculation (dual walk)**: A greedy two-pointer walk over the buy pair's asks and the sell pair's bids, matching volume while each marginal level pair clears fees plus the ROI buffer. Bounded by balance, `--max-walk-depth`, and the `--depth-haircut` applied to levels beyond the top. Optimal for expected PnL because marginal ROI is monotone in both books.
 
-4. **Trade Execution**: Sends LIMIT IOC buy order at ask price, waits for fill confirmation via ownTrades WebSocket, then sends market sell order with filled volume. Blocks additional trades for 500ms to avoid race conditions.
+4. **Trade Execution**: Sends LIMIT IOC buy order priced at the deepest planned ask (sweeps all planned levels), waits for fill confirmation via ownTrades WebSocket, then sends market sell order with filled volume. Blocks additional trades for 500ms to avoid race conditions.
+
+### Momentum mode (`--momentum`, experimental)
+
+When the sibling pair's bid improves and its fx-converted price sits far enough above the target pair's ask that halfway convergence would cover both spot fees, the system buys the target pair with a LIMIT IOC at its current ask, holds for a log-uniformly sampled 1–1000 ms, then market sells on the same pair. Hold times are logged (`hold_ms`) so PnL can be regressed against them. Momentum takes priority over arbitrage on the events it claims. This is a directional bet with inventory risk — no ROI guarantee at entry.
 
 ## Monitoring and Logging
 
@@ -151,7 +160,8 @@ The system implements cross-currency arbitrage:
   - `l1_limiting_volume`: old top-of-book min(ask,bid) baseline
   - `depth_multiplier`: `depth_volume / l1_limiting_volume`
   - `roi` vs `blended_roi` / `roi_gap`: tip edge vs depth-weighted edge
-  - `expected_pnl`, `walk_mode` tag, `balance_limited_f` (0/1 for aggregations)
+  - `expected_pnl`, `trigger` tag (`bid_improved` / `ask_improved`), `balance_limited_f` (0/1 for aggregations)
+- **momentum_execution** (only with `--momentum`): one point per round trip — `gap_bps`, `hold_ms`, entry/exit VWAPs, fees, `realized_pnl`, `outcome`
 
 Continuous queries aggregate latency metrics into 5-minute windows with percentiles (p01, p10, p25, p50, p75, p90, p99).
 
