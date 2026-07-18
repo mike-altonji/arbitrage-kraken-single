@@ -7,7 +7,7 @@ Replace `"RP_NAME"` with the value of `RP_NAME` from `.env` (also used by contin
 Notes:
 
 - Most latency raw points are written into `RP_NAME`.
-- `trade_message_receive_speed` and `arbitrage_opportunity` are written **without** an explicit retention policy, so they usually land on the database **default** RP. If a query returns empty, try with and without `"RP_NAME".` prefix, or check Chronograf’s database/RP dropdown.
+- `trade_message_receive_speed`, `arbitrage_opportunity`, and `momentum_execution` are written **without** an explicit retention policy, so they usually land on the database **default** RP. If a query returns empty, try with and without `"RP_NAME".` prefix, or check Chronograf’s database/RP dropdown.
 - Depth fields (`depth_multiplier`, `blended_roi`, etc.) only exist on opportunities logged after that code was deployed.
 
 ---

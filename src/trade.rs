@@ -118,7 +118,8 @@ pub async fn run_trading_thread(
                 .unwrap_or_default()
                 .as_secs_f64();
             let time_diff = now - updated_pair_kraken_ts;
-            let fresh = time_diff < 0.0015;
+            // Temporary 10ms gate (was 1.5ms) to measure slippage vs data age.
+            let fresh = time_diff < 0.010;
 
             match command {
                 TradeCommand::Arb(order) => {

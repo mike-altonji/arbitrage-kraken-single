@@ -9,7 +9,7 @@ Check out [this post](https://open.substack.com/pub/mikealtonji/p/how-to-lose-mo
 - **Real-time Price Monitoring**: Subscribes to Kraken WebSocket L2 order book feeds (depth 10) for hundreds of trading pairs, with CRC32 checksum validation
 - **Multi-threaded Architecture**: 6 listener threads, separate trading thread, and background fetchers
 - **CPU Core Pinning**: Threads are pinned to specific CPU cores to minimize context switching and improve cache locality
-- **Low-latency Trading**: Executes trades with sub-1.5ms data staleness requirements
+- **Low-latency Trading**: Executes trades with a data staleness guard (currently 10ms for slippage-vs-latency testing; previously 1.5ms)
 - **Evaluation Mode**: Run without executing trades to analyze opportunities safely
 - **Comprehensive Metrics**: Logs all opportunities, latencies, and performance metrics to InfluxDB
 - **Telegram Notifications**: Real-time alerts for system events and errors
@@ -42,7 +42,7 @@ Check out [this post](https://open.substack.com/pub/mikealtonji/p/how-to-lose-mo
 - **Book Checksum Validation**: CRC32 checksum verified on every book update; mismatch disables pair and triggers reconnect
 - **BBO-Only Evaluation**: Arbitrage evaluated only when best bid/ask price or volume changes, not on every depth update
 - **Message-Level Staleness**: `kraken_ts` set from max timestamp of updates in the triggering message (not per-level BBO timestamps)
-- **Staleness Guardrails**: Orders rejected if data is older than 1.5ms
+- **Staleness Guardrails**: Orders rejected if data is older than 10ms (temporarily raised from 1.5ms to study slippage vs latency)
 - **Trader Busy Flag**: Prevents concurrent trade execution and order queuing
 - **Batched Metrics**: InfluxDB writes batched (2500 points) to reduce overhead
 
@@ -187,7 +187,7 @@ System events and errors sent to Telegram: application startup (mode: trade/eval
 
 ## Safety Features
 
-- **Data Staleness Check**: Rejects orders if price data is >1.5ms old
+- **Data Staleness Check**: Rejects orders if price data is >10ms old (temporary; was 1.5ms)
 - **Volume Validation**: Ensures minimum order size and cost requirements
 - **Balance Limits**: Only trades up to available balance
 - **Trader Busy Flag**: Prevents concurrent trades and drops orders when trader is processing

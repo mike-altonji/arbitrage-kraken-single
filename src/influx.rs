@@ -270,7 +270,6 @@ pub fn log_momentum_execution(
     let trigger_pair = trigger_pair.to_string();
     tokio::spawn(async move {
         let client = get_influx_client();
-        let retention_policy = get_retention_policy();
         let point = Point::new("momentum_execution")
             .add_tag("pair", Value::String(pair))
             .add_tag("trigger_pair", Value::String(trigger_pair))
@@ -286,12 +285,9 @@ pub fn log_momentum_execution(
             .add_field("actual_sell_vwap", Value::Float(actual_sell_vwap))
             .add_field("actual_sell_fee", Value::Float(actual_sell_fee))
             .add_field("realized_pnl", Value::Float(realized_pnl));
+        // Default RP (None), same as arbitrage_opportunity — Chronograf queries omit RP_NAME.
         let _ = client
-            .write_points(
-                vec![point],
-                Some(Precision::Nanoseconds),
-                Some(&retention_policy),
-            )
+            .write_points(vec![point], Some(Precision::Nanoseconds), None)
             .await;
     });
 }
