@@ -146,9 +146,26 @@ The system implements cross-currency arbitrage:
 - **arbitrage_evaluation_speed**: Time to evaluate arbitrage opportunities
 - **listener_loop_speed**: Time to process each WebSocket message
 - **trade_message_receive_speed**: Time from order creation to trading thread receipt
-- **arbitrage_opportunity**: All detected opportunities with full details (prices, volumes, ROI)
+- **arbitrage_opportunity**: Detected opportunities (BBO + depth-walk sizing). Notable fields:
+  - `limiting_volume` / `depth_volume`: size after walking the book
+  - `l1_limiting_volume`: old top-of-book min(ask,bid) baseline
+  - `depth_multiplier`: `depth_volume / l1_limiting_volume`
+  - `roi` vs `blended_roi` / `roi_gap`: tip edge vs depth-weighted edge
+  - `expected_pnl`, `walk_mode` tag, `balance_limited_f` (0/1 for aggregations)
 
-Continuous queries aggregate these metrics into 5-minute windows with percentiles (p01, p10, p25, p50, p75, p90, p99).
+Continuous queries aggregate latency metrics into 5-minute windows with percentiles (p01, p10, p25, p50, p75, p90, p99).
+
+### Chronograf dashboards
+
+Use **Chronograf** (InfluxDB 1.x UI) — not Grafana. Copy-paste InfluxQL for existing panels and new depth-walk panels is in [`docs/chronograf-monitoring.md`](docs/chronograf-monitoring.md), including the JSONL forensics funnel.
+
+### Forensics JSONL
+
+Each run also writes `logs/arb_events_{timestamp}.jsonl` (planned slices, decisions, and in `--trade` mode fill outcomes). Summarize with:
+
+```bash
+python3 scripts/analyze_arb_events.py logs/arb_events_*.jsonl
+```
 
 ### Log Files
 

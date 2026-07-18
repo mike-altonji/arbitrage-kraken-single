@@ -1,12 +1,70 @@
+use crate::arb_forensics::{
+    next_opportunity_id, try_log, ArbOpportunityEvent, ForensicsEvent, PlannedSlice,
+};
 use crate::influx::log_arbitrage_opportunity;
+use crate::orderbook::{BboChange, OrderBook, OrderBookVec, BOOK_DEPTH};
 use crate::structs::{OrderInfo, PairData, PairDataVec};
 use crate::{EUR_BALANCE, FEE_SPOT, FEE_STABLECOIN, TRADER_BUSY, USD_BALANCE};
 use std::sync::atomic::Ordering;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
+
+/// Fixed leg + up to BOOK_DEPTH walked levels.
+const SLICE_CAP: usize = BOOK_DEPTH + 1;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WalkMode {
+    FixedAskWalkBids,
+    FixedBidWalkAsks,
+    Skip,
+}
+
+impl WalkMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            WalkMode::FixedAskWalkBids => "fixed_ask_walk_bids",
+            WalkMode::FixedBidWalkAsks => "fixed_bid_walk_asks",
+            WalkMode::Skip => "skip",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct DepthFill {
+    volume: f64,
+    vwap_ask: f64,
+    vwap_bid: f64,
+    limit_buy_price: f64,
+    blended_roi: f64,
+    balance_limited: bool,
+    walk_mode: WalkMode,
+    slices: [PlannedSlice; SLICE_CAP],
+    slice_count: u8,
+    stop_reason: &'static str,
+    expected_cost: f64,
+    expected_proceeds: f64,
+    expected_pnl: f64,
+}
+
+impl DepthFill {
+    fn slices_vec(&self) -> Vec<PlannedSlice> {
+        self.slices[..self.slice_count as usize].to_vec()
+    }
+
+    fn expected_pnl_bps(&self) -> f64 {
+        if self.expected_cost > 0.0 {
+            self.expected_pnl / self.expected_cost * 10_000.0
+        } else {
+            0.0
+        }
+    }
+}
 
 pub fn evaluate_arbitrage(
     pair_data_vec: &PairDataVec,
+    order_book_vec: &OrderBookVec,
     idx: usize,
+    bbo_change: BboChange,
     pair_names: &[&'static str],
     trade_tx: mpsc::Sender<OrderInfo>,
 ) {
@@ -25,17 +83,21 @@ pub fn evaluate_arbitrage(
             }
         };
 
-    // Skip if any pair is offline
+    let usd_book = order_book_vec.get(usd_pair_idx);
+    let eur_book = order_book_vec.get(eur_pair_idx);
+    let (usd_book, eur_book) = match (usd_book, eur_book) {
+        (Some(u), Some(e)) if u.ready && e.ready => (u, e),
+        _ => return,
+    };
+
     if !usd_pair.pair_status
         || !eur_pair.pair_status
         || !usd_stable_pair.pair_status
         || !eur_stable_pair.pair_status
     {
-        // Not logging because it could be very noisy.
         return;
     }
 
-    // Skip if no price data (usually during initialization)
     if usd_pair.bid_price == 0.0
         || usd_pair.ask_price == 0.0
         || eur_pair.bid_price == 0.0
@@ -51,72 +113,495 @@ pub fn evaluate_arbitrage(
         return;
     }
 
-    // Atomically read fees
-    let fee_spot = FEE_SPOT.load(std::sync::atomic::Ordering::Relaxed) as f64;
-    let fee_stablecoin = FEE_STABLECOIN.load(std::sync::atomic::Ordering::Relaxed) as f64;
-    let fee_spot = fee_spot / 10_000.0;
-    let fee_stablecoin = fee_stablecoin / 10_000.0;
+    let fee_spot = FEE_SPOT.load(std::sync::atomic::Ordering::Relaxed) as f64 / 10_000.0;
+    let fee_stablecoin =
+        FEE_STABLECOIN.load(std::sync::atomic::Ordering::Relaxed) as f64 / 10_000.0;
+    let arb_fee = (1.0 - fee_spot) / (1.0 + fee_spot);
 
-    // Calculate arbitrage opportunity
-    // let arb_fee =
-    //     ((1.0 - fee_spot) * (1.0 - fee_stablecoin)) / ((1.0 + fee_spot) * (1.0 + fee_stablecoin));
-    let arb_fee = (1.0 - fee_spot) / (1.0 + fee_spot); // Remove stablecoin fees because we don't trade back
-
-    // Check USD -> EUR arbitrage opportunity
-    let arb_roi_usd = compute_roi(
-        usd_pair,
-        eur_pair,
-        usd_stable_pair,
-        eur_stable_pair,
-        arb_fee,
-    );
-    if arb_roi_usd > 1.0 {
-        process_arbitrage_opportunity(
-            arb_roi_usd,
+    let usd_walk = resolve_walk_mode(usd_pair_idx, eur_pair_idx, idx, bbo_change);
+    if usd_walk != WalkMode::Skip {
+        let arb_roi_usd = compute_roi(
             usd_pair,
             eur_pair,
             usd_stable_pair,
             eur_stable_pair,
-            USD_BALANCE.load(std::sync::atomic::Ordering::Relaxed) as f64,
-            usd_pair_idx,
-            eur_pair_idx,
-            0,
-            1,
-            fee_spot,
-            fee_stablecoin,
-            pair_names,
-            trade_tx.clone(),
-            idx,
+            arb_fee,
         );
+        if arb_roi_usd > 1.0 {
+            process_arbitrage_opportunity(
+                arb_roi_usd,
+                usd_pair,
+                eur_pair,
+                usd_book,
+                eur_book,
+                usd_stable_pair,
+                eur_stable_pair,
+                USD_BALANCE.load(std::sync::atomic::Ordering::Relaxed) as f64,
+                usd_pair_idx,
+                eur_pair_idx,
+                0,
+                1,
+                fee_spot,
+                fee_stablecoin,
+                arb_fee,
+                usd_walk,
+                pair_names,
+                trade_tx.clone(),
+                idx,
+            );
+        }
     }
 
-    // Check EUR -> USD arbitrage opportunity
-    let arb_roi_eur = compute_roi(
-        eur_pair,
-        usd_pair,
-        eur_stable_pair,
-        usd_stable_pair,
-        arb_fee,
-    );
-    if arb_roi_eur > 1.0 {
-        process_arbitrage_opportunity(
-            arb_roi_eur,
+    let eur_walk = resolve_walk_mode(eur_pair_idx, usd_pair_idx, idx, bbo_change);
+    if eur_walk != WalkMode::Skip {
+        let arb_roi_eur = compute_roi(
             eur_pair,
             usd_pair,
             eur_stable_pair,
             usd_stable_pair,
-            EUR_BALANCE.load(std::sync::atomic::Ordering::Relaxed) as f64,
-            eur_pair_idx,
-            usd_pair_idx,
-            1,
-            0,
-            fee_spot,
-            fee_stablecoin,
-            pair_names,
-            trade_tx.clone(),
-            idx,
+            arb_fee,
         );
+        if arb_roi_eur > 1.0 {
+            process_arbitrage_opportunity(
+                arb_roi_eur,
+                eur_pair,
+                usd_pair,
+                eur_book,
+                usd_book,
+                eur_stable_pair,
+                usd_stable_pair,
+                EUR_BALANCE.load(std::sync::atomic::Ordering::Relaxed) as f64,
+                eur_pair_idx,
+                usd_pair_idx,
+                1,
+                0,
+                fee_spot,
+                fee_stablecoin,
+                arb_fee,
+                eur_walk,
+                pair_names,
+                trade_tx.clone(),
+                idx,
+            );
+        }
     }
+}
+
+fn resolve_walk_mode(
+    pair1_idx: usize,
+    pair2_idx: usize,
+    updated_idx: usize,
+    change: BboChange,
+) -> WalkMode {
+    if updated_idx == pair1_idx && change.ask_changed() {
+        WalkMode::FixedAskWalkBids
+    } else if updated_idx == pair2_idx && change.bid_changed() {
+        WalkMode::FixedBidWalkAsks
+    } else {
+        WalkMode::Skip
+    }
+}
+
+fn roi_at_prices(
+    ask_price: f64,
+    bid_price: f64,
+    pair1_stable: &PairData,
+    pair2_stable: &PairData,
+    arb_fee: f64,
+) -> f64 {
+    let arb_prices =
+        (bid_price * pair1_stable.bid_price) / (ask_price * pair2_stable.ask_price);
+    arb_prices * arb_fee
+}
+
+/// Convert a pair2-quote amount into pair1-quote using the same stable legs as ROI.
+fn quote2_to_quote1(amount_quote2: f64, pair1_stable: &PairData, pair2_stable: &PairData) -> f64 {
+    if pair2_stable.ask_price <= 0.0 {
+        return 0.0;
+    }
+    amount_quote2 * pair1_stable.bid_price / pair2_stable.ask_price
+}
+
+fn quote2_to_quote1_fx(pair1_stable: &PairData, pair2_stable: &PairData) -> f64 {
+    if pair2_stable.ask_price <= 0.0 {
+        return 0.0;
+    }
+    pair1_stable.bid_price / pair2_stable.ask_price
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_depth_fill(
+    walk_mode: WalkMode,
+    book1: &OrderBook,
+    book2: &OrderBook,
+    pair1_stable: &PairData,
+    pair2_stable: &PairData,
+    balance: f64,
+    fee_spot: f64,
+    arb_fee: f64,
+) -> Option<DepthFill> {
+    match walk_mode {
+        WalkMode::FixedAskWalkBids => {
+            fixed_ask_walk_bids(book1, book2, pair1_stable, pair2_stable, balance, fee_spot, arb_fee)
+        }
+        WalkMode::FixedBidWalkAsks => {
+            fixed_bid_walk_asks(book1, book2, pair1_stable, pair2_stable, balance, fee_spot, arb_fee)
+        }
+        WalkMode::Skip => None,
+    }
+}
+
+fn empty_slices() -> [PlannedSlice; SLICE_CAP] {
+    [PlannedSlice {
+        leg: "",
+        level_idx: 0,
+        price: 0.0,
+        book_volume: 0.0,
+        planned_volume: 0.0,
+        roi_at_level: 0.0,
+    }; SLICE_CAP]
+}
+
+fn push_slice(slices: &mut [PlannedSlice; SLICE_CAP], count: &mut u8, slice: PlannedSlice) {
+    if (*count as usize) < SLICE_CAP {
+        slices[*count as usize] = slice;
+        *count += 1;
+    }
+}
+
+/// Fix buy-pair top ask; walk sell-pair bids.
+fn fixed_ask_walk_bids(
+    book1: &OrderBook,
+    book2: &OrderBook,
+    pair1_stable: &PairData,
+    pair2_stable: &PairData,
+    balance: f64,
+    fee_spot: f64,
+    arb_fee: f64,
+) -> Option<DepthFill> {
+    if book1.ask_count == 0 || book2.bid_count == 0 {
+        return None;
+    }
+
+    let fixed_ask = &book1.asks[0];
+    if fixed_ask.price <= 0.0 || fixed_ask.volume <= 0.0 {
+        return None;
+    }
+
+    let max_from_balance = balance / (fixed_ask.price * (1.0 + fee_spot));
+    let mut remaining_buy = fixed_ask.volume.min(max_from_balance);
+    let balance_limited = max_from_balance < fixed_ask.volume;
+
+    let mut bid_i = 0usize;
+    let mut bid_rem = book2.bids[0].volume;
+    let mut total_vol = 0.0;
+    let mut total_proceeds = 0.0;
+    let mut slices = empty_slices();
+    let mut slice_count = 0u8;
+    let mut stop_reason = "fixed_leg_exhausted";
+
+    while bid_i < book2.bid_count as usize && remaining_buy > 0.0 {
+        let bid = &book2.bids[bid_i];
+        if bid.price <= 0.0 || bid.volume <= 0.0 {
+            stop_reason = "book_depth_exhausted";
+            break;
+        }
+
+        let roi = roi_at_prices(
+            fixed_ask.price,
+            bid.price,
+            pair1_stable,
+            pair2_stable,
+            arb_fee,
+        );
+        if roi <= 1.0 {
+            stop_reason = "unprofitable_level";
+            break;
+        }
+
+        let trade = remaining_buy.min(bid_rem);
+        if trade <= 0.0 {
+            break;
+        }
+
+        push_slice(
+            &mut slices,
+            &mut slice_count,
+            PlannedSlice {
+                leg: "walk_bid",
+                level_idx: bid_i as u8,
+                price: bid.price,
+                book_volume: bid.volume,
+                planned_volume: trade,
+                roi_at_level: roi,
+            },
+        );
+
+        total_vol += trade;
+        total_proceeds += trade * bid.price;
+        remaining_buy -= trade;
+        bid_rem -= trade;
+
+        if bid_rem <= 0.0 {
+            bid_i += 1;
+            if bid_i < book2.bid_count as usize {
+                bid_rem = book2.bids[bid_i].volume;
+            }
+        }
+    }
+
+    if total_vol <= 0.0 {
+        return None;
+    }
+
+    // Prefer the most specific stop reason after the walk completes.
+    if remaining_buy > 1e-12 {
+        if bid_i >= book2.bid_count as usize {
+            stop_reason = "book_depth_exhausted";
+        }
+        // else leave unprofitable_level / prior reason
+    } else if balance_limited {
+        stop_reason = "balance_capped";
+    } else {
+        stop_reason = "fixed_leg_exhausted";
+    }
+
+    // Fixed ask slice first in the logical plan (insert at front of reported vec later).
+    let mut ordered = empty_slices();
+    let mut ordered_count = 0u8;
+    push_slice(
+        &mut ordered,
+        &mut ordered_count,
+        PlannedSlice {
+            leg: "fixed_ask",
+            level_idx: 0,
+            price: fixed_ask.price,
+            book_volume: fixed_ask.volume,
+            planned_volume: total_vol,
+            roi_at_level: roi_at_prices(
+                fixed_ask.price,
+                book2.bids[0].price,
+                pair1_stable,
+                pair2_stable,
+                arb_fee,
+            ),
+        },
+    );
+    for slice in slices.iter().take(slice_count as usize) {
+        push_slice(&mut ordered, &mut ordered_count, *slice);
+    }
+
+    let vwap_bid = total_proceeds / total_vol;
+    let expected_cost = total_vol * fixed_ask.price * (1.0 + fee_spot);
+    let expected_proceeds = quote2_to_quote1(
+        total_vol * vwap_bid * (1.0 - fee_spot),
+        pair1_stable,
+        pair2_stable,
+    );
+    let expected_pnl = expected_proceeds - expected_cost;
+    let blended_roi = roi_at_prices(
+        fixed_ask.price,
+        vwap_bid,
+        pair1_stable,
+        pair2_stable,
+        arb_fee,
+    );
+
+    Some(DepthFill {
+        volume: total_vol,
+        vwap_ask: fixed_ask.price,
+        vwap_bid,
+        limit_buy_price: fixed_ask.price,
+        blended_roi,
+        balance_limited,
+        walk_mode: WalkMode::FixedAskWalkBids,
+        slices: ordered,
+        slice_count: ordered_count,
+        stop_reason,
+        expected_cost,
+        expected_proceeds,
+        expected_pnl,
+    })
+}
+
+/// Fix sell-pair top bid; walk buy-pair asks.
+fn fixed_bid_walk_asks(
+    book1: &OrderBook,
+    book2: &OrderBook,
+    pair1_stable: &PairData,
+    pair2_stable: &PairData,
+    balance: f64,
+    fee_spot: f64,
+    arb_fee: f64,
+) -> Option<DepthFill> {
+    if book1.ask_count == 0 || book2.bid_count == 0 {
+        return None;
+    }
+
+    let fixed_bid = &book2.bids[0];
+    if fixed_bid.price <= 0.0 || fixed_bid.volume <= 0.0 {
+        return None;
+    }
+
+    let mut remaining_sell = fixed_bid.volume;
+    let mut balance_remaining = balance;
+    let mut balance_limited = false;
+
+    let mut ask_i = 0usize;
+    let mut ask_rem = book1.asks[0].volume;
+    let mut total_vol = 0.0;
+    let mut total_cost = 0.0;
+    let mut limit_buy_price = 0.0;
+    let mut slices = empty_slices();
+    let mut slice_count = 0u8;
+    let mut stop_reason = "fixed_leg_exhausted";
+
+    while ask_i < book1.ask_count as usize && remaining_sell > 0.0 && balance_remaining > 0.0 {
+        let ask = &book1.asks[ask_i];
+        if ask.price <= 0.0 || ask.volume <= 0.0 {
+            stop_reason = "book_depth_exhausted";
+            break;
+        }
+
+        let roi = roi_at_prices(
+            ask.price,
+            fixed_bid.price,
+            pair1_stable,
+            pair2_stable,
+            arb_fee,
+        );
+        if roi <= 1.0 {
+            stop_reason = "unprofitable_level";
+            break;
+        }
+
+        let max_from_balance = balance_remaining / (ask.price * (1.0 + fee_spot));
+        let desired = remaining_sell.min(ask_rem);
+        let trade = desired.min(max_from_balance);
+        if trade <= 0.0 {
+            if max_from_balance < desired {
+                balance_limited = true;
+                stop_reason = "balance_capped";
+            }
+            break;
+        }
+        if trade < desired {
+            balance_limited = true;
+            stop_reason = "balance_capped";
+        }
+
+        push_slice(
+            &mut slices,
+            &mut slice_count,
+            PlannedSlice {
+                leg: "walk_ask",
+                level_idx: ask_i as u8,
+                price: ask.price,
+                book_volume: ask.volume,
+                planned_volume: trade,
+                roi_at_level: roi,
+            },
+        );
+
+        total_vol += trade;
+        total_cost += trade * ask.price;
+        limit_buy_price = ask.price;
+        remaining_sell -= trade;
+        ask_rem -= trade;
+        balance_remaining -= trade * ask.price * (1.0 + fee_spot);
+
+        if ask_rem <= 0.0 {
+            ask_i += 1;
+            if ask_i < book1.ask_count as usize {
+                ask_rem = book1.asks[ask_i].volume;
+            } else if remaining_sell > 0.0 && !balance_limited {
+                stop_reason = "book_depth_exhausted";
+            }
+        }
+    }
+
+    if total_vol <= 0.0 {
+        return None;
+    }
+
+    if remaining_sell <= 1e-15 && !balance_limited {
+        stop_reason = "fixed_leg_exhausted";
+    }
+
+    let mut ordered = empty_slices();
+    let mut ordered_count = 0u8;
+    for slice in slices.iter().take(slice_count as usize) {
+        push_slice(&mut ordered, &mut ordered_count, *slice);
+    }
+    push_slice(
+        &mut ordered,
+        &mut ordered_count,
+        PlannedSlice {
+            leg: "fixed_bid",
+            level_idx: 0,
+            price: fixed_bid.price,
+            book_volume: fixed_bid.volume,
+            planned_volume: total_vol,
+            roi_at_level: roi_at_prices(
+                book1.asks[0].price,
+                fixed_bid.price,
+                pair1_stable,
+                pair2_stable,
+                arb_fee,
+            ),
+        },
+    );
+
+    let vwap_ask = total_cost / total_vol;
+    let expected_cost = total_vol * vwap_ask * (1.0 + fee_spot);
+    let expected_proceeds = quote2_to_quote1(
+        total_vol * fixed_bid.price * (1.0 - fee_spot),
+        pair1_stable,
+        pair2_stable,
+    );
+    let expected_pnl = expected_proceeds - expected_cost;
+    let blended_roi = roi_at_prices(
+        vwap_ask,
+        fixed_bid.price,
+        pair1_stable,
+        pair2_stable,
+        arb_fee,
+    );
+
+    Some(DepthFill {
+        volume: total_vol,
+        vwap_ask,
+        vwap_bid: fixed_bid.price,
+        limit_buy_price,
+        blended_roi,
+        balance_limited,
+        walk_mode: WalkMode::FixedBidWalkAsks,
+        slices: ordered,
+        slice_count: ordered_count,
+        stop_reason,
+        expected_cost,
+        expected_proceeds,
+        expected_pnl,
+    })
+}
+
+fn guardrail_failure_reason(
+    volume: f64,
+    vwap_ask: f64,
+    vwap_bid: f64,
+    pair1: &PairData,
+    pair2: &PairData,
+) -> Option<&'static str> {
+    const FACTOR_OF_SAFETY: f64 = 1.01;
+    if volume < pair1.order_min || volume < pair2.order_min {
+        return Some("below_min_order");
+    }
+    if volume < pair1.cost_min * vwap_ask * FACTOR_OF_SAFETY
+        || volume < pair2.cost_min * vwap_bid * FACTOR_OF_SAFETY
+    {
+        return Some("below_min_cost");
+    }
+    None
 }
 
 /// Process an arbitrage opportunity: check volumes, guardrails, and trigger trades
@@ -125,6 +610,8 @@ fn process_arbitrage_opportunity(
     roi: f64,
     pair1: &PairData,
     pair2: &PairData,
+    book1: &OrderBook,
+    book2: &OrderBook,
     pair1_stable: &PairData,
     pair2_stable: &PairData,
     balance: f64,
@@ -134,11 +621,12 @@ fn process_arbitrage_opportunity(
     pair2_stable_idx: usize,
     fee_spot: f64,
     fee_stablecoin: f64,
+    arb_fee: f64,
+    walk_mode: WalkMode,
     pair_names: &[&'static str],
     trade_tx: mpsc::Sender<OrderInfo>,
     updated_pair_idx: usize,
 ) {
-    // Get pair names safely - return early if any are missing
     let pair1_name = pair_names.get(pair1_idx).copied();
     let pair2_name = pair_names.get(pair2_idx).copied();
     let pair1_stable_name = pair_names.get(pair1_stable_idx).copied();
@@ -159,17 +647,78 @@ fn process_arbitrage_opportunity(
             }
         };
 
-    log::debug!(
-        "Opportunity found starting with pair {}. ROI: {}",
-        pair1_name,
-        roi
-    );
-    let (volume, volume_limited_by_balance) = limiting_volume(pair1, pair2, balance, fee_spot);
-    let pair1_amount_in = volume * pair1.ask_price * (1.0 + fee_spot);
-    let volume_stable =
-        compute_volume_stable(volume, pair2, pair2_stable, fee_spot, fee_stablecoin);
+    let opportunity_id = next_opportunity_id();
+    let eval_ts_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
 
-    // Get the updated pair's kraken_ts for guardrails
+    let depth = match compute_depth_fill(
+        walk_mode,
+        book1,
+        book2,
+        pair1_stable,
+        pair2_stable,
+        balance,
+        fee_spot,
+        arb_fee,
+    ) {
+        Some(d) => d,
+        None => {
+            log::debug!(
+                "No profitable depth volume for {} (walk={})",
+                pair1_name,
+                walk_mode.as_str()
+            );
+            try_log(ForensicsEvent::ArbOpportunity(ArbOpportunityEvent {
+                event: "arb_opportunity",
+                opportunity_id,
+                walk_mode: walk_mode.as_str(),
+                pair1: pair1_name,
+                pair2: pair2_name,
+                bbo_roi: roi,
+                blended_roi: 0.0,
+                depth_volume: 0.0,
+                vwap_ask: pair1.ask_price,
+                vwap_bid: pair2.bid_price,
+                limit_buy_price: pair1.ask_price,
+                expected_cost: 0.0,
+                expected_proceeds: 0.0,
+                expected_pnl: 0.0,
+                expected_pnl_bps: 0.0,
+                stop_reason: "no_depth_volume",
+                balance_limited: false,
+                decision: "no_depth_volume",
+                kraken_ts: if updated_pair_idx == pair1_idx {
+                    pair1.kraken_ts
+                } else {
+                    pair2.kraken_ts
+                },
+                eval_ts_ns,
+                slices: Vec::new(),
+            }));
+            return;
+        }
+    };
+
+    log::debug!(
+        "Opportunity found starting with pair {}. BBO ROI: {}, blended ROI: {}, vol: {}, walk: {}",
+        pair1_name,
+        roi,
+        depth.blended_roi,
+        depth.volume,
+        walk_mode.as_str()
+    );
+
+    let pair1_amount_in = depth.expected_cost;
+    let volume_stable = compute_volume_stable(
+        depth.volume,
+        depth.vwap_bid,
+        pair2_stable,
+        fee_spot,
+        fee_stablecoin,
+    );
+
     let updated_pair_kraken_ts = if updated_pair_idx == pair1_idx {
         pair1.kraken_ts
     } else if updated_pair_idx == pair2_idx {
@@ -179,7 +728,42 @@ fn process_arbitrage_opportunity(
         pair1.kraken_ts
     };
 
-    // Log opportunity even if we can't trade
+    let decision = if let Some(reason) =
+        guardrail_failure_reason(depth.volume, depth.vwap_ask, depth.vwap_bid, pair1, pair2)
+    {
+        reason
+    } else {
+        let send_timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+
+        // Trade first — forensics after handoff.
+        trigger_trades(
+            &OrderInfo {
+                pair1_name,
+                pair2_name,
+                pair1_stable_name,
+                pair2_stable_name,
+                volume_coin: depth.volume,
+                volume_stable,
+                volume_decimals_coin: pair1.volume_decimals,
+                volume_decimals_stable: pair1_stable.volume_decimals,
+                send_timestamp,
+                pair1_price: depth.limit_buy_price,
+                price_decimals: pair1.price_decimals,
+                updated_pair_kraken_ts,
+                opportunity_id,
+                planned_vwap_ask: depth.vwap_ask,
+                planned_vwap_bid: depth.vwap_bid,
+                quote2_to_quote1_fx: quote2_to_quote1_fx(pair1_stable, pair2_stable),
+            },
+            &trade_tx,
+        )
+    };
+
+    // Influx summary (existing dashboards) — after trade handoff attempt.
+    let l1_limiting_volume = pair1.ask_volume.min(pair2.bid_volume);
     log_arbitrage_opportunity(
         pair1_name,
         pair2_name,
@@ -200,42 +784,43 @@ fn process_arbitrage_opportunity(
         pair2_stable.bid_volume,
         pair2_stable.ask_volume,
         roi,
-        volume,
+        depth.volume,
         pair1_amount_in,
-        volume_limited_by_balance,
+        depth.balance_limited,
+        walk_mode.as_str(),
+        depth.vwap_ask,
+        depth.vwap_bid,
+        depth.blended_roi,
+        depth.limit_buy_price,
+        l1_limiting_volume,
+        depth.expected_pnl,
     );
 
-    if !check_guardrails(volume, pair1, pair2) {
-        log::debug!("Not enough volume to trade. Cannot trade.");
-        return;
-    }
-
-    let send_timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-
-    trigger_trades(
-        &OrderInfo {
-            pair1_name,
-            pair2_name,
-            pair1_stable_name,
-            pair2_stable_name,
-            volume_coin: volume,
-            volume_stable,
-            volume_decimals_coin: pair1.volume_decimals,
-            volume_decimals_stable: pair1_stable.volume_decimals,
-            send_timestamp,
-            pair1_price: pair1.ask_price,
-            price_decimals: pair1.price_decimals,
-            updated_pair_kraken_ts,
-        },
-        trade_tx,
-    );
+    try_log(ForensicsEvent::ArbOpportunity(ArbOpportunityEvent {
+        event: "arb_opportunity",
+        opportunity_id,
+        walk_mode: walk_mode.as_str(),
+        pair1: pair1_name,
+        pair2: pair2_name,
+        bbo_roi: roi,
+        blended_roi: depth.blended_roi,
+        depth_volume: depth.volume,
+        vwap_ask: depth.vwap_ask,
+        vwap_bid: depth.vwap_bid,
+        limit_buy_price: depth.limit_buy_price,
+        expected_cost: depth.expected_cost,
+        expected_proceeds: depth.expected_proceeds,
+        expected_pnl: depth.expected_pnl,
+        expected_pnl_bps: depth.expected_pnl_bps(),
+        stop_reason: depth.stop_reason,
+        balance_limited: depth.balance_limited,
+        decision,
+        kraken_ts: updated_pair_kraken_ts,
+        eval_ts_ns,
+        slices: depth.slices_vec(),
+    }));
 }
 
-/// Compute the ROI of an arbitrage opportunity
-/// Instead of computing arb_fee each time, compute it once and pass it in
 fn compute_roi(
     pair1: &PairData,
     pair2: &PairData,
@@ -243,88 +828,316 @@ fn compute_roi(
     pair2_stable: &PairData,
     arb_fee: f64,
 ) -> f64 {
-    let arb_prices =
-        (pair2.bid_price * pair1_stable.bid_price) / (pair1.ask_price * pair2_stable.ask_price);
-    arb_prices * arb_fee
+    roi_at_prices(
+        pair1.ask_price,
+        pair2.bid_price,
+        pair1_stable,
+        pair2_stable,
+        arb_fee,
+    )
 }
 
-/// Find the largest amount of volume of COIN we can trade to get the best price levels
-/// Also returns whether the volume is limited by the balance, which is useful for logging
-/// Assumes the stablecoin has infinite liquidity with no slippage (fair for our purposes)
-fn limiting_volume(pair1: &PairData, pair2: &PairData, balance: f64, fee_spot: f64) -> (f64, bool) {
-    // Compute the effective volume we can spend based on balance and ask price (with fee)
-    let volume_balance = balance / (pair1.ask_price * (1.0 + fee_spot));
-
-    // Take the minimum of effective balance, max ask size, and max bid size
-    let min_volume = volume_balance.min(pair1.ask_volume).min(pair2.bid_volume);
-
-    log::debug!(
-        "Limiting volume: {}, Balance volume: {}, Pair1 ask volume: {}, Pair2 bid volume: {}",
-        min_volume,
-        volume_balance,
-        pair1.ask_volume,
-        pair2.bid_volume
-    );
-
-    (min_volume, min_volume == volume_balance)
-}
-
-/// Compute the volume of the stablecoin that we can trade
-/// Based on how much we make from selling for pair2, then how much we can afford to buy for pair2_stable
-/// Small factor of safety to account for minor slippage
 fn compute_volume_stable(
     volume: f64,
-    pair2: &PairData,
+    vwap_bid: f64,
     pair2_stable: &PairData,
     fee_spot: f64,
     fee_stablecoin: f64,
 ) -> f64 {
-    let pair2_amount = volume * pair2.bid_price * (1.0 - fee_spot);
+    let pair2_amount = volume * vwap_bid * (1.0 - fee_spot);
     let volume_stable = pair2_amount / (pair2_stable.ask_price * (1.0 + fee_stablecoin));
     volume_stable * 0.95
 }
 
-/// Check if the volume is greater than the minimum order size and minimum cost
-fn check_guardrails(volume: f64, pair1: &PairData, pair2: &PairData) -> bool {
-    const FACTOR_OF_SAFETY: f64 = 1.01; // Account for minor slippage and fees
-
-    // Check if the volume is greater than the minimum order size
-    if volume < pair1.order_min || volume < pair2.order_min {
-        return false;
-    }
-
-    // Check if the volume is greater than the minimum cost
-    if volume < pair1.cost_min * pair1.ask_price * FACTOR_OF_SAFETY
-        || volume < pair2.cost_min * pair2.bid_price * FACTOR_OF_SAFETY
-    {
-        return false;
-    }
-    true
-}
-
 /// Send the signal to start the arbitrage trades.
-/// Drops the message immediately if trader is busy (no queuing of stale orders).
-fn trigger_trades(order_info: &OrderInfo, trade_tx: mpsc::Sender<OrderInfo>) {
-    // Check if trader is busy first - if so, drop immediately
+/// Returns decision string for forensics.
+fn trigger_trades(order_info: &OrderInfo, trade_tx: &mpsc::Sender<OrderInfo>) -> &'static str {
     if TRADER_BUSY.load(Ordering::Relaxed) {
         log::info!("Trader busy, dropping order for {}", order_info.pair1_name);
-        return;
+        return "trader_busy";
     }
 
-    // Try to send the order info to the trading thread
     match trade_tx.try_send(order_info.clone()) {
-        Ok(()) => {
-            // Successfully sent
-        }
+        Ok(()) => "sent",
         Err(mpsc::error::TrySendError::Full(_)) => {
-            // Channel buffer full (shouldn't happen if trader is idle, but handle gracefully)
             log::warn!(
                 "Channel buffer full, dropping order for {}",
                 order_info.pair1_name
             );
+            "channel_full"
         }
         Err(mpsc::error::TrySendError::Closed(_)) => {
             log::error!("Trading channel closed, cannot send order");
+            "channel_closed"
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::orderbook::OrderBook;
+
+    fn stable_pair(bid: f64, ask: f64) -> PairData {
+        PairData {
+            bid_price: bid,
+            ask_price: ask,
+            bid_volume: 1_000_000.0,
+            ask_volume: 1_000_000.0,
+            order_min: 0.0,
+            cost_min: 0.0,
+            price_decimals: 4,
+            volume_decimals: 8,
+            pair_status: true,
+            kraken_ts: 0.0,
+        }
+    }
+
+    fn coin_pair() -> PairData {
+        PairData {
+            bid_price: 100.0,
+            ask_price: 101.0,
+            bid_volume: 1.0,
+            ask_volume: 1.0,
+            order_min: 0.001,
+            cost_min: 0.0,
+            price_decimals: 2,
+            volume_decimals: 8,
+            pair_status: true,
+            kraken_ts: 0.0,
+        }
+    }
+
+    fn book_from_levels(asks: &[(&str, &str)], bids: &[(&str, &str)]) -> OrderBook {
+        let ask_levels: Vec<(&str, &str, f64)> =
+            asks.iter().map(|&(p, v)| (p, v, 1.0)).collect();
+        let bid_levels: Vec<(&str, &str, f64)> =
+            bids.iter().map(|&(p, v)| (p, v, 1.0)).collect();
+        let mut book = OrderBook::new();
+        book.apply_snapshot(&ask_levels, &bid_levels);
+        book
+    }
+
+    const ARB_FEE: f64 = 0.992;
+    const FEE_SPOT: f64 = 0.004;
+
+    #[test]
+    fn resolve_walk_mode_usd_ask_triggers_fixed_ask() {
+        let change = BboChange {
+            changed: true,
+            ask_price_changed: true,
+            ..BboChange::default()
+        };
+        assert_eq!(
+            resolve_walk_mode(2, 3, 2, change),
+            WalkMode::FixedAskWalkBids
+        );
+    }
+
+    #[test]
+    fn resolve_walk_mode_irrelevant_bid_skips_usd_to_eur() {
+        let change = BboChange {
+            changed: true,
+            bid_price_changed: true,
+            ..BboChange::default()
+        };
+        assert_eq!(resolve_walk_mode(2, 3, 2, change), WalkMode::Skip);
+    }
+
+    #[test]
+    fn resolve_walk_mode_eur_bid_triggers_fixed_bid() {
+        let change = BboChange {
+            changed: true,
+            bid_price_changed: true,
+            ..BboChange::default()
+        };
+        assert_eq!(
+            resolve_walk_mode(2, 3, 3, change),
+            WalkMode::FixedBidWalkAsks
+        );
+    }
+
+    #[test]
+    fn fixed_ask_walk_bids_uses_deep_bids() {
+        let book1 = book_from_levels(&[("100.0", "10.0")], &[("99.0", "1.0")]);
+        let book2 = book_from_levels(
+            &[("200.0", "1.0")],
+            &[("105.0", "1.0"), ("104.0", "5.0")],
+        );
+        let s1 = stable_pair(1.0, 1.0);
+        let s2 = stable_pair(1.0, 1.0);
+
+        let fill = fixed_ask_walk_bids(&book1, &book2, &s1, &s2, 1_000_000.0, FEE_SPOT, ARB_FEE)
+            .expect("fill");
+
+        assert_eq!(fill.walk_mode, WalkMode::FixedAskWalkBids);
+        assert!((fill.volume - 6.0).abs() < 1e-9);
+        assert!((fill.limit_buy_price - 100.0).abs() < 1e-9);
+        assert!((fill.vwap_bid - (105.0 + 5.0 * 104.0) / 6.0).abs() < 1e-9);
+        assert!(fill.slice_count >= 2);
+        assert_eq!(fill.slices[0].leg, "fixed_ask");
+        assert_eq!(fill.slices[1].leg, "walk_bid");
+        assert!(fill.expected_pnl > 0.0);
+        // Ask still has leftover volume; walk stopped because bids were exhausted.
+        assert_eq!(fill.stop_reason, "book_depth_exhausted");
+    }
+
+    #[test]
+    fn fixed_ask_walk_bids_stops_at_unprofitable_bid() {
+        let book1 = book_from_levels(&[("100.0", "10.0")], &[]);
+        let book2 = book_from_levels(&[], &[("105.0", "2.0"), ("100.5", "5.0")]);
+        let s1 = stable_pair(1.0, 1.0);
+        let s2 = stable_pair(1.0, 1.0);
+
+        let fill = fixed_ask_walk_bids(&book1, &book2, &s1, &s2, 1_000_000.0, FEE_SPOT, ARB_FEE)
+            .expect("fill");
+
+        assert!((fill.volume - 2.0).abs() < 1e-9);
+        assert_eq!(fill.stop_reason, "unprofitable_level");
+    }
+
+    #[test]
+    fn fixed_bid_walk_asks_uses_deep_asks() {
+        let book1 = book_from_levels(&[("100.0", "1.0"), ("101.0", "5.0")], &[]);
+        let book2 = book_from_levels(&[], &[("105.0", "10.0")]);
+        let s1 = stable_pair(1.0, 1.0);
+        let s2 = stable_pair(1.0, 1.0);
+
+        let fill = fixed_bid_walk_asks(&book1, &book2, &s1, &s2, 1_000_000.0, FEE_SPOT, ARB_FEE)
+            .expect("fill");
+
+        assert_eq!(fill.walk_mode, WalkMode::FixedBidWalkAsks);
+        assert!((fill.volume - 6.0).abs() < 1e-9);
+        assert!((fill.limit_buy_price - 101.0).abs() < 1e-9);
+        assert!(fill.slices.iter().any(|s| s.leg == "walk_ask"));
+        assert!(fill.slices.iter().any(|s| s.leg == "fixed_bid"));
+    }
+
+    #[test]
+    fn fixed_ask_walk_bids_balance_limited() {
+        let book1 = book_from_levels(&[("100.0", "10.0")], &[]);
+        let book2 = book_from_levels(&[], &[("105.0", "10.0")]);
+        let s1 = stable_pair(1.0, 1.0);
+        let s2 = stable_pair(1.0, 1.0);
+
+        let balance = 150.0;
+        let fill = fixed_ask_walk_bids(&book1, &book2, &s1, &s2, balance, FEE_SPOT, ARB_FEE)
+            .expect("fill");
+
+        let max_vol = balance / (100.0 * (1.0 + FEE_SPOT));
+        assert!((fill.volume - max_vol).abs() < 1e-9);
+        assert!(fill.balance_limited);
+        assert_eq!(fill.stop_reason, "balance_capped");
+    }
+
+    #[test]
+    fn same_pair_ask_and_bid_change_resolve_different_directions() {
+        let change = BboChange {
+            changed: true,
+            ask_price_changed: true,
+            bid_price_changed: true,
+            ..BboChange::default()
+        };
+        assert_eq!(
+            resolve_walk_mode(2, 3, 2, change),
+            WalkMode::FixedAskWalkBids
+        );
+        assert_eq!(
+            resolve_walk_mode(3, 2, 2, change),
+            WalkMode::FixedBidWalkAsks
+        );
+    }
+
+    #[test]
+    fn check_guardrails_uses_vwap() {
+        let pair1 = coin_pair();
+        let pair2 = coin_pair();
+        assert!(guardrail_failure_reason(1.0, 101.0, 100.0, &pair1, &pair2).is_none());
+        assert_eq!(
+            guardrail_failure_reason(0.0001, 101.0, 100.0, &pair1, &pair2),
+            Some("below_min_order")
+        );
+    }
+
+    #[test]
+    fn expected_pnl_is_in_pair1_quote_via_stables() {
+        let book1 = book_from_levels(&[("100.0", "1.0")], &[]);
+        let book2 = book_from_levels(&[], &[("105.0", "1.0")]);
+        let s1 = stable_pair(1.0, 1.0);
+        let s2 = stable_pair(0.9, 0.9);
+
+        let fill = fixed_ask_walk_bids(&book1, &book2, &s1, &s2, 1_000_000.0, FEE_SPOT, ARB_FEE)
+            .expect("fill");
+
+        let cost = 1.0 * 100.0 * (1.0 + FEE_SPOT);
+        let proceeds = 1.0 * 105.0 * (1.0 - FEE_SPOT) * (s1.bid_price / s2.ask_price);
+        assert!((fill.expected_cost - cost).abs() < 1e-9);
+        assert!((fill.expected_proceeds - proceeds).abs() < 1e-9);
+        assert!((fill.expected_pnl - (proceeds - cost)).abs() < 1e-9);
+
+        let naive_cross_currency = 1.0 * 105.0 * (1.0 - FEE_SPOT) - cost;
+        assert!(
+            (fill.expected_pnl - naive_cross_currency).abs() > 1.0,
+            "PnL must convert pair2 quote via stables, not subtract raw notionals"
+        );
+    }
+
+    #[test]
+    fn fixed_bid_walk_asks_keeps_fixed_bid_slice_at_full_depth() {
+        let asks = [
+            ("100.0", "1.0"),
+            ("100.1", "1.0"),
+            ("100.2", "1.0"),
+            ("100.3", "1.0"),
+            ("100.4", "1.0"),
+            ("100.5", "1.0"),
+            ("100.6", "1.0"),
+            ("100.7", "1.0"),
+            ("100.8", "1.0"),
+            ("100.9", "1.0"),
+        ];
+        assert_eq!(asks.len(), BOOK_DEPTH);
+        let book1 = book_from_levels(&asks, &[]);
+        let book2 = book_from_levels(&[], &[("110.0", "20.0")]);
+        let s1 = stable_pair(1.0, 1.0);
+        let s2 = stable_pair(1.0, 1.0);
+
+        let fill = fixed_bid_walk_asks(&book1, &book2, &s1, &s2, 1_000_000.0, FEE_SPOT, ARB_FEE)
+            .expect("fill");
+
+        let slices = fill.slices_vec();
+        assert_eq!(slices.len(), BOOK_DEPTH + 1);
+        assert_eq!(slices[0].leg, "walk_ask");
+        assert_eq!(slices[BOOK_DEPTH].leg, "fixed_bid");
+        assert!((slices[BOOK_DEPTH].planned_volume - fill.volume).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fixed_ask_walk_bids_keeps_fixed_ask_slice_at_full_depth() {
+        let bids = [
+            ("110.0", "1.0"),
+            ("109.9", "1.0"),
+            ("109.8", "1.0"),
+            ("109.7", "1.0"),
+            ("109.6", "1.0"),
+            ("109.5", "1.0"),
+            ("109.4", "1.0"),
+            ("109.3", "1.0"),
+            ("109.2", "1.0"),
+            ("109.1", "1.0"),
+        ];
+        assert_eq!(bids.len(), BOOK_DEPTH);
+        let book1 = book_from_levels(&[("100.0", "20.0")], &[]);
+        let book2 = book_from_levels(&[], &bids);
+        let s1 = stable_pair(1.0, 1.0);
+        let s2 = stable_pair(1.0, 1.0);
+
+        let fill = fixed_ask_walk_bids(&book1, &book2, &s1, &s2, 1_000_000.0, FEE_SPOT, ARB_FEE)
+            .expect("fill");
+
+        let slices = fill.slices_vec();
+        assert_eq!(slices.len(), BOOK_DEPTH + 1);
+        assert_eq!(slices[0].leg, "fixed_ask");
+        assert_eq!(slices[BOOK_DEPTH].leg, "walk_bid");
     }
 }

@@ -4,6 +4,7 @@ use std::env;
 use std::sync::atomic::{AtomicBool, AtomicI16};
 use tokio::sync::mpsc;
 
+mod arb_forensics;
 mod asset_pairs;
 mod evaluate_arbitrage;
 mod influx;
@@ -66,6 +67,7 @@ async fn initialize_app() -> Config {
     dotenv().ok();
     let config = Config::initialize().await;
     utils::init_logging(config.debug_mode);
+    arb_forensics::init();
 
     let mode_message = if config.allow_trades {
         "💰 Launching Kraken arbitrage: Trade mode"
