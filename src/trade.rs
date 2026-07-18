@@ -1,3 +1,6 @@
+use crate::arb_forensics::{
+    try_log, ArbExecutionEvent, FillRecord, ForensicsEvent,
+};
 use crate::influx::log_trade_message_receive_speed;
 use crate::structs::OrderInfo;
 use crate::utils::wait_approx_ms;
@@ -12,6 +15,17 @@ use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
+#[derive(Clone, Debug)]
+struct OwnTradeFill {
+    userref: i32,
+    volume: f64,
+    price: f64,
+    fee: f64,
+    cost: f64,
+    side: &'static str,
+    time: f64,
+}
+
 /// Set up private WebSocket connection and subscribe to own trades
 async fn setup_private_websocket(
     token: &str,
@@ -23,18 +37,15 @@ async fn setup_private_websocket(
     ),
     String,
 > {
-    // Parse URL
     let url = url::Url::parse(ws_url)
         .map_err(|e| format!("Failed to parse WebSocket URL '{}': {}", ws_url, e))?;
 
-    // Connect to websocket
     let (ws_stream, _) = connect_async(url)
         .await
         .map_err(|e| format!("Failed to connect to private websocket: {}", e))?;
 
     let (mut write, read) = ws_stream.split();
 
-    // Create subscription message
     let sub_msg = serde_json::json!({
         "event": "subscribe",
         "subscription": {
@@ -43,7 +54,6 @@ async fn setup_private_websocket(
         }
     });
 
-    // Send subscription message
     write
         .send(Message::Text(sub_msg.to_string()))
         .await
@@ -55,16 +65,13 @@ async fn setup_private_websocket(
 }
 
 /// Trading thread main loop
-/// Receives OrderInfo messages and executes the trading logic
 pub async fn run_trading_thread(
     token: String,
     private_ws_url: String,
     mut trade_rx: mpsc::Receiver<OrderInfo>,
     allow_trades: bool,
 ) {
-    // Set up private WebSocket connection and ownTrades listener only if trading
     let (mut write, mut filled_volume_rx) = if allow_trades {
-        // If setup fails, panic since trading cannot proceed without a connection
         let (write, read) = match setup_private_websocket(&token, &private_ws_url).await {
             Ok(streams) => streams,
             Err(e) => {
@@ -77,15 +84,12 @@ pub async fn run_trading_thread(
             }
         };
 
-        // Listen to ownTrades messages
-        let (_filled_volume_tx, filled_volume_rx) = {
-            let (tx, rx) = mpsc::unbounded_channel::<(i32, f64)>();
-            let token_clone = token.clone();
-            let tx_clone = tx.clone();
+        let filled_volume_rx = {
+            let (tx, rx) = mpsc::unbounded_channel::<OwnTradeFill>();
             tokio::spawn(async move {
-                listen_to_own_trades(read, &token_clone, tx_clone).await;
+                listen_to_own_trades(read, tx).await;
             });
-            (tx, rx)
+            rx
         };
 
         (Some(write), Some(filled_volume_rx))
@@ -94,10 +98,8 @@ pub async fn run_trading_thread(
     };
 
     while let Some(order) = trade_rx.recv().await {
-        // Mark trader as busy before processing
         TRADER_BUSY.store(true, Ordering::Relaxed);
 
-        // Log trade message receive speed
         let receive_timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -107,14 +109,12 @@ pub async fn run_trading_thread(
         if let (Some(ref mut write), Some(ref mut filled_volume_rx)) =
             (&mut write, &mut filled_volume_rx)
         {
-            // Guardrail: Only trade if the data is fresh
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs_f64();
             let time_diff = now - order.updated_pair_kraken_ts;
             if time_diff < 0.0015 {
-                // Less than 1.5ms difference
                 log::debug!("Sending order starting with {}", order.pair1_name);
                 make_trades_limit_ioc(write, &token, &order, filled_volume_rx).await;
             } else {
@@ -123,85 +123,67 @@ pub async fn run_trading_thread(
                     order.pair1_name,
                     time_diff,
                 );
+                try_log(ForensicsEvent::ArbExecution(ArbExecutionEvent {
+                    event: "arb_execution",
+                    opportunity_id: order.opportunity_id,
+                    userref: 0,
+                    pair1: order.pair1_name,
+                    pair2: order.pair2_name,
+                    requested_volume: order.volume_coin,
+                    limit_buy_price: order.pair1_price,
+                    planned_vwap_ask: order.planned_vwap_ask,
+                    planned_vwap_bid: order.planned_vwap_bid,
+                    buy_fills: Vec::new(),
+                    sell_fills: Vec::new(),
+                    actual_buy_volume: 0.0,
+                    actual_buy_vwap: 0.0,
+                    actual_buy_fee: 0.0,
+                    actual_sell_volume: 0.0,
+                    actual_sell_vwap: 0.0,
+                    actual_sell_fee: 0.0,
+                    volume_shortfall: order.volume_coin,
+                    buy_slippage_bps: 0.0,
+                    sell_slippage_bps: 0.0,
+                    realized_pnl: 0.0,
+                    outcome: "stale_skip",
+                }));
             }
         }
 
-        // Mark trader as idle after processing
         TRADER_BUSY.store(false, Ordering::Relaxed);
     }
     log::info!("Trading channel closed, exiting trading thread");
 }
 
-/// Listen to ownTrades WebSocket messages and extract filled volumes by userref
 async fn listen_to_own_trades(
     mut read: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
-    _token: &str,
-    filled_volume_tx: mpsc::UnboundedSender<(i32, f64)>,
+    filled_volume_tx: mpsc::UnboundedSender<OwnTradeFill>,
 ) {
     while let Some(msg) = read.next().await {
         match msg {
             Ok(Message::Text(text)) => {
                 if let Ok(data) = serde_json::from_str::<serde_json::Value>(&text) {
-                    // ownTrades messages come as arrays: [trades_array, "ownTrades", feed_detail]
                     if let Some(array) = data.as_array() {
-                        if array.len() >= 3 {
-                            // Check that array[1] is "ownTrades"
-                            if array[1].as_str() == Some("ownTrades") {
-                                // array[0] is the trades array
-                                if let Some(trades_array) = array[0].as_array() {
-                                    // Iterate through each trade in the trades array
-                                    for trade_obj in trades_array {
-                                        if let Some(trade_obj_map) = trade_obj.as_object() {
-                                            // Each trade object has trade ID as key, trade data as value
-                                            for (_trade_id, trade_data) in trade_obj_map {
-                                                if let Some(trade_info) = trade_data.as_object() {
-                                                    // Extract userref and volume
-                                                    // userref can be integer or string, vol is string
-                                                    let userref_opt =
-                                                        trade_info.get("userref").and_then(|v| {
-                                                            // Try as integer first
-                                                            v.as_i64().map(|i| i as i32).or_else(
-                                                                || {
-                                                                    // Fall back to string parsing
-                                                                    v.as_str().and_then(|s| {
-                                                                        s.parse::<i32>().ok()
-                                                                    })
-                                                                },
-                                                            )
-                                                        });
-
-                                                    let vol_opt = trade_info
-                                                        .get("vol")
-                                                        .and_then(|v| v.as_str())
-                                                        .and_then(|s| s.parse::<f64>().ok());
-
-                                                    if let (Some(userref), Some(volume)) =
-                                                        (userref_opt, vol_opt)
-                                                    {
-                                                        // Only send if it's a buy order (type "buy" or "b")
-                                                        let order_type = trade_info
-                                                            .get("type")
-                                                            .and_then(|v| v.as_str());
-
-                                                        if order_type == Some("buy")
-                                                            || order_type == Some("b")
-                                                        {
-                                                            log::debug!(
-                                                                "Received ownTrade fill: userref={}, volume={}, type={:?}",
-                                                                userref,
-                                                                volume,
-                                                                order_type
-                                                            );
-                                                            if filled_volume_tx
-                                                                .send((userref, volume))
-                                                                .is_err()
-                                                            {
-                                                                log::warn!(
-                                                                    "filled_volume_tx receiver dropped"
-                                                                );
-                                                                return;
-                                                            }
-                                                        }
+                        if array.len() >= 3 && array[1].as_str() == Some("ownTrades") {
+                            if let Some(trades_array) = array[0].as_array() {
+                                for trade_obj in trades_array {
+                                    if let Some(trade_obj_map) = trade_obj.as_object() {
+                                        for (_trade_id, trade_data) in trade_obj_map {
+                                            if let Some(trade_info) = trade_data.as_object() {
+                                                if let Some(fill) = parse_own_trade_fill(trade_info)
+                                                {
+                                                    log::debug!(
+                                                        "Received ownTrade fill: userref={}, volume={}, price={}, side={}",
+                                                        fill.userref,
+                                                        fill.volume,
+                                                        fill.price,
+                                                        fill.side
+                                                    );
+                                                    if filled_volume_tx.send(fill).is_err() {
+                                                        log::warn!(
+                                                            "filled_volume_tx receiver dropped"
+                                                        );
+                                                        return;
                                                     }
                                                 }
                                             }
@@ -226,19 +208,109 @@ async fn listen_to_own_trades(
     log::info!("ownTrades listener task ended");
 }
 
+fn parse_own_trade_fill(
+    trade_info: &serde_json::Map<String, serde_json::Value>,
+) -> Option<OwnTradeFill> {
+    let userref = trade_info.get("userref").and_then(|v| {
+        v.as_i64()
+            .map(|i| i as i32)
+            .or_else(|| v.as_str().and_then(|s| s.parse::<i32>().ok()))
+    })?;
+
+    let volume = trade_info
+        .get("vol")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<f64>().ok())?;
+
+    let price = trade_info
+        .get("price")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0);
+
+    let fee = trade_info
+        .get("fee")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0);
+
+    let cost = trade_info
+        .get("cost")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(price * volume);
+
+    let side = match trade_info.get("type").and_then(|v| v.as_str()) {
+        Some("buy") | Some("b") => "buy",
+        Some("sell") | Some("s") => "sell",
+        _ => return None,
+    };
+
+    let time = trade_info
+        .get("time")
+        .and_then(|v| {
+            v.as_str()
+                .and_then(|s| s.parse::<f64>().ok())
+                .or_else(|| v.as_f64())
+        })
+        .unwrap_or(0.0);
+
+    Some(OwnTradeFill {
+        userref,
+        volume,
+        price,
+        fee,
+        cost,
+        side,
+        time,
+    })
+}
+
+fn summarize_fills(fills: &[OwnTradeFill]) -> (f64, f64, f64, Vec<FillRecord>) {
+    let mut volume = 0.0;
+    let mut notional = 0.0;
+    let mut fee = 0.0;
+    let mut records = Vec::with_capacity(fills.len());
+    for f in fills {
+        volume += f.volume;
+        notional += f.price * f.volume;
+        fee += f.fee;
+        records.push(FillRecord {
+            volume: f.volume,
+            price: f.price,
+            fee: f.fee,
+            cost: f.cost,
+            side: f.side,
+            time: f.time,
+        });
+    }
+    let vwap = if volume > 0.0 { notional / volume } else { 0.0 };
+    (volume, vwap, fee, records)
+}
+
+fn slippage_bps(planned: f64, actual: f64, higher_is_worse: bool) -> f64 {
+    if planned <= 0.0 || actual <= 0.0 {
+        return 0.0;
+    }
+    let raw = (actual - planned) / planned * 10_000.0;
+    if higher_is_worse {
+        raw
+    } else {
+        -raw
+    }
+}
+
 /// LIMIT IOC buy order, listen to ownTrades to get filled volume, then market sell
 async fn make_trades_limit_ioc(
     write: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
     token: &str,
     order: &OrderInfo,
-    filled_volume_rx: &mut mpsc::UnboundedReceiver<(i32, f64)>,
+    filled_volume_rx: &mut mpsc::UnboundedReceiver<OwnTradeFill>,
 ) {
     let userref = rand::random::<u32>() as i32;
     let vol_coin_formatted = format!("{:.*}", order.volume_decimals_coin, order.volume_coin);
     let limit_price_str = format!("{:.*}", order.price_decimals, order.pair1_price);
 
-    // Trade 1: LIMIT IOC buy order for pair1
-    // Note: Kraken WebSocket API uses "timeinforce" parameter for IOC orders
     let trade_msg = serde_json::json!({
         "event": "addOrder",
         "token": token,
@@ -258,6 +330,30 @@ async fn make_trades_limit_ioc(
             order.pair1_name,
             e
         );
+        try_log(ForensicsEvent::ArbExecution(ArbExecutionEvent {
+            event: "arb_execution",
+            opportunity_id: order.opportunity_id,
+            userref,
+            pair1: order.pair1_name,
+            pair2: order.pair2_name,
+            requested_volume: order.volume_coin,
+            limit_buy_price: order.pair1_price,
+            planned_vwap_ask: order.planned_vwap_ask,
+            planned_vwap_bid: order.planned_vwap_bid,
+            buy_fills: Vec::new(),
+            sell_fills: Vec::new(),
+            actual_buy_volume: 0.0,
+            actual_buy_vwap: 0.0,
+            actual_buy_fee: 0.0,
+            actual_sell_volume: 0.0,
+            actual_sell_vwap: 0.0,
+            actual_sell_fee: 0.0,
+            volume_shortfall: order.volume_coin,
+            buy_slippage_bps: 0.0,
+            sell_slippage_bps: 0.0,
+            realized_pnl: 0.0,
+            outcome: "buy_send_failed",
+        }));
         return;
     }
 
@@ -268,54 +364,138 @@ async fn make_trades_limit_ioc(
         limit_price_str
     );
 
-    // Wait for ownTrades message with the filled volume (with timeout)
+    // Collect buy fills (IOC may fragment).
     let timeout_duration = Duration::from_secs(1);
-    let filled_volume = match timeout(timeout_duration, async {
+    let mut buy_fills: Vec<OwnTradeFill> = Vec::new();
+    let buy_result = timeout(timeout_duration, async {
         loop {
-            if let Some((ref_userref, volume)) = filled_volume_rx.recv().await {
-                if ref_userref == userref {
-                    log::debug!("Matched userref {} with volume {}", ref_userref, volume);
-                    return Some(volume);
-                } else {
-                    log::debug!(
-                        "Received userref {} but waiting for {}",
-                        ref_userref,
-                        userref
-                    );
+            if let Some(fill) = filled_volume_rx.recv().await {
+                if fill.userref == userref && fill.side == "buy" {
+                    buy_fills.push(fill);
+                    // IOC typically completes quickly; keep collecting briefly via outer timeout.
+                    // Return once we have at least one fill — additional fragments may arrive
+                    // before sell wait; drain non-blocking after.
+                    return true;
                 }
             } else {
-                return None;
+                return false;
             }
         }
     })
-    .await
-    {
-        Ok(Some(vol)) => vol,
-        Ok(None) => {
+    .await;
+
+    // Drain any additional buy fragments already queued.
+    while let Ok(fill) = filled_volume_rx.try_recv() {
+        if fill.userref == userref && fill.side == "buy" {
+            buy_fills.push(fill);
+        }
+    }
+
+    let (actual_buy_volume, actual_buy_vwap, actual_buy_fee, buy_records) =
+        summarize_fills(&buy_fills);
+
+    match buy_result {
+        Ok(false) => {
             log::error!(
                 "ownTrades channel closed before receiving fill for userref {}",
                 userref
             );
+            try_log(ForensicsEvent::ArbExecution(ArbExecutionEvent {
+                event: "arb_execution",
+                opportunity_id: order.opportunity_id,
+                userref,
+                pair1: order.pair1_name,
+                pair2: order.pair2_name,
+                requested_volume: order.volume_coin,
+                limit_buy_price: order.pair1_price,
+                planned_vwap_ask: order.planned_vwap_ask,
+                planned_vwap_bid: order.planned_vwap_bid,
+                buy_fills: buy_records,
+                sell_fills: Vec::new(),
+                actual_buy_volume,
+                actual_buy_vwap,
+                actual_buy_fee,
+                actual_sell_volume: 0.0,
+                actual_sell_vwap: 0.0,
+                actual_sell_fee: 0.0,
+                volume_shortfall: order.volume_coin - actual_buy_volume,
+                buy_slippage_bps: slippage_bps(order.planned_vwap_ask, actual_buy_vwap, true),
+                sell_slippage_bps: 0.0,
+                realized_pnl: 0.0,
+                outcome: "buy_channel_closed",
+            }));
             return;
         }
-        Err(_) => {
+        Err(_) if buy_fills.is_empty() => {
             log::error!(
                 "Timeout waiting for ownTrades fill confirmation for userref {}",
                 userref
             );
+            try_log(ForensicsEvent::ArbExecution(ArbExecutionEvent {
+                event: "arb_execution",
+                opportunity_id: order.opportunity_id,
+                userref,
+                pair1: order.pair1_name,
+                pair2: order.pair2_name,
+                requested_volume: order.volume_coin,
+                limit_buy_price: order.pair1_price,
+                planned_vwap_ask: order.planned_vwap_ask,
+                planned_vwap_bid: order.planned_vwap_bid,
+                buy_fills: buy_records,
+                sell_fills: Vec::new(),
+                actual_buy_volume: 0.0,
+                actual_buy_vwap: 0.0,
+                actual_buy_fee: 0.0,
+                actual_sell_volume: 0.0,
+                actual_sell_vwap: 0.0,
+                actual_sell_fee: 0.0,
+                volume_shortfall: order.volume_coin,
+                buy_slippage_bps: 0.0,
+                sell_slippage_bps: 0.0,
+                realized_pnl: 0.0,
+                outcome: "buy_timeout",
+            }));
             return;
         }
-    };
+        _ => {}
+    }
+
+    if actual_buy_volume <= 0.0 {
+        try_log(ForensicsEvent::ArbExecution(ArbExecutionEvent {
+            event: "arb_execution",
+            opportunity_id: order.opportunity_id,
+            userref,
+            pair1: order.pair1_name,
+            pair2: order.pair2_name,
+            requested_volume: order.volume_coin,
+            limit_buy_price: order.pair1_price,
+            planned_vwap_ask: order.planned_vwap_ask,
+            planned_vwap_bid: order.planned_vwap_bid,
+            buy_fills: buy_records,
+            sell_fills: Vec::new(),
+            actual_buy_volume: 0.0,
+            actual_buy_vwap: 0.0,
+            actual_buy_fee: 0.0,
+            actual_sell_volume: 0.0,
+            actual_sell_vwap: 0.0,
+            actual_sell_fee: 0.0,
+            volume_shortfall: order.volume_coin,
+            buy_slippage_bps: 0.0,
+            sell_slippage_bps: 0.0,
+            realized_pnl: 0.0,
+            outcome: "buy_timeout",
+        }));
+        return;
+    }
 
     log::debug!(
         "Received filled volume {} for userref {} on {}",
-        filled_volume,
+        actual_buy_volume,
         userref,
         order.pair1_name
     );
 
-    // Trade 2: Market sell order for pair2 using the filled volume
-    let filled_vol_formatted = format!("{:.*}", order.volume_decimals_coin, filled_volume);
+    let filled_vol_formatted = format!("{:.*}", order.volume_decimals_coin, actual_buy_volume);
     let trade_msg = serde_json::json!({
         "event": "addOrder",
         "token": token,
@@ -333,14 +513,98 @@ async fn make_trades_limit_ioc(
             order.pair2_name,
             e
         );
+        try_log(ForensicsEvent::ArbExecution(ArbExecutionEvent {
+            event: "arb_execution",
+            opportunity_id: order.opportunity_id,
+            userref,
+            pair1: order.pair1_name,
+            pair2: order.pair2_name,
+            requested_volume: order.volume_coin,
+            limit_buy_price: order.pair1_price,
+            planned_vwap_ask: order.planned_vwap_ask,
+            planned_vwap_bid: order.planned_vwap_bid,
+            buy_fills: buy_records,
+            sell_fills: Vec::new(),
+            actual_buy_volume,
+            actual_buy_vwap,
+            actual_buy_fee,
+            actual_sell_volume: 0.0,
+            actual_sell_vwap: 0.0,
+            actual_sell_fee: 0.0,
+            volume_shortfall: order.volume_coin - actual_buy_volume,
+            buy_slippage_bps: slippage_bps(order.planned_vwap_ask, actual_buy_vwap, true),
+            sell_slippage_bps: 0.0,
+            realized_pnl: -(actual_buy_vwap * actual_buy_volume) - actual_buy_fee,
+            outcome: "sell_failed",
+        }));
         return;
     }
+
+    // Collect sell fills briefly.
+    let mut sell_fills: Vec<OwnTradeFill> = Vec::new();
+    let sell_timeout = Duration::from_millis(500);
+    let _ = timeout(sell_timeout, async {
+        while let Some(fill) = filled_volume_rx.recv().await {
+            if fill.userref == userref && fill.side == "sell" {
+                sell_fills.push(fill);
+            }
+        }
+    })
+    .await;
+    while let Ok(fill) = filled_volume_rx.try_recv() {
+        if fill.userref == userref && fill.side == "sell" {
+            sell_fills.push(fill);
+        }
+    }
+
+    let (actual_sell_volume, actual_sell_vwap, actual_sell_fee, sell_records) =
+        summarize_fills(&sell_fills);
+
+    let volume_shortfall =
+        (order.volume_coin - actual_buy_volume.min(actual_sell_volume)).max(0.0);
+    let buy_slippage_bps = slippage_bps(order.planned_vwap_ask, actual_buy_vwap, true);
+    // For sells, lower price is worse.
+    let sell_slippage_bps = slippage_bps(order.planned_vwap_bid, actual_sell_vwap, false);
+    let realized_pnl = (actual_sell_vwap * actual_sell_volume - actual_sell_fee)
+        - (actual_buy_vwap * actual_buy_volume + actual_buy_fee);
+
+    let outcome = if actual_sell_volume <= 0.0 {
+        "sell_failed"
+    } else if actual_buy_volume + 1e-12 < order.volume_coin {
+        "partial_buy"
+    } else {
+        "filled"
+    };
 
     log::debug!(
         "Successfully completed LIMIT IOC trades for arbitrage starting with {}",
         order.pair1_name
     );
 
-    // Block additional trades for 500ms to avoid race conditions
+    try_log(ForensicsEvent::ArbExecution(ArbExecutionEvent {
+        event: "arb_execution",
+        opportunity_id: order.opportunity_id,
+        userref,
+        pair1: order.pair1_name,
+        pair2: order.pair2_name,
+        requested_volume: order.volume_coin,
+        limit_buy_price: order.pair1_price,
+        planned_vwap_ask: order.planned_vwap_ask,
+        planned_vwap_bid: order.planned_vwap_bid,
+        buy_fills: buy_records,
+        sell_fills: sell_records,
+        actual_buy_volume,
+        actual_buy_vwap,
+        actual_buy_fee,
+        actual_sell_volume,
+        actual_sell_vwap,
+        actual_sell_fee,
+        volume_shortfall,
+        buy_slippage_bps,
+        sell_slippage_bps,
+        realized_pnl,
+        outcome,
+    }));
+
     wait_approx_ms(500).await;
 }

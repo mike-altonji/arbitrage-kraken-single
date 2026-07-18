@@ -14,7 +14,7 @@ pub struct PairData {
 pub type PairDataVec = Vec<PairData>;
 
 #[derive(Clone)]
-#[allow(dead_code)] // Removed stablecoin trading for now, so these fields are unused
+#[allow(dead_code)] // Stablecoin legs unused while we skip trading back to stables
 pub struct OrderInfo {
     pub pair1_name: &'static str,
     pub pair2_name: &'static str,
@@ -28,4 +28,8 @@ pub struct OrderInfo {
     pub pair1_price: f64,
     pub price_decimals: usize,
     pub updated_pair_kraken_ts: f64,
+    /// Links trade execution forensics back to the evaluation that created this order.
+    pub opportunity_id: u64,
+    pub planned_vwap_ask: f64,
+    pub planned_vwap_bid: f64,
 }
