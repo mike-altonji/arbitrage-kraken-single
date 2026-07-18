@@ -628,6 +628,8 @@ fn process_arbitrage_opportunity(
                 bbo_roi: roi,
                 blended_roi: 0.0,
                 depth_volume: 0.0,
+                l1_limiting_volume: pair1.ask_volume.min(pair2.bid_volume),
+                depth_multiplier: 0.0,
                 vwap_ask: pair1.ask_price,
                 vwap_bid: pair2.bid_price,
                 limit_buy_price: pair1.ask_price,
@@ -755,6 +757,12 @@ fn process_arbitrage_opportunity(
         bbo_roi: roi,
         blended_roi: depth.blended_roi,
         depth_volume: depth.volume,
+        l1_limiting_volume,
+        depth_multiplier: if l1_limiting_volume > 0.0 {
+            depth.volume / l1_limiting_volume
+        } else {
+            0.0
+        },
         vwap_ask: depth.vwap_ask,
         vwap_bid: depth.vwap_bid,
         limit_buy_price: depth.limit_buy_price,

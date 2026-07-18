@@ -298,7 +298,15 @@ Summarize with:
 
 ```bash
 python3 scripts/analyze_arb_events.py logs/arb_events_*.jsonl
+python3 scripts/analyze_arb_events.py logs/arb_events_*.jsonl --since 2026-07-18T20:00:00Z
+python3 scripts/analyze_arb_events.py logs/arb_events_*.jsonl --since 1721332800 --until 1721419200
 ```
+
+`--since` / `--until` accept ISO-8601 or unix seconds. Opportunities are filtered on
+`eval_ts_ns`; executions / momentum on `event_ts_ns` (events from older builds without
+those fields are dropped when a window is set). The execution↔opportunity join always
+uses all loaded files, so a windowed execution still finds its opportunity even when
+the opportunity was logged just before `--since`.
 
 That prints:
 
@@ -307,6 +315,13 @@ That prints:
 3. **`trigger` mix**
 4. **Expected PnL** distribution and top pairs
 5. **Executions** (only with `--trade`) — outcomes, expected vs realized PnL joined on `opportunity_id`, slippage bps
+6. **Win rate vs `trigger`** — among capital-at-risk outcomes (`filled` + `partial_buy` + `sell_failed`); win = `realized_pnl > 0`
+7. **Slippage + PnL residual vs `data_age_ms`** — mean residual and RMSE of `realized − expected·fill_ratio` (absolute and in bps of deployed cost), plus mean buy/sell slippage. Residual tables use completed round trips (`filled` + `partial_buy`) only; `sell_failed` PnL writes off leftover inventory so its residual is not meaningful.
+8. **PnL residual vs `blended_roi`**, vs **`depth_multiplier`**, and vs **book volume consumed** (planned/displayed volume over walked levels, worse leg, computed from `slices`)
+9. **Momentum win rate vs `hold_ms`** — same win definition, half-decade bins (1-3, 3-10, … 300-1000ms)
+
+New forensics fields (post this change): opportunities carry `l1_limiting_volume` /
+`depth_multiplier`; executions carry `event_ts_ns`, `data_age_ms`, `channel_delay_ms`.
 
 Chronograf is for time-series aggregates; use the script when you want “what did we plan vs what did we get?”
 
