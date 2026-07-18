@@ -99,7 +99,8 @@ pub struct ArbExecutionEvent {
     pub sell_slippage_bps: f64,
     pub realized_pnl: f64,
     pub outcome: &'static str,
-    /// Wall clock when this execution record was logged.
+    /// Wall clock when the trade thread received the command (gate time);
+    /// precedes the actual log write by up to the fill-collection timeouts.
     pub event_ts_ns: u128,
     /// Age of the triggering BBO at the trade-thread gate (ms).
     pub data_age_ms: f64,
@@ -133,7 +134,8 @@ pub struct MomentumExecutionEvent {
     /// Same-currency PnL: sell proceeds - fees - buy cost.
     pub realized_pnl: f64,
     pub outcome: &'static str,
-    /// Wall clock when this execution record was logged.
+    /// Wall clock when the trade thread received the command (gate time);
+    /// precedes the actual log write by up to hold + fill-collection timeouts.
     pub event_ts_ns: u128,
     /// Age of the triggering BBO at the trade-thread gate (ms).
     pub data_age_ms: f64,

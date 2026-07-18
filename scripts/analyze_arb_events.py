@@ -6,8 +6,16 @@ Usage:
   python3 scripts/analyze_arb_events.py logs/arb_events_123.jsonl --top 20
   python3 scripts/analyze_arb_events.py logs/arb_events_*.jsonl --since 2026-07-18T20:00:00Z
 
-Win rate denominator: outcomes in {filled, partial_buy}; win = realized_pnl > 0.
-PnL residual (pnl_error) = realized_pnl - expected_pnl.
+Win rate denominator: capital-at-risk outcomes {filled, partial_buy, sell_failed};
+win = realized_pnl > 0. Residual tables use completed round trips only
+({filled, partial_buy}) because sell_failed PnL treats leftover inventory as
+worthless.
+
+PnL residual (pnl_error) = realized_pnl - expected_pnl * fill_ratio, where
+fill_ratio = actual_buy_volume / requested_volume. Scaling removes fill
+shortfall so residuals isolate slippage. pnl_error_bps normalizes by the
+capital actually deployed (expected_cost * fill_ratio) so bins are comparable
+across trade sizes and quote currencies.
 """
 
 from __future__ import annotations
@@ -21,7 +29,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-TRADED_OUTCOMES = frozenset({"filled", "partial_buy"})
+# Completed round trips: realized_pnl is trustworthy, usable for residuals.
+COMPLETED_OUTCOMES = frozenset({"filled", "partial_buy"})
+# Capital was deployed: denominator for win rates. sell_failed records the buy
+# cost as a full loss (leftover inventory not credited).
+AT_RISK_OUTCOMES = COMPLETED_OUTCOMES | {"sell_failed"}
 
 
 def load_events(paths: Iterable[Path]) -> list[dict[str, Any]]:
@@ -102,8 +114,31 @@ def is_win(event: dict[str, Any]) -> bool:
     return float(event.get("realized_pnl") or 0.0) > 0.0
 
 
-def traded(event: dict[str, Any]) -> bool:
-    return event.get("outcome") in TRADED_OUTCOMES
+def completed(event: dict[str, Any]) -> bool:
+    return event.get("outcome") in COMPLETED_OUTCOMES
+
+
+def at_risk(event: dict[str, Any]) -> bool:
+    return event.get("outcome") in AT_RISK_OUTCOMES
+
+
+def fill_ratio(event: dict[str, Any]) -> float:
+    """Fraction of the planned buy volume that actually filled."""
+    requested = float(event.get("requested_volume") or 0.0)
+    if requested <= 0.0:
+        return 1.0
+    return min(float(event.get("actual_buy_volume") or 0.0) / requested, 1.0)
+
+
+def book_consumed_frac(opp: dict[str, Any]) -> float | None:
+    """Max over legs of planned volume / displayed book volume across walked levels."""
+    per_leg: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
+    for s in opp.get("slices") or []:
+        leg = str(s.get("leg", "?"))
+        per_leg[leg][0] += float(s.get("planned_volume") or 0.0)
+        per_leg[leg][1] += float(s.get("book_volume") or 0.0)
+    fracs = [planned / book for planned, book in per_leg.values() if book > 0.0]
+    return max(fracs) if fracs else None
 
 
 def bin_data_age_ms(age: float) -> str:
@@ -136,21 +171,45 @@ def bin_depth_multiplier(m: float) -> str:
     return ">5x"
 
 
+# Half-decade bins: hold_ms is sampled log-uniformly in [1, 1000].
+HOLD_BIN_ORDER = ("1-3ms", "3-10ms", "10-30ms", "30-100ms", "100-300ms", "300-1000ms")
+
+
 def bin_hold_ms(hold: float) -> str:
+    if hold < 3.0:
+        return "1-3ms"
     if hold < 10.0:
-        return "1-10ms"
+        return "3-10ms"
+    if hold < 30.0:
+        return "10-30ms"
     if hold < 100.0:
-        return "10-100ms"
-    return "100-1000ms"
+        return "30-100ms"
+    if hold < 300.0:
+        return "100-300ms"
+    return "300-1000ms"
+
+
+def bin_book_frac(frac: float) -> str:
+    if frac <= 0.25:
+        return "<=25%"
+    if frac <= 0.5:
+        return "25-50%"
+    if frac <= 0.75:
+        return "50-75%"
+    return ">75%"
 
 
 def print_win_rate_table(title: str, rows: list[tuple[str, list[dict[str, Any]]]]) -> None:
     print(f"=== {title} ===")
-    print(f"  (win = realized_pnl > 0 among {sorted(TRADED_OUTCOMES)})")
+    print(f"  (win = realized_pnl > 0 among {sorted(AT_RISK_OUTCOMES)})")
     for label, group in rows:
         n = len(group)
         wins = sum(1 for e in group if is_win(e))
-        print(f"  {label:16s}  n={n:5d}  wins={wins:5d}  win_rate={pct(wins, n)}")
+        fails = sum(1 for e in group if e.get("outcome") == "sell_failed")
+        print(
+            f"  {label:16s}  n={n:5d}  wins={wins:5d}  "
+            f"win_rate={pct(wins, n):>6s}  sell_failed={fails}"
+        )
     print()
 
 
@@ -159,15 +218,23 @@ def print_residual_bins(
     bins: list[tuple[str, list[dict[str, Any]]]],
     *,
     with_slippage: bool = False,
+    note: str | None = None,
 ) -> None:
     print(f"=== {title} ===")
-    print("  pnl_error = realized_pnl - expected_pnl")
+    print("  pnl_error = realized_pnl - expected_pnl*fill_ratio; bps of deployed cost")
+    if note:
+        print(f"  ({note})")
     for label, group in bins:
         errors = [float(r["pnl_error"]) for r in group if r.get("pnl_error") is not None]
+        errors_bps = [
+            float(r["pnl_error_bps"]) for r in group if r.get("pnl_error_bps") is not None
+        ]
         n = len(group)
         line = f"  {label:16s}  n={n:5d}"
         if errors:
             line += f"  mean_err={mean(errors):+.4f}  rmse={rmse(errors):.4f}"
+        if errors_bps:
+            line += f"  mean_bps={mean(errors_bps):+.1f}  rmse_bps={rmse(errors_bps):.1f}"
         if with_slippage:
             buy = [float(r["buy_slippage_bps"]) for r in group if r.get("buy_slippage_bps") is not None]
             sell = [
@@ -250,20 +317,17 @@ def main() -> int:
             )
         print()
 
-        traded_m = [e for e in momentum if traded(e)]
-        hold_groups: dict[str, list[dict[str, Any]]] = {
-            "1-10ms": [],
-            "10-100ms": [],
-            "100-1000ms": [],
-        }
-        for e in traded_m:
+        at_risk_m = [e for e in momentum if at_risk(e)]
+        hold_groups: dict[str, list[dict[str, Any]]] = {k: [] for k in HOLD_BIN_ORDER}
+        for e in at_risk_m:
             hold_groups[bin_hold_ms(float(e.get("hold_ms") or 0.0))].append(e)
         print_win_rate_table(
             "Momentum win rate vs hold_ms",
-            [(label, hold_groups[label]) for label in hold_groups],
+            [(label, hold_groups[label]) for label in HOLD_BIN_ORDER],
         )
         print("=== Momentum mean realized_pnl vs hold_ms ===")
-        for label in hold_groups:
+        print("  (sell_failed included; its pnl treats leftover inventory as worthless)")
+        for label in HOLD_BIN_ORDER:
             vals = [float(e.get("realized_pnl") or 0.0) for e in hold_groups[label]]
             if vals:
                 print(f"  {label:16s}  n={len(vals):5d}  mean_pnl={mean(vals):.4f}")
@@ -320,7 +384,14 @@ def main() -> int:
     print()
 
     # --- Executions / joins ---
-    opp_by_id = {e.get("opportunity_id"): e for e in opps if "opportunity_id" in e}
+    # Join against ALL loaded opportunities, not just windowed ones: an
+    # execution near the window edge is always logged after its opportunity,
+    # which may fall just outside --since.
+    opp_by_id = {
+        e.get("opportunity_id"): e
+        for e in all_events
+        if e.get("event") == "arb_opportunity" and "opportunity_id" in e
+    }
 
     if execs:
         outcomes = Counter(e.get("outcome", "?") for e in execs)
@@ -356,24 +427,48 @@ def main() -> int:
             print(f"  mean sell_slippage_bps: {sum(sell_slip)/len(sell_slip):.2f}")
         print()
 
-        # Joined traded rows for residual / win-rate analyses.
+        # Joined capital-at-risk rows for win-rate / residual analyses.
         joined: list[dict[str, Any]] = []
         for ex in execs:
-            if not traded(ex):
+            if not at_risk(ex):
                 continue
             opp = opp_by_id.get(ex.get("opportunity_id"))
-            expected = float(opp.get("expected_pnl") or 0.0) if opp else None
             realized = float(ex.get("realized_pnl") or 0.0)
+            ratio = fill_ratio(ex)
+            expected = None
+            expected_cost = None
+            if opp is not None:
+                expected = float(opp.get("expected_pnl") or 0.0) * ratio
+                expected_cost = float(opp.get("expected_cost") or 0.0) * ratio
+            pnl_error = (realized - expected) if expected is not None else None
             row = {
                 **ex,
                 "trigger": (opp or {}).get("trigger", "?"),
                 "blended_roi": (opp or {}).get("blended_roi", (opp or {}).get("bbo_roi")),
                 "bbo_roi": (opp or {}).get("bbo_roi"),
                 "depth_multiplier": (opp or {}).get("depth_multiplier"),
+                "book_frac": book_consumed_frac(opp) if opp else None,
+                "fill_ratio": ratio,
                 "expected_pnl": expected,
-                "pnl_error": (realized - expected) if expected is not None else None,
+                "pnl_error": pnl_error,
+                "pnl_error_bps": (
+                    pnl_error / expected_cost * 1e4
+                    if pnl_error is not None and expected_cost and expected_cost > 0.0
+                    else None
+                ),
             }
             joined.append(row)
+
+        unmatched = sum(1 for r in joined if r.get("opportunity_id") not in opp_by_id)
+        print(
+            f"  at-risk executions: {len(joined)}  "
+            f"unmatched (no opportunity event, shown as trigger '?'): {unmatched}"
+        )
+        print()
+
+        # Residuals only make sense for completed round trips: sell_failed
+        # realized_pnl writes off leftover inventory entirely.
+        residual_rows = [r for r in joined if completed(r)]
 
         # 1. Win rate vs trigger
         by_trigger: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -387,7 +482,7 @@ def main() -> int:
         # 2. Slippage + residual vs data_age_ms
         age_order = ("0-1.5ms", "1.5-5ms", "5-10ms", "10ms+")
         by_age: dict[str, list[dict[str, Any]]] = {k: [] for k in age_order}
-        for row in joined:
+        for row in residual_rows:
             age = row.get("data_age_ms")
             if age is None:
                 continue
@@ -396,12 +491,13 @@ def main() -> int:
             "Slippage + PnL residual vs data_age_ms",
             [(k, by_age[k]) for k in age_order],
             with_slippage=True,
+            note="freshness gate skips >=10ms, so 10ms+ stays empty unless the gate changes",
         )
 
         # 3. Residual vs expected ROI (blended_roi)
         roi_order = ("<1.002", "1.002-1.005", "1.005-1.01", ">=1.01")
         by_roi: dict[str, list[dict[str, Any]]] = {k: [] for k in roi_order}
-        for row in joined:
+        for row in residual_rows:
             roi = row.get("blended_roi")
             if roi is None:
                 continue
@@ -414,7 +510,7 @@ def main() -> int:
         # 4. Residual vs depth_multiplier
         depth_order = ("<=1x", "1-2x", "2-5x", ">5x")
         by_depth: dict[str, list[dict[str, Any]]] = {k: [] for k in depth_order}
-        for row in joined:
+        for row in residual_rows:
             mult = row.get("depth_multiplier")
             if mult is None:
                 continue
@@ -422,6 +518,20 @@ def main() -> int:
         print_residual_bins(
             "PnL residual vs depth_multiplier",
             [(k, by_depth[k]) for k in depth_order],
+        )
+
+        # 5. Residual vs fraction of displayed book consumed (from slices)
+        frac_order = ("<=25%", "25-50%", "50-75%", ">75%")
+        by_frac: dict[str, list[dict[str, Any]]] = {k: [] for k in frac_order}
+        for row in residual_rows:
+            frac = row.get("book_frac")
+            if frac is None:
+                continue
+            by_frac[bin_book_frac(float(frac))].append(row)
+        print_residual_bins(
+            "PnL residual vs book volume consumed (max leg)",
+            [(k, by_frac[k]) for k in frac_order],
+            note="planned volume / displayed volume across walked levels, worse leg",
         )
     else:
         print("=== Executions ===")

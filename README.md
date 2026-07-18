@@ -179,9 +179,10 @@ python3 scripts/analyze_arb_events.py logs/arb_events_*.jsonl --since 2026-07-18
 ```
 
 The analyzer supports time windows and reports win rate vs trigger, PnL residual /
-slippage vs data age / ROI / depth multiplier, and momentum win rate vs hold time.
-See [`docs/chronograf-monitoring.md`](docs/chronograf-monitoring.md) for field details
-and the win definition (`filled` + `partial_buy`, `realized_pnl > 0`).
+slippage vs data age / ROI / depth multiplier / book consumption, and momentum win
+rate vs hold time. See [`docs/chronograf-monitoring.md`](docs/chronograf-monitoring.md)
+for field details and the win definition (`filled` + `partial_buy` + `sell_failed`,
+`realized_pnl > 0`; residuals use completed round trips only, scaled by fill ratio).
 
 ### Log Files
 
