@@ -3,7 +3,7 @@ use crate::influx::{
     log_arbitrage_evaluation_speed, log_kraken_ingestion_latency, log_listener_loop_speed,
 };
 use crate::orderbook::{BboChange, OrderBookVec};
-use crate::structs::OrderInfo;
+use crate::structs::TradeCommand;
 use crate::structs::PairDataVec;
 use crate::utils::send_telegram_message;
 use evaluate_arbitrage::evaluate_arbitrage;
@@ -32,7 +32,7 @@ pub async fn run_listening_thread(
     public_online: &mut bool,
     ws_url: &str,
     pair_names: &[&'static str],
-    trade_tx: mpsc::Sender<OrderInfo>,
+    trade_tx: mpsc::Sender<TradeCommand>,
 ) {
     const SLEEP_DURATION: Duration = Duration::from_secs(5);
     const MAX_SETUP_ATTEMPTS: u32 = 3;

@@ -2,7 +2,7 @@ use crate::asset_pairs;
 use crate::kraken_rest;
 use crate::listener;
 use crate::orderbook::init_order_book_vec;
-use crate::structs::OrderInfo;
+use crate::structs::TradeCommand;
 use crate::trade;
 use crate::utils::{build_pair_names_vec, initialize_pair_data};
 use crate::{EUR_BALANCE, FEE_SPOT, FEE_STABLECOIN, USD_BALANCE};
@@ -60,7 +60,7 @@ fn ensure_core_available(cores: &[core_affinity::CoreId], core_id: usize) {
 pub fn spawn_listener_threads(
     cores: &[core_affinity::CoreId],
     public_ws_url: String,
-    trade_tx: mpsc::Sender<OrderInfo>,
+    trade_tx: mpsc::Sender<TradeCommand>,
 ) -> Vec<thread::JoinHandle<()>> {
     let asset_indices = vec![
         (&asset_pairs::ASSET_INDEX_0, 0),
@@ -131,7 +131,7 @@ pub fn spawn_trading_thread(
     cores: &[core_affinity::CoreId],
     token: String,
     private_ws_url: String,
-    trade_rx: mpsc::Receiver<OrderInfo>,
+    trade_rx: mpsc::Receiver<TradeCommand>,
     allow_trades: bool,
 ) -> thread::JoinHandle<()> {
     spawn_pinned_thread(cores, 3, "Trader".to_string(), move || async move {

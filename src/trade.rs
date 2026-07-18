@@ -1,8 +1,8 @@
 use crate::arb_forensics::{
-    try_log, ArbExecutionEvent, FillRecord, ForensicsEvent,
+    try_log, ArbExecutionEvent, FillRecord, ForensicsEvent, MomentumExecutionEvent,
 };
-use crate::influx::log_trade_message_receive_speed;
-use crate::structs::OrderInfo;
+use crate::influx::{log_momentum_execution, log_trade_message_receive_speed};
+use crate::structs::{MomentumOrder, OrderInfo, TradeCommand};
 use crate::utils::wait_approx_ms;
 use crate::TRADER_BUSY;
 use futures_util::stream::{SplitSink, SplitStream};
@@ -68,7 +68,7 @@ async fn setup_private_websocket(
 pub async fn run_trading_thread(
     token: String,
     private_ws_url: String,
-    mut trade_rx: mpsc::Receiver<OrderInfo>,
+    mut trade_rx: mpsc::Receiver<TradeCommand>,
     allow_trades: bool,
 ) {
     let (mut write, mut filled_volume_rx) = if allow_trades {
@@ -97,14 +97,18 @@ pub async fn run_trading_thread(
         (None, None)
     };
 
-    while let Some(order) = trade_rx.recv().await {
+    while let Some(command) = trade_rx.recv().await {
         TRADER_BUSY.store(true, Ordering::Relaxed);
 
+        let (send_timestamp, updated_pair_kraken_ts) = match &command {
+            TradeCommand::Arb(order) => (order.send_timestamp, order.updated_pair_kraken_ts),
+            TradeCommand::Momentum(order) => (order.send_timestamp, order.updated_pair_kraken_ts),
+        };
         let receive_timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        log_trade_message_receive_speed(order.send_timestamp, receive_timestamp);
+        log_trade_message_receive_speed(send_timestamp, receive_timestamp);
 
         if let (Some(ref mut write), Some(ref mut filled_volume_rx)) =
             (&mut write, &mut filled_volume_rx)
@@ -113,40 +117,59 @@ pub async fn run_trading_thread(
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs_f64();
-            let time_diff = now - order.updated_pair_kraken_ts;
-            if time_diff < 0.0015 {
-                log::debug!("Sending order starting with {}", order.pair1_name);
-                make_trades_limit_ioc(write, &token, &order, filled_volume_rx).await;
-            } else {
-                log::warn!(
-                    "Skipping trade for {}: data too stale (time_diff={}s)",
-                    order.pair1_name,
-                    time_diff,
-                );
-                try_log(ForensicsEvent::ArbExecution(ArbExecutionEvent {
-                    event: "arb_execution",
-                    opportunity_id: order.opportunity_id,
-                    userref: 0,
-                    pair1: order.pair1_name,
-                    pair2: order.pair2_name,
-                    requested_volume: order.volume_coin,
-                    limit_buy_price: order.pair1_price,
-                    planned_vwap_ask: order.planned_vwap_ask,
-                    planned_vwap_bid: order.planned_vwap_bid,
-                    buy_fills: Vec::new(),
-                    sell_fills: Vec::new(),
-                    actual_buy_volume: 0.0,
-                    actual_buy_vwap: 0.0,
-                    actual_buy_fee: 0.0,
-                    actual_sell_volume: 0.0,
-                    actual_sell_vwap: 0.0,
-                    actual_sell_fee: 0.0,
-                    volume_shortfall: order.volume_coin,
-                    buy_slippage_bps: 0.0,
-                    sell_slippage_bps: 0.0,
-                    realized_pnl: 0.0,
-                    outcome: "stale_skip",
-                }));
+            let time_diff = now - updated_pair_kraken_ts;
+            let fresh = time_diff < 0.0015;
+
+            match command {
+                TradeCommand::Arb(order) => {
+                    if fresh {
+                        log::debug!("Sending order starting with {}", order.pair1_name);
+                        make_trades_limit_ioc(write, &token, &order, filled_volume_rx).await;
+                    } else {
+                        log::warn!(
+                            "Skipping trade for {}: data too stale (time_diff={}s)",
+                            order.pair1_name,
+                            time_diff,
+                        );
+                        try_log(ForensicsEvent::ArbExecution(ArbExecutionEvent {
+                            event: "arb_execution",
+                            opportunity_id: order.opportunity_id,
+                            userref: 0,
+                            pair1: order.pair1_name,
+                            pair2: order.pair2_name,
+                            requested_volume: order.volume_coin,
+                            limit_buy_price: order.pair1_price,
+                            planned_vwap_ask: order.planned_vwap_ask,
+                            planned_vwap_bid: order.planned_vwap_bid,
+                            buy_fills: Vec::new(),
+                            sell_fills: Vec::new(),
+                            actual_buy_volume: 0.0,
+                            actual_buy_vwap: 0.0,
+                            actual_buy_fee: 0.0,
+                            actual_sell_volume: 0.0,
+                            actual_sell_vwap: 0.0,
+                            actual_sell_fee: 0.0,
+                            volume_shortfall: order.volume_coin,
+                            buy_slippage_bps: 0.0,
+                            sell_slippage_bps: 0.0,
+                            realized_pnl: 0.0,
+                            outcome: "stale_skip",
+                        }));
+                    }
+                }
+                TradeCommand::Momentum(order) => {
+                    if fresh {
+                        log::debug!("Sending momentum order for {}", order.pair_name);
+                        make_momentum_trade(write, &token, &order, filled_volume_rx).await;
+                    } else {
+                        log::warn!(
+                            "Skipping momentum trade for {}: data too stale (time_diff={}s)",
+                            order.pair_name,
+                            time_diff,
+                        );
+                        log_momentum_outcome(&order, 0, &[], &[], "stale_skip");
+                    }
+                }
             }
         }
 
@@ -627,6 +650,197 @@ async fn make_trades_limit_ioc(
         realized_pnl,
         outcome,
     }));
+
+    wait_approx_ms(500).await;
+}
+
+/// Wait for the first matching fill (bounded by `timeout_duration`), then
+/// drain any queued fragments. Returns (fills, channel_closed).
+async fn collect_fills(
+    filled_volume_rx: &mut mpsc::UnboundedReceiver<OwnTradeFill>,
+    userref: i32,
+    side: &'static str,
+    timeout_duration: Duration,
+) -> (Vec<OwnTradeFill>, bool) {
+    let mut fills: Vec<OwnTradeFill> = Vec::new();
+    let result = timeout(timeout_duration, async {
+        loop {
+            match filled_volume_rx.recv().await {
+                Some(fill) => {
+                    if fill.userref == userref && fill.side == side {
+                        fills.push(fill);
+                        return true;
+                    }
+                }
+                None => return false,
+            }
+        }
+    })
+    .await;
+    let channel_closed = matches!(result, Ok(false));
+
+    while let Ok(fill) = filled_volume_rx.try_recv() {
+        if fill.userref == userref && fill.side == side {
+            fills.push(fill);
+        }
+    }
+    (fills, channel_closed)
+}
+
+/// Emit momentum forensics + Influx from whatever fills we have.
+fn log_momentum_outcome(
+    order: &MomentumOrder,
+    userref: i32,
+    buy_fills: &[OwnTradeFill],
+    sell_fills: &[OwnTradeFill],
+    outcome: &'static str,
+) {
+    let (buy_volume, buy_vwap, buy_fee, buy_records) = summarize_fills(buy_fills);
+    let (sell_volume, sell_vwap, sell_fee, sell_records) = summarize_fills(sell_fills);
+    // Same-currency round trip: no FX conversion.
+    let realized_pnl = (sell_vwap * sell_volume - sell_fee) - (buy_vwap * buy_volume + buy_fee);
+
+    log_momentum_execution(
+        order.pair_name,
+        order.trigger_pair_name,
+        order.gap_bps,
+        order.hold_ms,
+        order.volume_coin,
+        order.limit_buy_price,
+        buy_volume,
+        buy_vwap,
+        buy_fee,
+        sell_volume,
+        sell_vwap,
+        sell_fee,
+        realized_pnl,
+        outcome,
+    );
+
+    try_log(ForensicsEvent::MomentumExecution(MomentumExecutionEvent {
+        event: "momentum_execution",
+        opportunity_id: order.opportunity_id,
+        userref,
+        pair: order.pair_name,
+        trigger_pair: order.trigger_pair_name,
+        gap_bps: order.gap_bps,
+        hold_ms: order.hold_ms,
+        requested_volume: order.volume_coin,
+        limit_buy_price: order.limit_buy_price,
+        buy_fills: buy_records,
+        sell_fills: sell_records,
+        actual_buy_volume: buy_volume,
+        actual_buy_vwap: buy_vwap,
+        actual_buy_fee: buy_fee,
+        actual_sell_volume: sell_volume,
+        actual_sell_vwap: sell_vwap,
+        actual_sell_fee: sell_fee,
+        realized_pnl,
+        outcome,
+    }));
+}
+
+/// Momentum round trip on one pair: LIMIT IOC buy at the evaluation-time ask,
+/// hold for the sampled duration, then market sell the filled volume.
+async fn make_momentum_trade(
+    write: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+    token: &str,
+    order: &MomentumOrder,
+    filled_volume_rx: &mut mpsc::UnboundedReceiver<OwnTradeFill>,
+) {
+    let userref = rand::random::<u32>() as i32;
+    let vol_formatted = format!("{:.*}", order.volume_decimals_coin, order.volume_coin);
+    let limit_price_str = format!("{:.*}", order.price_decimals, order.limit_buy_price);
+
+    let buy_msg = serde_json::json!({
+        "event": "addOrder",
+        "token": token,
+        "type": "buy",
+        "ordertype": "limit",
+        "price": limit_price_str,
+        "volume": vol_formatted,
+        "pair": order.pair_name,
+        "userref": userref.to_string(),
+        "timeinforce": "IOC"
+    })
+    .to_string();
+
+    if let Err(e) = write.send(Message::Text(buy_msg)).await {
+        log::error!(
+            "Failed to send momentum LIMIT IOC buy for {}: {:?}",
+            order.pair_name,
+            e
+        );
+        log_momentum_outcome(order, userref, &[], &[], "buy_send_failed");
+        return;
+    }
+
+    log::debug!(
+        "Sent momentum LIMIT IOC buy for {} with userref {} at {} (hold {}ms)",
+        order.pair_name,
+        userref,
+        limit_price_str,
+        order.hold_ms
+    );
+
+    let (buy_fills, channel_closed) =
+        collect_fills(filled_volume_rx, userref, "buy", Duration::from_secs(1)).await;
+    if channel_closed {
+        log::error!(
+            "ownTrades channel closed before momentum fill for userref {}",
+            userref
+        );
+        log_momentum_outcome(order, userref, &buy_fills, &[], "buy_channel_closed");
+        return;
+    }
+    let (actual_buy_volume, _, _, _) = summarize_fills(&buy_fills);
+    if actual_buy_volume <= 0.0 {
+        log::warn!(
+            "Momentum buy for {} got no fill (userref {})",
+            order.pair_name,
+            userref
+        );
+        log_momentum_outcome(order, userref, &buy_fills, &[], "buy_timeout");
+        return;
+    }
+
+    // The experiment variable: hold, then exit unconditionally at market.
+    tokio::time::sleep(Duration::from_secs_f64(order.hold_ms / 1000.0)).await;
+
+    let filled_vol_formatted = format!("{:.*}", order.volume_decimals_coin, actual_buy_volume);
+    let sell_msg = serde_json::json!({
+        "event": "addOrder",
+        "token": token,
+        "type": "sell",
+        "ordertype": "market",
+        "volume": filled_vol_formatted,
+        "pair": order.pair_name,
+        "userref": userref.to_string(),
+    })
+    .to_string();
+
+    if let Err(e) = write.send(Message::Text(sell_msg)).await {
+        log::error!(
+            "Failed to send momentum market sell for {}: {:?}",
+            order.pair_name,
+            e
+        );
+        log_momentum_outcome(order, userref, &buy_fills, &[], "sell_failed");
+        return;
+    }
+
+    let (sell_fills, _) =
+        collect_fills(filled_volume_rx, userref, "sell", Duration::from_millis(500)).await;
+    let (actual_sell_volume, _, _, _) = summarize_fills(&sell_fills);
+
+    let outcome = if actual_sell_volume <= 0.0 {
+        "sell_failed"
+    } else if actual_buy_volume + 1e-12 < order.volume_coin {
+        "partial_buy"
+    } else {
+        "filled"
+    };
+    log_momentum_outcome(order, userref, &buy_fills, &sell_fills, outcome);
 
     wait_approx_ms(500).await;
 }

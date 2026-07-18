@@ -43,13 +43,14 @@ pub struct FillRecord {
 pub enum ForensicsEvent {
     ArbOpportunity(ArbOpportunityEvent),
     ArbExecution(ArbExecutionEvent),
+    MomentumExecution(MomentumExecutionEvent),
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ArbOpportunityEvent {
     pub event: &'static str,
     pub opportunity_id: u64,
-    pub walk_mode: &'static str,
+    pub trigger: &'static str,
     pub pair1: &'static str,
     pub pair2: &'static str,
     pub bbo_roi: f64,
@@ -92,6 +93,34 @@ pub struct ArbExecutionEvent {
     pub volume_shortfall: f64,
     pub buy_slippage_bps: f64,
     pub sell_slippage_bps: f64,
+    pub realized_pnl: f64,
+    pub outcome: &'static str,
+}
+
+/// Same-pair momentum round trip: IOC buy, timed hold, market sell.
+#[derive(Clone, Debug, Serialize)]
+pub struct MomentumExecutionEvent {
+    pub event: &'static str,
+    pub opportunity_id: u64,
+    pub userref: i32,
+    /// Pair that was bought and sold.
+    pub pair: &'static str,
+    /// Sibling pair whose bid jump triggered the trade.
+    pub trigger_pair: &'static str,
+    pub gap_bps: f64,
+    /// Sampled hold time (experiment variable).
+    pub hold_ms: f64,
+    pub requested_volume: f64,
+    pub limit_buy_price: f64,
+    pub buy_fills: Vec<FillRecord>,
+    pub sell_fills: Vec<FillRecord>,
+    pub actual_buy_volume: f64,
+    pub actual_buy_vwap: f64,
+    pub actual_buy_fee: f64,
+    pub actual_sell_volume: f64,
+    pub actual_sell_vwap: f64,
+    pub actual_sell_fee: f64,
+    /// Same-currency PnL: sell proceeds - fees - buy cost.
     pub realized_pnl: f64,
     pub outcome: &'static str,
 }
@@ -152,6 +181,7 @@ fn writer_loop(rx: std::sync::mpsc::Receiver<ForensicsEvent>, path: PathBuf) {
         let json_result = match &event {
             ForensicsEvent::ArbOpportunity(e) => serde_json::to_string(e),
             ForensicsEvent::ArbExecution(e) => serde_json::to_string(e),
+            ForensicsEvent::MomentumExecution(e) => serde_json::to_string(e),
         };
         match json_result {
             Ok(line) => {

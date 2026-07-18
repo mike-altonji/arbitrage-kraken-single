@@ -10,16 +10,10 @@ pub struct BboChange {
     pub ask_price_changed: bool,
     pub bid_volume_changed: bool,
     pub ask_volume_changed: bool,
-}
-
-impl BboChange {
-    pub fn ask_changed(self) -> bool {
-        self.ask_price_changed || self.ask_volume_changed
-    }
-
-    pub fn bid_changed(self) -> bool {
-        self.bid_price_changed || self.bid_volume_changed
-    }
+    /// Bid price increased, or bid volume increased at an unchanged price.
+    pub bid_improved: bool,
+    /// Ask price decreased, or ask volume increased at an unchanged price.
+    pub ask_improved: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -162,6 +156,15 @@ impl OrderBook {
             || bid_volume_changed
             || ask_volume_changed;
 
+        // Improvement = the side became more attractive for us. First sync
+        // (old price == 0) counts as an improvement so evaluation can fire.
+        let bid_improved = new_bid_price > 0.0
+            && (new_bid_price > pair_data.bid_price
+                || (!bid_price_changed && new_bid_volume > pair_data.bid_volume));
+        let ask_improved = new_ask_price > 0.0
+            && ((new_ask_price < pair_data.ask_price || pair_data.ask_price == 0.0)
+                || (!ask_price_changed && new_ask_volume > pair_data.ask_volume));
+
         if changed {
             pair_data.bid_price = new_bid_price;
             pair_data.ask_price = new_ask_price;
@@ -176,6 +179,8 @@ impl OrderBook {
             ask_price_changed,
             bid_volume_changed,
             ask_volume_changed,
+            bid_improved,
+            ask_improved,
         }
     }
 
@@ -474,6 +479,84 @@ mod tests {
         let change = book.sync_bbo(&mut pair_data, 9999.0);
         assert!(!change.changed);
         assert_eq!(pair_data.kraken_ts, 1234.5);
+    }
+
+    fn pair_data_with_bbo(bid: f64, ask: f64, bid_vol: f64, ask_vol: f64) -> PairData {
+        PairData {
+            bid_price: bid,
+            ask_price: ask,
+            bid_volume: bid_vol,
+            ask_volume: ask_vol,
+            order_min: 0.0,
+            cost_min: 0.0,
+            price_decimals: 5,
+            volume_decimals: 8,
+            pair_status: true,
+            kraken_ts: 0.0,
+        }
+    }
+
+    fn book_with_bbo(bid: &str, ask: &str, bid_vol: &str, ask_vol: &str) -> OrderBook {
+        let mut book = OrderBook::new();
+        book.apply_snapshot(&[(ask, ask_vol, 1.0)], &[(bid, bid_vol, 1.0)]);
+        book
+    }
+
+    #[test]
+    fn sync_bbo_first_sync_improves_both_sides() {
+        let book = book_with_bbo("100.0", "101.0", "1.0", "1.0");
+        let mut pair_data = pair_data_with_bbo(0.0, 0.0, 0.0, 0.0);
+        let change = book.sync_bbo(&mut pair_data, 1.0);
+        assert!(change.bid_improved);
+        assert!(change.ask_improved);
+    }
+
+    #[test]
+    fn sync_bbo_bid_price_up_improves_bid_only() {
+        let book = book_with_bbo("100.5", "101.0", "1.0", "1.0");
+        let mut pair_data = pair_data_with_bbo(100.0, 101.0, 1.0, 1.0);
+        let change = book.sync_bbo(&mut pair_data, 1.0);
+        assert!(change.bid_improved);
+        assert!(!change.ask_improved);
+    }
+
+    #[test]
+    fn sync_bbo_ask_price_down_improves_ask_only() {
+        let book = book_with_bbo("100.0", "100.8", "1.0", "1.0");
+        let mut pair_data = pair_data_with_bbo(100.0, 101.0, 1.0, 1.0);
+        let change = book.sync_bbo(&mut pair_data, 1.0);
+        assert!(!change.bid_improved);
+        assert!(change.ask_improved);
+    }
+
+    #[test]
+    fn sync_bbo_volume_up_at_same_price_improves() {
+        let book = book_with_bbo("100.0", "101.0", "2.0", "3.0");
+        let mut pair_data = pair_data_with_bbo(100.0, 101.0, 1.0, 1.0);
+        let change = book.sync_bbo(&mut pair_data, 1.0);
+        assert!(change.bid_improved);
+        assert!(change.ask_improved);
+    }
+
+    #[test]
+    fn sync_bbo_worsening_moves_improve_nothing() {
+        // Bid down, ask up, volumes down.
+        let book = book_with_bbo("99.5", "101.5", "0.5", "0.5");
+        let mut pair_data = pair_data_with_bbo(100.0, 101.0, 1.0, 1.0);
+        let change = book.sync_bbo(&mut pair_data, 1.0);
+        assert!(change.changed);
+        assert!(!change.bid_improved);
+        assert!(!change.ask_improved);
+    }
+
+    #[test]
+    fn sync_bbo_no_change_improves_nothing() {
+        let book = book_with_bbo("100.0", "101.0", "1.0", "1.0");
+        let mut pair_data = pair_data_with_bbo(100.0, 101.0, 1.0, 1.0);
+        let change = book.sync_bbo(&mut pair_data, 1.0);
+        assert!(!change.changed);
+        assert!(!change.bid_improved);
+        assert!(!change.ask_improved);
     }
 
     #[test]
