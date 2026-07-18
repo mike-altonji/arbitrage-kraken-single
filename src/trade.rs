@@ -26,6 +26,24 @@ struct OwnTradeFill {
     time: f64,
 }
 
+/// Latency context captured once when the trade thread receives a command.
+#[derive(Clone, Copy, Debug)]
+struct ExecTiming {
+    event_ts_ns: u128,
+    data_age_ms: f64,
+    channel_delay_ms: f64,
+}
+
+impl ExecTiming {
+    fn at_gate(send_timestamp: u128, receive_timestamp: u128, data_age_s: f64) -> Self {
+        Self {
+            event_ts_ns: receive_timestamp,
+            data_age_ms: data_age_s * 1000.0,
+            channel_delay_ms: (receive_timestamp.saturating_sub(send_timestamp)) as f64 / 1e6,
+        }
+    }
+}
+
 /// Set up private WebSocket connection and subscribe to own trades
 async fn setup_private_websocket(
     token: &str,
@@ -120,12 +138,20 @@ pub async fn run_trading_thread(
             let time_diff = now - updated_pair_kraken_ts;
             // Temporary 10ms gate (was 1.5ms) to measure slippage vs data age.
             let fresh = time_diff < 0.010;
+            let timing = ExecTiming::at_gate(send_timestamp, receive_timestamp, time_diff);
 
             match command {
                 TradeCommand::Arb(order) => {
                     if fresh {
                         log::debug!("Sending order starting with {}", order.pair1_name);
-                        make_trades_limit_ioc(write, &token, &order, filled_volume_rx).await;
+                        make_trades_limit_ioc(
+                            write,
+                            &token,
+                            &order,
+                            filled_volume_rx,
+                            timing,
+                        )
+                        .await;
                     } else {
                         log::warn!(
                             "Skipping trade for {}: data too stale (time_diff={}s)",
@@ -155,20 +181,24 @@ pub async fn run_trading_thread(
                             sell_slippage_bps: 0.0,
                             realized_pnl: 0.0,
                             outcome: "stale_skip",
+                            event_ts_ns: timing.event_ts_ns,
+                            data_age_ms: timing.data_age_ms,
+                            channel_delay_ms: timing.channel_delay_ms,
                         }));
                     }
                 }
                 TradeCommand::Momentum(order) => {
                     if fresh {
                         log::debug!("Sending momentum order for {}", order.pair_name);
-                        make_momentum_trade(write, &token, &order, filled_volume_rx).await;
+                        make_momentum_trade(write, &token, &order, filled_volume_rx, timing)
+                            .await;
                     } else {
                         log::warn!(
                             "Skipping momentum trade for {}: data too stale (time_diff={}s)",
                             order.pair_name,
                             time_diff,
                         );
-                        log_momentum_outcome(&order, 0, &[], &[], "stale_skip");
+                        log_momentum_outcome(&order, 0, &[], &[], "stale_skip", timing);
                     }
                 }
             }
@@ -345,6 +375,7 @@ async fn make_trades_limit_ioc(
     token: &str,
     order: &OrderInfo,
     filled_volume_rx: &mut mpsc::UnboundedReceiver<OwnTradeFill>,
+    timing: ExecTiming,
 ) {
     let userref = rand::random::<u32>() as i32;
     let vol_coin_formatted = format!("{:.*}", order.volume_decimals_coin, order.volume_coin);
@@ -392,6 +423,9 @@ async fn make_trades_limit_ioc(
             sell_slippage_bps: 0.0,
             realized_pnl: 0.0,
             outcome: "buy_send_failed",
+            event_ts_ns: timing.event_ts_ns,
+            data_age_ms: timing.data_age_ms,
+            channel_delay_ms: timing.channel_delay_ms,
         }));
         return;
     }
@@ -462,6 +496,9 @@ async fn make_trades_limit_ioc(
                 sell_slippage_bps: 0.0,
                 realized_pnl: 0.0,
                 outcome: "buy_channel_closed",
+                event_ts_ns: timing.event_ts_ns,
+                data_age_ms: timing.data_age_ms,
+                channel_delay_ms: timing.channel_delay_ms,
             }));
             return;
         }
@@ -493,6 +530,9 @@ async fn make_trades_limit_ioc(
                 sell_slippage_bps: 0.0,
                 realized_pnl: 0.0,
                 outcome: "buy_timeout",
+                event_ts_ns: timing.event_ts_ns,
+                data_age_ms: timing.data_age_ms,
+                channel_delay_ms: timing.channel_delay_ms,
             }));
             return;
         }
@@ -523,6 +563,9 @@ async fn make_trades_limit_ioc(
             sell_slippage_bps: 0.0,
             realized_pnl: 0.0,
             outcome: "buy_timeout",
+            event_ts_ns: timing.event_ts_ns,
+            data_age_ms: timing.data_age_ms,
+            channel_delay_ms: timing.channel_delay_ms,
         }));
         return;
     }
@@ -575,6 +618,9 @@ async fn make_trades_limit_ioc(
             sell_slippage_bps: 0.0,
             realized_pnl: -(actual_buy_vwap * actual_buy_volume) - actual_buy_fee,
             outcome: "sell_failed",
+            event_ts_ns: timing.event_ts_ns,
+            data_age_ms: timing.data_age_ms,
+            channel_delay_ms: timing.channel_delay_ms,
         }));
         return;
     }
@@ -650,6 +696,9 @@ async fn make_trades_limit_ioc(
         sell_slippage_bps,
         realized_pnl,
         outcome,
+        event_ts_ns: timing.event_ts_ns,
+        data_age_ms: timing.data_age_ms,
+        channel_delay_ms: timing.channel_delay_ms,
     }));
 
     wait_approx_ms(500).await;
@@ -695,6 +744,7 @@ fn log_momentum_outcome(
     buy_fills: &[OwnTradeFill],
     sell_fills: &[OwnTradeFill],
     outcome: &'static str,
+    timing: ExecTiming,
 ) {
     let (buy_volume, buy_vwap, buy_fee, buy_records) = summarize_fills(buy_fills);
     let (sell_volume, sell_vwap, sell_fee, sell_records) = summarize_fills(sell_fills);
@@ -738,6 +788,9 @@ fn log_momentum_outcome(
         actual_sell_fee: sell_fee,
         realized_pnl,
         outcome,
+        event_ts_ns: timing.event_ts_ns,
+        data_age_ms: timing.data_age_ms,
+        channel_delay_ms: timing.channel_delay_ms,
     }));
 }
 
@@ -748,6 +801,7 @@ async fn make_momentum_trade(
     token: &str,
     order: &MomentumOrder,
     filled_volume_rx: &mut mpsc::UnboundedReceiver<OwnTradeFill>,
+    timing: ExecTiming,
 ) {
     let userref = rand::random::<u32>() as i32;
     let vol_formatted = format!("{:.*}", order.volume_decimals_coin, order.volume_coin);
@@ -772,7 +826,7 @@ async fn make_momentum_trade(
             order.pair_name,
             e
         );
-        log_momentum_outcome(order, userref, &[], &[], "buy_send_failed");
+        log_momentum_outcome(order, userref, &[], &[], "buy_send_failed", timing);
         return;
     }
 
@@ -791,7 +845,7 @@ async fn make_momentum_trade(
             "ownTrades channel closed before momentum fill for userref {}",
             userref
         );
-        log_momentum_outcome(order, userref, &buy_fills, &[], "buy_channel_closed");
+        log_momentum_outcome(order, userref, &buy_fills, &[], "buy_channel_closed", timing);
         return;
     }
     let (actual_buy_volume, _, _, _) = summarize_fills(&buy_fills);
@@ -801,7 +855,7 @@ async fn make_momentum_trade(
             order.pair_name,
             userref
         );
-        log_momentum_outcome(order, userref, &buy_fills, &[], "buy_timeout");
+        log_momentum_outcome(order, userref, &buy_fills, &[], "buy_timeout", timing);
         return;
     }
 
@@ -826,7 +880,7 @@ async fn make_momentum_trade(
             order.pair_name,
             e
         );
-        log_momentum_outcome(order, userref, &buy_fills, &[], "sell_failed");
+        log_momentum_outcome(order, userref, &buy_fills, &[], "sell_failed", timing);
         return;
     }
 
@@ -841,7 +895,7 @@ async fn make_momentum_trade(
     } else {
         "filled"
     };
-    log_momentum_outcome(order, userref, &buy_fills, &sell_fills, outcome);
+    log_momentum_outcome(order, userref, &buy_fills, &sell_fills, outcome, timing);
 
     wait_approx_ms(500).await;
 }

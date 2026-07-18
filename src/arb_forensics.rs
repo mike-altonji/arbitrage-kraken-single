@@ -56,6 +56,10 @@ pub struct ArbOpportunityEvent {
     pub bbo_roi: f64,
     pub blended_roi: f64,
     pub depth_volume: f64,
+    /// min(buy-pair top ask vol, sell-pair top bid vol) at evaluation.
+    pub l1_limiting_volume: f64,
+    /// depth_volume / l1_limiting_volume (0 if L1 is 0).
+    pub depth_multiplier: f64,
     pub vwap_ask: f64,
     pub vwap_bid: f64,
     pub limit_buy_price: f64,
@@ -95,6 +99,12 @@ pub struct ArbExecutionEvent {
     pub sell_slippage_bps: f64,
     pub realized_pnl: f64,
     pub outcome: &'static str,
+    /// Wall clock when this execution record was logged.
+    pub event_ts_ns: u128,
+    /// Age of the triggering BBO at the trade-thread gate (ms).
+    pub data_age_ms: f64,
+    /// Channel handoff delay: trade-thread receive − eval send (ms).
+    pub channel_delay_ms: f64,
 }
 
 /// Same-pair momentum round trip: IOC buy, timed hold, market sell.
@@ -123,6 +133,12 @@ pub struct MomentumExecutionEvent {
     /// Same-currency PnL: sell proceeds - fees - buy cost.
     pub realized_pnl: f64,
     pub outcome: &'static str,
+    /// Wall clock when this execution record was logged.
+    pub event_ts_ns: u128,
+    /// Age of the triggering BBO at the trade-thread gate (ms).
+    pub data_age_ms: f64,
+    /// Channel handoff delay: trade-thread receive − eval send (ms).
+    pub channel_delay_ms: f64,
 }
 
 /// Start the forensics writer. Safe to call once at process startup.
