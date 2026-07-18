@@ -1,4 +1,4 @@
-use crate::structs::OrderInfo;
+use crate::structs::TradeCommand;
 use dotenv::dotenv;
 use std::env;
 use std::sync::atomic::{AtomicBool, AtomicI16};
@@ -10,6 +10,7 @@ mod evaluate_arbitrage;
 mod influx;
 mod kraken_rest;
 mod listener;
+mod momentum;
 mod orderbook;
 mod structs;
 mod threads;
@@ -25,6 +26,14 @@ pub static EUR_BALANCE: AtomicI16 = AtomicI16::new(0);
 // Trader busy flag - used to drop orders if trader is processing
 pub static TRADER_BUSY: AtomicBool = AtomicBool::new(false);
 
+// Depth-walk risk knobs (see docs/superpowers/specs/2026-07-18-dual-walk-momentum-design.md)
+pub static MAX_WALK_DEPTH: AtomicI16 = AtomicI16::new(10); // Max levels consumed per side
+pub static DEPTH_HAIRCUT_PCT: AtomicI16 = AtomicI16::new(70); // % of displayed volume planned beyond L0
+pub static ROI_BUFFER_BPS: AtomicI16 = AtomicI16::new(2); // Marginal ROI must exceed 1 + buffer
+
+// Momentum trade mode: same-pair round trip triggered by the sibling pair jumping
+pub static MOMENTUM_ENABLED: AtomicBool = AtomicBool::new(false);
+
 /// Application configuration parsed from command-line arguments
 struct Config {
     allow_trades: bool,
@@ -34,10 +43,43 @@ struct Config {
     token: String,
 }
 
+/// Parse `--flag N` style args; returns None when absent or unparseable.
+fn parse_arg_value(args: &[String], flag: &str) -> Option<i16> {
+    let idx = args.iter().position(|a| a == flag)?;
+    let value = args.get(idx + 1)?;
+    match value.parse::<i16>() {
+        Ok(v) => Some(v),
+        Err(_) => {
+            log::warn!("Ignoring {}: could not parse '{}' as integer", flag, value);
+            None
+        }
+    }
+}
+
 impl Config {
     async fn initialize() -> Self {
         let args: Vec<String> = env::args().collect();
         let use_colocated = args.contains(&"--colocated".to_string());
+
+        if let Some(v) = parse_arg_value(&args, "--max-walk-depth") {
+            MAX_WALK_DEPTH.store(v, std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(v) = parse_arg_value(&args, "--depth-haircut") {
+            DEPTH_HAIRCUT_PCT.store(v, std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(v) = parse_arg_value(&args, "--roi-buffer-bps") {
+            ROI_BUFFER_BPS.store(v, std::sync::atomic::Ordering::Relaxed);
+        }
+        if args.contains(&"--momentum".to_string()) {
+            MOMENTUM_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        log::info!(
+            "Risk knobs: max_walk_depth={}, depth_haircut_pct={}, roi_buffer_bps={}, momentum={}",
+            MAX_WALK_DEPTH.load(std::sync::atomic::Ordering::Relaxed),
+            DEPTH_HAIRCUT_PCT.load(std::sync::atomic::Ordering::Relaxed),
+            ROI_BUFFER_BPS.load(std::sync::atomic::Ordering::Relaxed),
+            MOMENTUM_ENABLED.load(std::sync::atomic::Ordering::Relaxed),
+        );
         let (public_ws_url, private_ws_url) = if use_colocated {
             (
                 "wss://colo-london.vip-ws.kraken.com".to_string(),
@@ -84,8 +126,8 @@ async fn main() {
     // Initialize application
     let config = initialize_app().await;
 
-    // Create bounded channel for sending OrderInfo to trading thread
-    let (trade_tx, trade_rx) = mpsc::channel::<OrderInfo>(1);
+    // Create bounded channel for sending trade commands to trading thread
+    let (trade_tx, trade_rx) = mpsc::channel::<TradeCommand>(1);
 
     // Get available cores for pinning
     let cores = core_affinity::get_core_ids().expect("Could not get core IDs");

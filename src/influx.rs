@@ -181,7 +181,7 @@ pub fn log_arbitrage_opportunity(
     depth_volume: f64,
     pair1_amount_in: f64,
     volume_limited_by_balance: bool,
-    walk_mode: &str,
+    trigger: &str,
     vwap_ask: f64,
     vwap_bid: f64,
     blended_roi: f64,
@@ -192,7 +192,7 @@ pub fn log_arbitrage_opportunity(
 ) {
     let pair1_name = pair1_name.to_string();
     let pair2_name = pair2_name.to_string();
-    let walk_mode = walk_mode.to_string();
+    let trigger = trigger.to_string();
     let depth_multiplier = if l1_limiting_volume > 0.0 {
         depth_volume / l1_limiting_volume
     } else {
@@ -204,7 +204,7 @@ pub fn log_arbitrage_opportunity(
         let point = Point::new("arbitrage_opportunity")
             .add_tag("pair1", Value::String(pair1_name))
             .add_tag("pair2", Value::String(pair2_name))
-            .add_tag("walk_mode", Value::String(walk_mode))
+            .add_tag("trigger", Value::String(trigger))
             .add_field("pair1_bid", Value::Float(pair1_bid))
             .add_field("pair1_ask", Value::Float(pair1_ask))
             .add_field("pair2_bid", Value::Float(pair2_bid))
@@ -242,6 +242,50 @@ pub fn log_arbitrage_opportunity(
             .add_field("roi_gap", Value::Float(roi_gap))
             .add_field("limit_buy_price", Value::Float(limit_buy_price))
             .add_field("expected_pnl", Value::Float(expected_pnl));
+        let _ = client
+            .write_points(vec![point], Some(Precision::Nanoseconds), None)
+            .await;
+    });
+}
+
+/// Log a completed momentum round trip (same-pair IOC buy → hold → market sell)
+#[allow(clippy::too_many_arguments)]
+pub fn log_momentum_execution(
+    pair: &str,
+    trigger_pair: &str,
+    gap_bps: f64,
+    hold_ms: f64,
+    requested_volume: f64,
+    limit_buy_price: f64,
+    actual_buy_volume: f64,
+    actual_buy_vwap: f64,
+    actual_buy_fee: f64,
+    actual_sell_volume: f64,
+    actual_sell_vwap: f64,
+    actual_sell_fee: f64,
+    realized_pnl: f64,
+    outcome: &'static str,
+) {
+    let pair = pair.to_string();
+    let trigger_pair = trigger_pair.to_string();
+    tokio::spawn(async move {
+        let client = get_influx_client();
+        let point = Point::new("momentum_execution")
+            .add_tag("pair", Value::String(pair))
+            .add_tag("trigger_pair", Value::String(trigger_pair))
+            .add_tag("outcome", Value::String(outcome.to_string()))
+            .add_field("gap_bps", Value::Float(gap_bps))
+            .add_field("hold_ms", Value::Float(hold_ms))
+            .add_field("requested_volume", Value::Float(requested_volume))
+            .add_field("limit_buy_price", Value::Float(limit_buy_price))
+            .add_field("actual_buy_volume", Value::Float(actual_buy_volume))
+            .add_field("actual_buy_vwap", Value::Float(actual_buy_vwap))
+            .add_field("actual_buy_fee", Value::Float(actual_buy_fee))
+            .add_field("actual_sell_volume", Value::Float(actual_sell_volume))
+            .add_field("actual_sell_vwap", Value::Float(actual_sell_vwap))
+            .add_field("actual_sell_fee", Value::Float(actual_sell_fee))
+            .add_field("realized_pnl", Value::Float(realized_pnl));
+        // Default RP (None), same as arbitrage_opportunity — Chronograf queries omit RP_NAME.
         let _ = client
             .write_points(vec![point], Some(Precision::Nanoseconds), None)
             .await;
