@@ -32,4 +32,6 @@ pub struct OrderInfo {
     pub opportunity_id: u64,
     pub planned_vwap_ask: f64,
     pub planned_vwap_bid: f64,
+    /// `pair1_stable.bid / pair2_stable.ask` at eval time — converts pair2 quote → pair1 quote.
+    pub quote2_to_quote1_fx: f64,
 }

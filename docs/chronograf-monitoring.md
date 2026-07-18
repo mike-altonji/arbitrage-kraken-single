@@ -244,7 +244,7 @@ Also show tag **`walk_mode`** if Chronograf exposes it for the measurement.
 | `roi` | BBO tip ROI |
 | `blended_roi` | Depth-weighted ROI |
 | `roi_gap` | `roi - blended_roi` |
-| `expected_pnl` | Modeled quote PnL after spot fees |
+| `expected_pnl` | Modeled PnL in pair1 quote (pair2 proceeds converted via stables) |
 | `pair1_amount_in` | Expected spend on buy leg |
 | `walk_mode` (tag) | `fixed_ask_walk_bids` or `fixed_bid_walk_asks` |
 | `balance_limited_f` | 1.0 if balance-capped, else 0.0 |

@@ -300,6 +300,21 @@ fn slippage_bps(planned: f64, actual: f64, higher_is_worse: bool) -> f64 {
     }
 }
 
+/// Realized PnL in pair1 quote: buy cost stays in pair1; sell proceeds convert via FX.
+fn realized_pnl_pair1_quote(
+    buy_vwap: f64,
+    buy_volume: f64,
+    buy_fee: f64,
+    sell_vwap: f64,
+    sell_volume: f64,
+    sell_fee: f64,
+    quote2_to_quote1_fx: f64,
+) -> f64 {
+    let cost = buy_vwap * buy_volume + buy_fee;
+    let proceeds_quote2 = sell_vwap * sell_volume - sell_fee;
+    proceeds_quote2 * quote2_to_quote1_fx - cost
+}
+
 /// LIMIT IOC buy order, listen to ownTrades to get filled volume, then market sell
 async fn make_trades_limit_ioc(
     write: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
@@ -565,8 +580,15 @@ async fn make_trades_limit_ioc(
     let buy_slippage_bps = slippage_bps(order.planned_vwap_ask, actual_buy_vwap, true);
     // For sells, lower price is worse.
     let sell_slippage_bps = slippage_bps(order.planned_vwap_bid, actual_sell_vwap, false);
-    let realized_pnl = (actual_sell_vwap * actual_sell_volume - actual_sell_fee)
-        - (actual_buy_vwap * actual_buy_volume + actual_buy_fee);
+    let realized_pnl = realized_pnl_pair1_quote(
+        actual_buy_vwap,
+        actual_buy_volume,
+        actual_buy_fee,
+        actual_sell_vwap,
+        actual_sell_volume,
+        actual_sell_fee,
+        order.quote2_to_quote1_fx,
+    );
 
     let outcome = if actual_sell_volume <= 0.0 {
         "sell_failed"
@@ -607,4 +629,20 @@ async fn make_trades_limit_ioc(
     }));
 
     wait_approx_ms(500).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn realized_pnl_converts_sell_proceeds_to_pair1_quote() {
+        // Buy 1 @ 100 USD (+1 fee); sell 1 @ 90 EUR (-0.5 fee); FX EUR→USD = 1.2
+        let pnl = realized_pnl_pair1_quote(100.0, 1.0, 1.0, 90.0, 1.0, 0.5, 1.2);
+        // proceeds = (90 - 0.5) * 1.2 = 107.4; cost = 101; pnl = 6.4
+        assert!((pnl - 6.4).abs() < 1e-9);
+
+        let naive = (90.0 * 1.0 - 0.5) - (100.0 * 1.0 + 1.0);
+        assert!((pnl - naive).abs() > 1.0);
+    }
 }

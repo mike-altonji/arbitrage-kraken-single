@@ -9,6 +9,9 @@ use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
+/// Fixed leg + up to BOOK_DEPTH walked levels.
+const SLICE_CAP: usize = BOOK_DEPTH + 1;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WalkMode {
     FixedAskWalkBids,
@@ -35,7 +38,7 @@ struct DepthFill {
     blended_roi: f64,
     balance_limited: bool,
     walk_mode: WalkMode,
-    slices: [PlannedSlice; BOOK_DEPTH],
+    slices: [PlannedSlice; SLICE_CAP],
     slice_count: u8,
     stop_reason: &'static str,
     expected_cost: f64,
@@ -211,6 +214,21 @@ fn roi_at_prices(
     arb_prices * arb_fee
 }
 
+/// Convert a pair2-quote amount into pair1-quote using the same stable legs as ROI.
+fn quote2_to_quote1(amount_quote2: f64, pair1_stable: &PairData, pair2_stable: &PairData) -> f64 {
+    if pair2_stable.ask_price <= 0.0 {
+        return 0.0;
+    }
+    amount_quote2 * pair1_stable.bid_price / pair2_stable.ask_price
+}
+
+fn quote2_to_quote1_fx(pair1_stable: &PairData, pair2_stable: &PairData) -> f64 {
+    if pair2_stable.ask_price <= 0.0 {
+        return 0.0;
+    }
+    pair1_stable.bid_price / pair2_stable.ask_price
+}
+
 #[allow(clippy::too_many_arguments)]
 fn compute_depth_fill(
     walk_mode: WalkMode,
@@ -233,7 +251,7 @@ fn compute_depth_fill(
     }
 }
 
-fn empty_slices() -> [PlannedSlice; BOOK_DEPTH] {
+fn empty_slices() -> [PlannedSlice; SLICE_CAP] {
     [PlannedSlice {
         leg: "",
         level_idx: 0,
@@ -241,11 +259,11 @@ fn empty_slices() -> [PlannedSlice; BOOK_DEPTH] {
         book_volume: 0.0,
         planned_volume: 0.0,
         roi_at_level: 0.0,
-    }; BOOK_DEPTH]
+    }; SLICE_CAP]
 }
 
-fn push_slice(slices: &mut [PlannedSlice; BOOK_DEPTH], count: &mut u8, slice: PlannedSlice) {
-    if (*count as usize) < BOOK_DEPTH {
+fn push_slice(slices: &mut [PlannedSlice; SLICE_CAP], count: &mut u8, slice: PlannedSlice) {
+    if (*count as usize) < SLICE_CAP {
         slices[*count as usize] = slice;
         *count += 1;
     }
@@ -375,7 +393,11 @@ fn fixed_ask_walk_bids(
 
     let vwap_bid = total_proceeds / total_vol;
     let expected_cost = total_vol * fixed_ask.price * (1.0 + fee_spot);
-    let expected_proceeds = total_vol * vwap_bid * (1.0 - fee_spot);
+    let expected_proceeds = quote2_to_quote1(
+        total_vol * vwap_bid * (1.0 - fee_spot),
+        pair1_stable,
+        pair2_stable,
+    );
     let expected_pnl = expected_proceeds - expected_cost;
     let blended_roi = roi_at_prices(
         fixed_ask.price,
@@ -532,7 +554,11 @@ fn fixed_bid_walk_asks(
 
     let vwap_ask = total_cost / total_vol;
     let expected_cost = total_vol * vwap_ask * (1.0 + fee_spot);
-    let expected_proceeds = total_vol * fixed_bid.price * (1.0 - fee_spot);
+    let expected_proceeds = quote2_to_quote1(
+        total_vol * fixed_bid.price * (1.0 - fee_spot),
+        pair1_stable,
+        pair2_stable,
+    );
     let expected_pnl = expected_proceeds - expected_cost;
     let blended_roi = roi_at_prices(
         vwap_ask,
@@ -730,6 +756,7 @@ fn process_arbitrage_opportunity(
                 opportunity_id,
                 planned_vwap_ask: depth.vwap_ask,
                 planned_vwap_bid: depth.vwap_bid,
+                quote2_to_quote1_fx: quote2_to_quote1_fx(pair1_stable, pair2_stable),
             },
             &trade_tx,
         )
@@ -1030,5 +1057,87 @@ mod tests {
             guardrail_failure_reason(0.0001, 101.0, 100.0, &pair1, &pair2),
             Some("below_min_order")
         );
+    }
+
+    #[test]
+    fn expected_pnl_is_in_pair1_quote_via_stables() {
+        let book1 = book_from_levels(&[("100.0", "1.0")], &[]);
+        let book2 = book_from_levels(&[], &[("105.0", "1.0")]);
+        let s1 = stable_pair(1.0, 1.0);
+        let s2 = stable_pair(0.9, 0.9);
+
+        let fill = fixed_ask_walk_bids(&book1, &book2, &s1, &s2, 1_000_000.0, FEE_SPOT, ARB_FEE)
+            .expect("fill");
+
+        let cost = 1.0 * 100.0 * (1.0 + FEE_SPOT);
+        let proceeds = 1.0 * 105.0 * (1.0 - FEE_SPOT) * (s1.bid_price / s2.ask_price);
+        assert!((fill.expected_cost - cost).abs() < 1e-9);
+        assert!((fill.expected_proceeds - proceeds).abs() < 1e-9);
+        assert!((fill.expected_pnl - (proceeds - cost)).abs() < 1e-9);
+
+        let naive_cross_currency = 1.0 * 105.0 * (1.0 - FEE_SPOT) - cost;
+        assert!(
+            (fill.expected_pnl - naive_cross_currency).abs() > 1.0,
+            "PnL must convert pair2 quote via stables, not subtract raw notionals"
+        );
+    }
+
+    #[test]
+    fn fixed_bid_walk_asks_keeps_fixed_bid_slice_at_full_depth() {
+        let asks = [
+            ("100.0", "1.0"),
+            ("100.1", "1.0"),
+            ("100.2", "1.0"),
+            ("100.3", "1.0"),
+            ("100.4", "1.0"),
+            ("100.5", "1.0"),
+            ("100.6", "1.0"),
+            ("100.7", "1.0"),
+            ("100.8", "1.0"),
+            ("100.9", "1.0"),
+        ];
+        assert_eq!(asks.len(), BOOK_DEPTH);
+        let book1 = book_from_levels(&asks, &[]);
+        let book2 = book_from_levels(&[], &[("110.0", "20.0")]);
+        let s1 = stable_pair(1.0, 1.0);
+        let s2 = stable_pair(1.0, 1.0);
+
+        let fill = fixed_bid_walk_asks(&book1, &book2, &s1, &s2, 1_000_000.0, FEE_SPOT, ARB_FEE)
+            .expect("fill");
+
+        let slices = fill.slices_vec();
+        assert_eq!(slices.len(), BOOK_DEPTH + 1);
+        assert_eq!(slices[0].leg, "walk_ask");
+        assert_eq!(slices[BOOK_DEPTH].leg, "fixed_bid");
+        assert!((slices[BOOK_DEPTH].planned_volume - fill.volume).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fixed_ask_walk_bids_keeps_fixed_ask_slice_at_full_depth() {
+        let bids = [
+            ("110.0", "1.0"),
+            ("109.9", "1.0"),
+            ("109.8", "1.0"),
+            ("109.7", "1.0"),
+            ("109.6", "1.0"),
+            ("109.5", "1.0"),
+            ("109.4", "1.0"),
+            ("109.3", "1.0"),
+            ("109.2", "1.0"),
+            ("109.1", "1.0"),
+        ];
+        assert_eq!(bids.len(), BOOK_DEPTH);
+        let book1 = book_from_levels(&[("100.0", "20.0")], &[]);
+        let book2 = book_from_levels(&[], &bids);
+        let s1 = stable_pair(1.0, 1.0);
+        let s2 = stable_pair(1.0, 1.0);
+
+        let fill = fixed_ask_walk_bids(&book1, &book2, &s1, &s2, 1_000_000.0, FEE_SPOT, ARB_FEE)
+            .expect("fill");
+
+        let slices = fill.slices_vec();
+        assert_eq!(slices.len(), BOOK_DEPTH + 1);
+        assert_eq!(slices[0].leg, "fixed_ask");
+        assert_eq!(slices[BOOK_DEPTH].leg, "walk_bid");
     }
 }
