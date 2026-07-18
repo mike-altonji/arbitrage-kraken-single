@@ -736,6 +736,7 @@ fn process_arbitrage_opportunity(
     };
 
     // Influx summary (existing dashboards) — after trade handoff attempt.
+    let l1_limiting_volume = pair1.ask_volume.min(pair2.bid_volume);
     log_arbitrage_opportunity(
         pair1_name,
         pair2_name,
@@ -764,6 +765,8 @@ fn process_arbitrage_opportunity(
         depth.vwap_bid,
         depth.blended_roi,
         depth.limit_buy_price,
+        l1_limiting_volume,
+        depth.expected_pnl,
     );
 
     try_log(ForensicsEvent::ArbOpportunity(ArbOpportunityEvent {

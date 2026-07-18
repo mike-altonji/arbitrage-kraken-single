@@ -186,10 +186,19 @@ pub fn log_arbitrage_opportunity(
     vwap_bid: f64,
     blended_roi: f64,
     limit_buy_price: f64,
+    // l1_limiting_volume: min(buy-pair top ask vol, sell-pair top bid vol)
+    l1_limiting_volume: f64,
+    expected_pnl: f64,
 ) {
     let pair1_name = pair1_name.to_string();
     let pair2_name = pair2_name.to_string();
     let walk_mode = walk_mode.to_string();
+    let depth_multiplier = if l1_limiting_volume > 0.0 {
+        depth_volume / l1_limiting_volume
+    } else {
+        0.0
+    };
+    let roi_gap = roi - blended_roi;
     tokio::spawn(async move {
         let client = get_influx_client();
         let point = Point::new("arbitrage_opportunity")
@@ -215,15 +224,24 @@ pub fn log_arbitrage_opportunity(
             .add_field("roi", Value::Float(roi))
             .add_field("depth_volume", Value::Float(depth_volume))
             .add_field("limiting_volume", Value::Float(depth_volume))
+            .add_field("l1_limiting_volume", Value::Float(l1_limiting_volume))
+            .add_field("depth_multiplier", Value::Float(depth_multiplier))
             .add_field("pair1_amount_in", Value::Float(pair1_amount_in))
             .add_field(
                 "volume_limited_by_balance",
                 Value::Boolean(volume_limited_by_balance),
             )
+            // Float twin so Grafana can mean() the balance-capped rate (bools are not aggregatable).
+            .add_field(
+                "balance_limited_f",
+                Value::Float(if volume_limited_by_balance { 1.0 } else { 0.0 }),
+            )
             .add_field("vwap_ask", Value::Float(vwap_ask))
             .add_field("vwap_bid", Value::Float(vwap_bid))
             .add_field("blended_roi", Value::Float(blended_roi))
-            .add_field("limit_buy_price", Value::Float(limit_buy_price));
+            .add_field("roi_gap", Value::Float(roi_gap))
+            .add_field("limit_buy_price", Value::Float(limit_buy_price))
+            .add_field("expected_pnl", Value::Float(expected_pnl));
         let _ = client
             .write_points(vec![point], Some(Precision::Nanoseconds), None)
             .await;
