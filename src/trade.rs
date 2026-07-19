@@ -3,9 +3,9 @@ use crate::arb_forensics::{
 };
 use crate::influx::{log_momentum_execution, log_trade_message_receive_speed};
 use crate::maker::{
-    drain_changed, global_inventory_basis, halt_maker, inventory_coin, invalidate_pair,
-    maker_halted, maker_wake, record_fill, session_realized_pnl, set_live_ask, set_live_bid,
-    volume_drifted, DesiredQuote, POST_FRESHNESS_MS,
+    blacklist_pair, drain_changed, global_inventory_basis, halt_maker, inventory_coin,
+    invalidate_pair, is_blacklisted, maker_halted, maker_wake, record_fill, session_realized_pnl,
+    set_live_ask, set_live_bid, volume_drifted, DesiredQuote, POST_FRESHNESS_MS,
 };
 use crate::structs::{MomentumOrder, OrderInfo, TradeCommand};
 use crate::utils::{send_telegram_message, wait_approx_ms};
@@ -13,7 +13,7 @@ use crate::{MAKER_ENABLED, MAKER_GLOBAL_NOTIONAL, MAKER_MAX_LOSS, TRADER_BUSY};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use rustc_hash::FxHashMap;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
@@ -62,6 +62,64 @@ struct RestingQuote {
 struct MakerPairState {
     bid: Option<RestingQuote>,
     ask: Option<RestingQuote>,
+    /// No posts on this pair until then (set after rejections so a
+    /// reject → re-evaluate → repost loop can't spam the exchange).
+    cooldown_until_ns: u128,
+}
+
+/// Global post pause (ns since epoch), set when Kraken reports
+/// "Exceeded msg rate". All posting stops until it elapses; cancels
+/// still go through (they reduce risk and rarely rate-limit).
+static POST_PAUSE_UNTIL_NS: AtomicU64 = AtomicU64::new(0);
+
+/// Cooldowns per rejection class.
+const COOLDOWN_INSUFFICIENT_FUNDS: Duration = Duration::from_secs(60);
+const COOLDOWN_MSG_RATE_PAIR: Duration = Duration::from_secs(10);
+const COOLDOWN_DEFAULT: Duration = Duration::from_secs(2);
+const GLOBAL_PAUSE_MSG_RATE: Duration = Duration::from_secs(3);
+
+/// How a rejection should be handled going forward.
+enum RejectClass {
+    /// Untradeable this session (regional restriction, cancel-only market).
+    Permanent,
+    /// Back off this pair for a while.
+    Cooldown(Duration),
+    /// Back off globally: we are sending too many messages.
+    RateLimited,
+}
+
+fn classify_reject(error: &str) -> RejectClass {
+    if error.contains("Invalid permissions")
+        || error.contains("cancel_only")
+        || error.contains("restricted")
+    {
+        RejectClass::Permanent
+    } else if error.contains("Exceeded msg rate") || error.contains("Rate limit") {
+        RejectClass::RateLimited
+    } else if error.contains("Insufficient funds") {
+        RejectClass::Cooldown(COOLDOWN_INSUFFICIENT_FUNDS)
+    } else {
+        // Includes post-only "would cross" rejects: the next evaluation will
+        // derive a fresh price, but give the book a beat to move first.
+        RejectClass::Cooldown(COOLDOWN_DEFAULT)
+    }
+}
+
+fn posts_paused(now: u128) -> bool {
+    (POST_PAUSE_UNTIL_NS.load(Ordering::Relaxed) as u128) > now
+}
+
+/// Sum of price×volume across all resting bids, excluding `except_pair`
+/// (whose bid is being replaced by the caller).
+fn open_bid_notional(
+    maker_state: &FxHashMap<&'static str, MakerPairState>,
+    except_pair: &str,
+) -> f64 {
+    maker_state
+        .iter()
+        .filter(|(pair, _)| **pair != except_pair)
+        .filter_map(|(_, s)| s.bid.as_ref().map(|q| q.price * q.volume))
+        .sum()
 }
 
 /// Positive, non-zero userref (Kraken accepts int32; keep it positive so it
@@ -432,8 +490,20 @@ fn apply_order_status(
     if status.event == "cancelOrderStatus" {
         // Typically "Unknown order": it filled or was already gone. Fills
         // arrive separately via ownTrades, so state is already correct.
-        log::warn!("Cancel reqid {} failed: {}", status.reqid, status.error);
+        log::debug!("Cancel reqid {} failed: {}", status.reqid, status.error);
         return;
+    }
+
+    let class = classify_reject(&status.error);
+    if matches!(class, RejectClass::RateLimited) {
+        // Pause all posting even if we can't map the reqid to a pair.
+        let until = now_ns() as u64 + GLOBAL_PAUSE_MSG_RATE.as_nanos() as u64;
+        if POST_PAUSE_UNTIL_NS.fetch_max(until, Ordering::Relaxed) < until {
+            log::warn!(
+                "Kraken msg rate exceeded; pausing maker posts for {:?}",
+                GLOBAL_PAUSE_MSG_RATE
+            );
+        }
     }
 
     for (pair, state) in maker_state.iter_mut() {
@@ -462,13 +532,34 @@ fn apply_order_status(
         // Force the evaluator's next publish through to the reconciler; the
         // rejected side needs a fresh (re-derived) price, not a coalesced skip.
         invalidate_pair(pair);
-        log::warn!(
-            "Maker {} on {} rejected (userref {}): {}",
-            side,
-            pair,
-            status.reqid,
-            status.error
-        );
+        match &class {
+            RejectClass::Permanent => {
+                if !is_blacklisted(pair) {
+                    log::info!(
+                        "Blacklisting {} for this session ({} {} rejected: {})",
+                        pair,
+                        side,
+                        status.reqid,
+                        status.error
+                    );
+                    blacklist_pair(pair);
+                }
+            }
+            RejectClass::Cooldown(cooldown) => {
+                state.cooldown_until_ns = now_ns() + cooldown.as_nanos();
+                log::debug!(
+                    "Maker {} on {} rejected (userref {}), cooling {:?}: {}",
+                    side,
+                    pair,
+                    status.reqid,
+                    cooldown,
+                    status.error
+                );
+            }
+            RejectClass::RateLimited => {
+                state.cooldown_until_ns = now_ns() + COOLDOWN_MSG_RATE_PAIR.as_nanos();
+            }
+        }
         let mut event = maker_event_base(pair.to_string(), "maker_reject");
         event.side = side;
         event.price = rejected.price;
@@ -479,7 +570,9 @@ fn apply_order_status(
         try_log(ForensicsEvent::Maker(event));
         return;
     }
-    log::warn!(
+    // Usually a reject arriving after we already replaced the slot;
+    // nothing to clean up.
+    log::debug!(
         "addOrderStatus error for unknown reqid {}: {}",
         status.reqid,
         status.error
@@ -612,7 +705,8 @@ async fn post_maker_limit(
 }
 
 /// Converge one side of a pair: cancel when price moved at least half a tick
-/// or size drifted beyond tolerance, then post when the desire is fresh.
+/// or size drifted beyond tolerance, then post when allowed (fresh desire,
+/// no cooldown/pause, within the open-bid budget).
 #[allow(clippy::too_many_arguments)]
 async fn reconcile_maker_side(
     write: &mut WsSink,
@@ -621,7 +715,7 @@ async fn reconcile_maker_side(
     slot: &mut Option<RestingQuote>,
     desired: Option<(f64, f64)>,
     side: &'static str,
-    fresh: bool,
+    allow_post: bool,
 ) {
     let tick = 10f64.powi(-(desire.price_decimals as i32));
     let pair = desire.pair_name;
@@ -658,7 +752,7 @@ async fn reconcile_maker_side(
     let Some((price, volume)) = desired else {
         return;
     };
-    if slot.is_some() || !fresh || volume <= 0.0 || maker_halted() {
+    if slot.is_some() || !allow_post || volume <= 0.0 || maker_halted() {
         return;
     }
 
@@ -698,18 +792,36 @@ async fn reconcile_maker_pair(
     maker_state: &mut FxHashMap<&'static str, MakerPairState>,
 ) {
     // Cancels always run; posts only when the desire is fresh enough that
-    // the price still reflects the current book.
-    let age_ms = now_ns().saturating_sub(desire.eval_ts_ns) as f64 / 1e6;
+    // the price still reflects the current book, the pair isn't cooling
+    // down after a rejection, and we aren't globally rate-limited.
+    let now = now_ns();
+    let age_ms = now.saturating_sub(desire.eval_ts_ns) as f64 / 1e6;
     let fresh = age_ms < POST_FRESHNESS_MS;
+    let cooling = maker_state
+        .get(desire.pair_name)
+        .is_some_and(|s| s.cooldown_until_ns > now);
+    let allow_post = fresh && !cooling && !posts_paused(now);
+
+    // Bids commit new capital, so they must also fit under the global
+    // notional cap alongside held inventory and every other resting bid.
+    let bid_desired = desire.bid.map(|q| (q.price, q.volume));
+    let bid_allowed = allow_post
+        && bid_desired.is_none_or(|(price, volume)| {
+            let cap = MAKER_GLOBAL_NOTIONAL.load(Ordering::Relaxed).max(1) as f64;
+            let committed =
+                open_bid_notional(maker_state, desire.pair_name) + global_inventory_basis();
+            committed + price * volume <= cap
+        });
 
     let state = maker_state.entry(desire.pair_name).or_default();
 
     // Split borrows: bid and ask reconcile independently.
-    let bid_desired = desire.bid.map(|q| (q.price, q.volume));
     let ask_desired = desire.ask.map(|q| (q.price, q.volume));
-    reconcile_maker_side(write, token, desire, &mut state.bid, bid_desired, "buy", fresh).await;
+    reconcile_maker_side(write, token, desire, &mut state.bid, bid_desired, "buy", bid_allowed)
+        .await;
     let state = maker_state.entry(desire.pair_name).or_default();
-    reconcile_maker_side(write, token, desire, &mut state.ask, ask_desired, "sell", fresh).await;
+    reconcile_maker_side(write, token, desire, &mut state.ask, ask_desired, "sell", allow_post)
+        .await;
 }
 
 async fn listen_to_private_ws(
@@ -1451,5 +1563,66 @@ mod tests {
 
         let naive = (90.0 * 1.0 - 0.5) - (100.0 * 1.0 + 1.0);
         assert!((pnl - naive).abs() > 1.0);
+    }
+
+    #[test]
+    fn reject_classification_matches_kraken_errors() {
+        assert!(matches!(
+            classify_reject("EAccount:Invalid permissions:LMWR trading restricted for US:NJ."),
+            RejectClass::Permanent
+        ));
+        assert!(matches!(
+            classify_reject("EService:Market in cancel_only mode"),
+            RejectClass::Permanent
+        ));
+        assert!(matches!(
+            classify_reject("Exceeded msg rate"),
+            RejectClass::RateLimited
+        ));
+        assert!(matches!(
+            classify_reject("EOrder:Insufficient funds"),
+            RejectClass::Cooldown(d) if d == COOLDOWN_INSUFFICIENT_FUNDS
+        ));
+        assert!(matches!(
+            classify_reject("EOrder:Post only order"),
+            RejectClass::Cooldown(d) if d == COOLDOWN_DEFAULT
+        ));
+    }
+
+    #[test]
+    fn open_bid_notional_sums_bids_excluding_replaced_pair() {
+        let mut state: FxHashMap<&'static str, MakerPairState> = FxHashMap::default();
+        state.insert(
+            "A/USD",
+            MakerPairState {
+                bid: Some(RestingQuote {
+                    userref: 1,
+                    price: 2.0,
+                    volume: 5.0,
+                }),
+                ask: Some(RestingQuote {
+                    userref: 2,
+                    price: 3.0,
+                    volume: 100.0, // asks never count against the bid budget
+                }),
+                cooldown_until_ns: 0,
+            },
+        );
+        state.insert(
+            "B/USD",
+            MakerPairState {
+                bid: Some(RestingQuote {
+                    userref: 3,
+                    price: 4.0,
+                    volume: 2.5,
+                }),
+                ask: None,
+                cooldown_until_ns: 0,
+            },
+        );
+
+        assert!((open_bid_notional(&state, "none") - 20.0).abs() < 1e-9);
+        // A/USD's bid is being replaced, so only B/USD's counts.
+        assert!((open_bid_notional(&state, "A/USD") - 10.0).abs() < 1e-9);
     }
 }

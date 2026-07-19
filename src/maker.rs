@@ -18,7 +18,7 @@ use crate::{
     FEE_MAKER, MAKER_GLOBAL_NOTIONAL, MAKER_HALTED, MAKER_MIN_EDGE_BPS, MAKER_NOTIONAL,
     MAKER_OFFSET_BPS,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -99,6 +99,9 @@ static POSITIONS: OnceLock<Mutex<FxHashMap<String, PairPosition>>> = OnceLock::n
 static LIVE: OnceLock<Mutex<FxHashMap<&'static str, LiveQuotes>>> = OnceLock::new();
 /// Session realized maker PnL in cents (average-cost, fees included).
 static REALIZED_PNL_CENTS: AtomicI64 = AtomicI64::new(0);
+/// Pairs Kraken has told us we can never trade this session (regional
+/// restrictions, cancel-only markets). Quoting them again is pure spam.
+static BLACKLIST: OnceLock<Mutex<FxHashSet<String>>> = OnceLock::new();
 
 fn desired_map() -> &'static Mutex<FxHashMap<&'static str, DesiredQuote>> {
     DESIRED.get_or_init(|| Mutex::new(FxHashMap::default()))
@@ -182,6 +185,19 @@ pub fn global_inventory_basis() -> f64 {
 /// True once the session loss limit latched the kill switch.
 pub fn maker_halted() -> bool {
     MAKER_HALTED.load(Ordering::Relaxed)
+}
+
+fn blacklist() -> &'static Mutex<FxHashSet<String>> {
+    BLACKLIST.get_or_init(|| Mutex::new(FxHashSet::default()))
+}
+
+/// Permanently stop quoting a pair for this session (untradeable per Kraken).
+pub fn blacklist_pair(pair: &str) {
+    blacklist().lock().unwrap().insert(pair.to_string());
+}
+
+pub fn is_blacklisted(pair: &str) -> bool {
+    blacklist().lock().unwrap().contains(pair)
 }
 
 /// Latch the kill switch: quoting stops for the rest of the process.
@@ -527,6 +543,9 @@ pub fn build_desired(
 
     if maker_halted() {
         return base(0.0, "halted");
+    }
+    if is_blacklisted(target_name) {
+        return base(0.0, "blacklisted");
     }
     if !target.pair_status
         || !sibling.pair_status
