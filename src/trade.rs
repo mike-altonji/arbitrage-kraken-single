@@ -3,12 +3,13 @@ use crate::arb_forensics::{
 };
 use crate::influx::{log_momentum_execution, log_trade_message_receive_speed};
 use crate::maker::{
-    apply_inventory_delta, drain_changed, inventory_coin, invalidate_pair, maker_wake,
-    set_live_ask, set_live_bid, volume_drifted, DesiredQuote, POST_FRESHNESS_MS,
+    drain_changed, global_inventory_basis, halt_maker, inventory_coin, invalidate_pair,
+    maker_halted, maker_wake, record_fill, session_realized_pnl, set_live_ask, set_live_bid,
+    volume_drifted, DesiredQuote, POST_FRESHNESS_MS,
 };
 use crate::structs::{MomentumOrder, OrderInfo, TradeCommand};
 use crate::utils::{send_telegram_message, wait_approx_ms};
-use crate::{MAKER_ENABLED, TRADER_BUSY};
+use crate::{MAKER_ENABLED, MAKER_GLOBAL_NOTIONAL, MAKER_MAX_LOSS, TRADER_BUSY};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use rustc_hash::FxHashMap;
@@ -216,6 +217,7 @@ pub async fn run_trading_thread(
             LoopEvent::Fill(Some(fill)) => {
                 if maker_on {
                     apply_maker_fill(&fill, &mut maker_state);
+                    enforce_risk_limits(&mut write, &token, &mut maker_state).await;
                 }
             }
             LoopEvent::Status(None) => {
@@ -350,20 +352,22 @@ fn maker_event_base(pair: String, event: &'static str) -> MakerEvent {
         volume: 0.0,
         userref: 0,
         inventory_coin: 0.0,
+        session_pnl: session_realized_pnl(),
         reason: String::new(),
         event_ts_ns: now_ns(),
     }
 }
 
-/// Apply an ownTrades fill: inventory first (unconditionally — a fill that
+/// Apply an ownTrades fill: position/PnL first (unconditionally — a fill that
 /// raced our cancel still changes our position), then resting-quote state.
 fn apply_maker_fill(fill: &OwnTradeFill, maker_state: &mut FxHashMap<&'static str, MakerPairState>) {
-    let signed = if fill.side == "buy" {
-        fill.volume
-    } else {
-        -fill.volume
-    };
-    apply_inventory_delta(&fill.pair, signed);
+    record_fill(
+        &fill.pair,
+        fill.side == "buy",
+        fill.price,
+        fill.volume,
+        fill.fee,
+    );
 
     // Shrink the resting quote if this fill matches one we still track.
     if let Some((pair_key, state)) = maker_state
@@ -480,6 +484,59 @@ fn apply_order_status(
         status.reqid,
         status.error
     );
+}
+
+/// Post-fill risk checks, in order of severity:
+/// 1. Session loss limit → latch the kill switch, cancel everything, telegram.
+/// 2. Global inventory cap → pull every resting bid immediately (the
+///    evaluator also stops desiring bids, but don't wait for its next tick).
+async fn enforce_risk_limits(
+    write: &mut WsSink,
+    token: &str,
+    maker_state: &mut FxHashMap<&'static str, MakerPairState>,
+) {
+    let pnl = session_realized_pnl();
+    let max_loss = MAKER_MAX_LOSS.load(Ordering::Relaxed).max(1) as f64;
+    if pnl <= -max_loss && !maker_halted() {
+        halt_maker();
+        cancel_all_orders(write, token).await;
+        for (pair, state) in maker_state.iter_mut() {
+            state.bid = None;
+            state.ask = None;
+            set_live_bid(pair, None);
+            set_live_ask(pair, None);
+        }
+        let msg = format!(
+            "🛑 Maker halted: session realized PnL ${:.2} breached -${:.0} limit. All orders cancelled; quoting stopped.",
+            pnl, max_loss
+        );
+        log::error!("{}", msg);
+        let mut event = maker_event_base("ALL".to_string(), "maker_halt");
+        event.reason = format!("session_pnl {:.2} <= -{:.0}", pnl, max_loss);
+        try_log(ForensicsEvent::Maker(event));
+        send_telegram_message(&msg).await;
+        return;
+    }
+
+    let global_cap = MAKER_GLOBAL_NOTIONAL.load(Ordering::Relaxed).max(1) as f64;
+    let basis = global_inventory_basis();
+    if basis >= global_cap {
+        for (pair, state) in maker_state.iter_mut() {
+            if let Some(q) = state.bid.take() {
+                set_live_bid(pair, None);
+                cancel_userref(write, token, q.userref).await;
+                let mut event = maker_event_base(pair.to_string(), "maker_cancel");
+                event.side = "buy";
+                event.price = q.price;
+                event.volume = q.volume;
+                event.userref = q.userref;
+                event.inventory_coin = inventory_coin(pair);
+                event.reason = format!("global_cap basis {:.2} >= {:.0}", basis, global_cap);
+                try_log(ForensicsEvent::Maker(event));
+                invalidate_pair(pair);
+            }
+        }
+    }
 }
 
 async fn send_ws(write: &mut WsSink, msg: String, what: &str) -> bool {
@@ -601,7 +658,7 @@ async fn reconcile_maker_side(
     let Some((price, volume)) = desired else {
         return;
     };
-    if slot.is_some() || !fresh || volume <= 0.0 {
+    if slot.is_some() || !fresh || volume <= 0.0 || maker_halted() {
         return;
     }
 

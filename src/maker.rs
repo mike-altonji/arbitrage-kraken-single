@@ -14,9 +14,12 @@
 use crate::arb_forensics::next_opportunity_id;
 use crate::orderbook::OrderBook;
 use crate::structs::PairData;
-use crate::{FEE_MAKER, MAKER_MIN_EDGE_BPS, MAKER_NOTIONAL, MAKER_OFFSET_BPS};
+use crate::{
+    FEE_MAKER, MAKER_GLOBAL_NOTIONAL, MAKER_HALTED, MAKER_MIN_EDGE_BPS, MAKER_NOTIONAL,
+    MAKER_OFFSET_BPS,
+};
 use rustc_hash::FxHashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Notify;
@@ -80,18 +83,29 @@ pub struct LiveQuotes {
     pub ask: Option<(f64, f64)>,
 }
 
+/// Per-pair maker position: base coins (×1e8) and average-cost dollar basis
+/// (cents, fees included). EUR-quoted pairs are treated as dollar-equivalent
+/// for risk-cap purposes.
+#[derive(Clone, Copy, Debug, Default)]
+struct PairPosition {
+    inv_e8: i64,
+    basis_cents: i64,
+}
+
 static DESIRED: OnceLock<Mutex<FxHashMap<&'static str, DesiredQuote>>> = OnceLock::new();
 static DESIRED_SEQ: AtomicU64 = AtomicU64::new(1);
 static WAKE: OnceLock<Notify> = OnceLock::new();
-static INVENTORY: OnceLock<Mutex<FxHashMap<String, i64>>> = OnceLock::new();
+static POSITIONS: OnceLock<Mutex<FxHashMap<String, PairPosition>>> = OnceLock::new();
 static LIVE: OnceLock<Mutex<FxHashMap<&'static str, LiveQuotes>>> = OnceLock::new();
+/// Session realized maker PnL in cents (average-cost, fees included).
+static REALIZED_PNL_CENTS: AtomicI64 = AtomicI64::new(0);
 
 fn desired_map() -> &'static Mutex<FxHashMap<&'static str, DesiredQuote>> {
     DESIRED.get_or_init(|| Mutex::new(FxHashMap::default()))
 }
 
-fn inventory_map() -> &'static Mutex<FxHashMap<String, i64>> {
-    INVENTORY.get_or_init(|| Mutex::new(FxHashMap::default()))
+fn positions_map() -> &'static Mutex<FxHashMap<String, PairPosition>> {
+    POSITIONS.get_or_init(|| Mutex::new(FxHashMap::default()))
 }
 
 fn live_map() -> &'static Mutex<FxHashMap<&'static str, LiveQuotes>> {
@@ -111,20 +125,68 @@ fn now_ns() -> u128 {
 }
 
 // ---------------------------------------------------------------------------
-// Inventory (per pair, base coin units)
+// Positions (per pair: base coins + average-cost basis) and session PnL
 // ---------------------------------------------------------------------------
 
 /// Maker-accumulated base inventory for `pair`, in coin units.
 pub fn inventory_coin(pair: &str) -> f64 {
-    let map = inventory_map().lock().unwrap();
-    map.get(pair).copied().unwrap_or(0) as f64 / INV_SCALE
+    let map = positions_map().lock().unwrap();
+    map.get(pair).map(|p| p.inv_e8).unwrap_or(0) as f64 / INV_SCALE
 }
 
-/// Apply a signed inventory delta from a fill (buy = +, sell = −).
-pub fn apply_inventory_delta(pair: &str, delta_coin: f64) {
-    let delta_e8 = (delta_coin * INV_SCALE).round() as i64;
-    let mut map = inventory_map().lock().unwrap();
-    *map.entry(pair.to_string()).or_insert(0) += delta_e8;
+/// Record a fill against the pair's average-cost position. Buys grow the
+/// basis (cost + fee); sells realize PnL against the average cost and shrink
+/// it. Returns the realized PnL delta in dollars (0 for buys).
+pub fn record_fill(pair: &str, is_buy: bool, price: f64, volume: f64, fee: f64) -> f64 {
+    let vol_e8 = (volume * INV_SCALE).round() as i64;
+    let mut map = positions_map().lock().unwrap();
+    let pos = map.entry(pair.to_string()).or_default();
+
+    if is_buy {
+        pos.inv_e8 += vol_e8;
+        pos.basis_cents += ((price * volume + fee) * 100.0).round() as i64;
+        return 0.0;
+    }
+
+    // Average cost of the coins being sold. Selling more than tracked
+    // inventory shouldn't happen (asks are sized to it); clamp defensively.
+    let sold_e8 = vol_e8.min(pos.inv_e8.max(0));
+    let cost_cents = if pos.inv_e8 > 0 {
+        ((pos.basis_cents as f64) * (sold_e8 as f64) / (pos.inv_e8 as f64)).round() as i64
+    } else {
+        0
+    };
+    pos.inv_e8 = (pos.inv_e8 - vol_e8).max(0);
+    pos.basis_cents = (pos.basis_cents - cost_cents).max(0);
+    if pos.inv_e8 == 0 {
+        pos.basis_cents = 0;
+    }
+
+    let proceeds_cents = ((price * volume - fee) * 100.0).round() as i64;
+    let realized_cents = proceeds_cents - cost_cents;
+    REALIZED_PNL_CENTS.fetch_add(realized_cents, Ordering::Relaxed);
+    realized_cents as f64 / 100.0
+}
+
+/// Session realized maker PnL in dollars (fees included, unrealized excluded).
+pub fn session_realized_pnl() -> f64 {
+    REALIZED_PNL_CENTS.load(Ordering::Relaxed) as f64 / 100.0
+}
+
+/// Total cost basis of held maker inventory across all pairs, in dollars.
+pub fn global_inventory_basis() -> f64 {
+    let map = positions_map().lock().unwrap();
+    map.values().map(|p| p.basis_cents).sum::<i64>() as f64 / 100.0
+}
+
+/// True once the session loss limit latched the kill switch.
+pub fn maker_halted() -> bool {
+    MAKER_HALTED.load(Ordering::Relaxed)
+}
+
+/// Latch the kill switch: quoting stops for the rest of the process.
+pub fn halt_maker() {
+    MAKER_HALTED.store(true, Ordering::Relaxed);
 }
 
 // ---------------------------------------------------------------------------
@@ -463,6 +525,9 @@ pub fn build_desired(
         dirty: false,
     };
 
+    if maker_halted() {
+        return base(0.0, "halted");
+    }
     if !target.pair_status
         || !sibling.pair_status
         || !target_stable.pair_status
@@ -496,6 +561,20 @@ pub fn build_desired(
     let mut out = base(desire.fair_mid, desire.reason);
     out.bid = desire.bid;
     out.ask = desire.ask;
+
+    // Cross-pair inventory cap: once total held basis reaches the global
+    // limit, stop adding (no bids anywhere) and keep only reducing asks.
+    if out.bid.is_some() {
+        let global_cap = MAKER_GLOBAL_NOTIONAL.load(Ordering::Relaxed).max(1) as f64;
+        if global_inventory_basis() >= global_cap {
+            out.bid = None;
+            out.reason = if out.ask.is_some() {
+                "global_capped_ask_only"
+            } else {
+                "global_capped"
+            };
+        }
+    }
     out
 }
 
@@ -723,11 +802,46 @@ mod tests {
         assert!(!publish_desired(desire), "dirty flag cleared by publish");
     }
 
+    /// Serializes tests that mutate the shared position/PnL statics, so
+    /// start-snapshot deltas can't race under parallel test execution.
+    static POSITION_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn inventory_roundtrip() {
-        apply_inventory_delta("TEST_INV/USD", 0.5);
-        apply_inventory_delta("TEST_INV/USD", -0.2);
+        let _guard = POSITION_TEST_LOCK.lock().unwrap();
+        record_fill("TEST_INV/USD", true, 100.0, 0.5, 0.0);
+        record_fill("TEST_INV/USD", false, 100.0, 0.2, 0.0);
         assert!((inventory_coin("TEST_INV/USD") - 0.3).abs() < 1e-9);
         assert_eq!(inventory_coin("TEST_INV_OTHER/USD"), 0.0);
+    }
+
+    #[test]
+    fn realized_pnl_uses_average_cost_and_fees() {
+        let _guard = POSITION_TEST_LOCK.lock().unwrap();
+        let start = session_realized_pnl();
+        // Buy 1 @ 100 (fee 0.10), buy 1 @ 102 (fee 0.10) → avg cost 101.10.
+        assert_eq!(record_fill("TEST_PNL/USD", true, 100.0, 1.0, 0.10), 0.0);
+        assert_eq!(record_fill("TEST_PNL/USD", true, 102.0, 1.0, 0.10), 0.0);
+        // Sell 1 @ 103 (fee 0.10): realized = 102.90 − 101.10 = 1.80.
+        let realized = record_fill("TEST_PNL/USD", false, 103.0, 1.0, 0.10);
+        assert!((realized - 1.80).abs() < 1e-9, "realized={}", realized);
+        assert!((session_realized_pnl() - start - 1.80).abs() < 1e-9);
+        // Remaining basis: one coin at avg cost 101.10.
+        assert!((inventory_coin("TEST_PNL/USD") - 1.0).abs() < 1e-9);
+        // Sell the rest at a loss: realized = 99.90 − 101.10 = −1.20.
+        let realized = record_fill("TEST_PNL/USD", false, 100.0, 1.0, 0.10);
+        assert!((realized + 1.20).abs() < 1e-9, "realized={}", realized);
+        assert_eq!(inventory_coin("TEST_PNL/USD"), 0.0);
+    }
+
+    #[test]
+    fn global_basis_sums_across_pairs() {
+        let _guard = POSITION_TEST_LOCK.lock().unwrap();
+        let start = global_inventory_basis();
+        record_fill("TEST_BASIS_A/USD", true, 100.0, 0.1, 0.0); // $10
+        record_fill("TEST_BASIS_B/EUR", true, 50.0, 0.1, 0.0); // $5
+        assert!((global_inventory_basis() - start - 15.0).abs() < 1e-6);
+        record_fill("TEST_BASIS_A/USD", false, 100.0, 0.1, 0.0);
+        assert!((global_inventory_basis() - start - 5.0).abs() < 1e-6);
     }
 }

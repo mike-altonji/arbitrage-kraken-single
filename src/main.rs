@@ -39,6 +39,16 @@ pub static MOMENTUM_ENABLED: AtomicBool = AtomicBool::new(false);
 pub static MAKER_ENABLED: AtomicBool = AtomicBool::new(false);
 pub static MAKER_NOTIONAL: AtomicI16 = AtomicI16::new(10); // quote-currency $ cap per pair
 pub static MAKER_OFFSET_BPS: AtomicI16 = AtomicI16::new(5); // lean from fair mid
+/// Cross-pair cap on total held inventory (cost basis, $). When reached, all
+/// bids are pulled and only reducing asks remain.
+pub static MAKER_GLOBAL_NOTIONAL: AtomicI16 = AtomicI16::new(50);
+/// Session kill switch: halt quoting and cancel everything once realized
+/// maker PnL drops below −N dollars.
+pub static MAKER_MAX_LOSS: AtomicI16 = AtomicI16::new(5);
+/// Latched by the trade thread when the loss limit is breached. Maker stops
+/// quoting for the rest of the process lifetime (arb stays disabled too —
+/// this is a halt, not a mode switch).
+pub static MAKER_HALTED: AtomicBool = AtomicBool::new(false);
 /// Kraken maker fee in bps. Conservative default; refreshed from TradeVolume.
 pub static FEE_MAKER: AtomicI16 = AtomicI16::new(25);
 /// Minimum edge over the round-trip maker fee, in bps. The effective quote
@@ -94,6 +104,12 @@ impl Config {
         if let Some(v) = parse_arg_value(&args, "--maker-offset-bps") {
             MAKER_OFFSET_BPS.store(v.max(0), std::sync::atomic::Ordering::Relaxed);
         }
+        if let Some(v) = parse_arg_value(&args, "--maker-global-notional") {
+            MAKER_GLOBAL_NOTIONAL.store(v.max(1), std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(v) = parse_arg_value(&args, "--maker-max-loss") {
+            MAKER_MAX_LOSS.store(v.max(1), std::sync::atomic::Ordering::Relaxed);
+        }
         log::info!(
             "Risk knobs: max_walk_depth={}, depth_haircut_pct={}, roi_buffer_bps={}, momentum={}",
             MAX_WALK_DEPTH.load(std::sync::atomic::Ordering::Relaxed),
@@ -102,9 +118,11 @@ impl Config {
             MOMENTUM_ENABLED.load(std::sync::atomic::Ordering::Relaxed),
         );
         log::info!(
-            "Maker: enabled={}, notional={}, offset_bps={} (floored at maker fee {} + {} bps edge; arb+momentum disabled when maker on)",
+            "Maker: enabled={}, notional={}/pair, global_notional={}, max_loss={}, offset_bps={} (floored at maker fee {} + {} bps edge; arb+momentum disabled when maker on)",
             MAKER_ENABLED.load(std::sync::atomic::Ordering::Relaxed),
             MAKER_NOTIONAL.load(std::sync::atomic::Ordering::Relaxed),
+            MAKER_GLOBAL_NOTIONAL.load(std::sync::atomic::Ordering::Relaxed),
+            MAKER_MAX_LOSS.load(std::sync::atomic::Ordering::Relaxed),
             MAKER_OFFSET_BPS.load(std::sync::atomic::Ordering::Relaxed),
             FEE_MAKER.load(std::sync::atomic::Ordering::Relaxed),
             MAKER_MIN_EDGE_BPS,

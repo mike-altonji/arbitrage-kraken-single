@@ -151,6 +151,7 @@ pub struct MomentumExecutionEvent {
 /// - `maker_reject`: Kraken rejected an addOrder (e.g. post-only would cross)
 /// - `maker_fill`: ownTrades fill applied to inventory
 /// - `maker_inventory`: inventory snapshot after a fill
+/// - `maker_halt`: session loss limit breached; quoting stopped
 #[derive(Clone, Debug, Serialize)]
 pub struct MakerEvent {
     pub event: &'static str,
@@ -169,6 +170,8 @@ pub struct MakerEvent {
     pub volume: f64,
     pub userref: i32,
     pub inventory_coin: f64,
+    /// Session realized maker PnL after this event ($, fees included).
+    pub session_pnl: f64,
     pub reason: String,
     pub event_ts_ns: u128,
 }

@@ -130,6 +130,8 @@ cargo build --release
 - `--maker`: Enable maker mode (resting post-only quotes from sibling FX fair value). **When set, arbitrage and momentum are disabled.** Live posts still require `--trade`.
 - `--maker-notional N`: Max quote/inventory notional per pair, in quote-currency dollars (default 10)
 - `--maker-offset-bps N`: Offset from sibling fair mid when placing quotes (default 5). Floored at the fetched maker fee + 2 bps so a filled round trip is positive-EV by construction.
+- `--maker-global-notional N`: Cross-pair cap on total held inventory cost basis in dollars (default 50). At the cap, all bids are pulled account-wide; only reducing asks remain.
+- `--maker-max-loss N`: Session kill switch (default 5). If realized maker PnL drops below −N dollars, all orders are cancelled and quoting halts for the rest of the process (Telegram alert + `maker_halt` event).
 
 ## Trading Strategy
 
@@ -172,12 +174,14 @@ cargo build --release
 - **Dead-man's switch**: `cancelAllOrdersAfter` (15 s) is armed before the first post and re-armed every 5 s — any crash, hang, or disconnect flattens the book server-side. Startup also sends `cancelAll` to clear leftovers from a previous run.
 - **Order-state truth**: `addOrderStatus` rejections (post-only would cross, insufficient funds) clear the optimistic resting-quote state (`maker_reject` events); inventory is updated from *every* ownTrades fill, including fills that raced a cancel.
 - **Per-pair inventory caps**: the bid shrinks as inventory approaches `--maker-notional` and disappears at the cap; the ask is sized to held (maker-accumulated) inventory only — it never sells base the strategy didn't buy.
+- **Global inventory cap**: total cost basis across all pairs is bounded by `--maker-global-notional`; on breach every resting bid is cancelled immediately and the evaluator stops desiring bids until inventory reduces.
+- **Session kill switch**: realized PnL is tracked per fill (average-cost, fees included, visible as `session_pnl` on every maker event); below `−--maker-max-loss` dollars the trade thread latches a halt, cancels everything, and alerts via Telegram. The halt is permanent for the process — arb does not re-enable.
 - **Self-exclusion**: our own resting orders are subtracted from the book before computing the BBO, so the quoter never one-ups itself.
 - **Bad data pulls quotes**: pair offline, book not ready, missing fair value, or a listener reconnect all publish cancel-desires instead of leaving quotes resting.
 
-**Remaining risks:** inventory can strand up to ~`--maker-notional` dollars of base per pair (exit is a resting ask, not a forced market sell); cancel latency is the edge (colo recommended); inventory tracking resets on restart (positions accumulated in previous runs are not re-synced from Balance yet).
+**Remaining risks:** stranded inventory is bounded by `--maker-global-notional` in aggregate (exit is a resting ask, not a forced market sell); cancel latency is the edge (colo recommended); position/PnL tracking resets on restart (positions accumulated in previous runs are not re-synced from Balance yet); the kill switch tracks *realized* PnL only — held inventory marked against the market is not counted until it is sold.
 
-Forensics events: `maker_desire`, `maker_quote`, `maker_cancel`, `maker_reject`, `maker_fill`, `maker_inventory` in the same JSONL stream.
+Forensics events: `maker_desire`, `maker_quote`, `maker_cancel`, `maker_reject`, `maker_fill`, `maker_inventory`, `maker_halt` in the same JSONL stream.
 
 ## Monitoring and Logging
 
