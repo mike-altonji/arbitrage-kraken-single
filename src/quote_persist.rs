@@ -35,6 +35,12 @@ impl QuotePersistTracker {
         }
     }
 
+    /// Drop all pending quotes (e.g. on WS reconnect / book reset).
+    pub fn clear(&mut self) {
+        self.bids.fill(None);
+        self.asks.fill(None);
+    }
+
     pub fn observe_bid(&mut self, idx: usize, bid_price: f64, improved: bool) -> PersistVerdict {
         Self::observe_side(
             &mut self.bids,
@@ -173,5 +179,16 @@ mod tests {
         assert_eq!(t.observe_bid(2, 10.5, true), PersistVerdict::Awaiting);
         assert_eq!(t.observe_bid(2, 10.5, false), PersistVerdict::Awaiting);
         assert_eq!(t.observe_bid(2, 10.5, false), PersistVerdict::Ready);
+    }
+
+    #[test]
+    fn clear_drops_pending_so_confirm_does_not_ready() {
+        let mut t = QuotePersistTracker::new(4, 1);
+        assert_eq!(t.observe_bid(2, 100.0, true), PersistVerdict::Awaiting);
+        assert_eq!(t.observe_ask(3, 50.0, true), PersistVerdict::Awaiting);
+        t.clear();
+        // Reconnect / book reset must not treat the next tick as a confirmation.
+        assert_eq!(t.observe_bid(2, 100.0, false), PersistVerdict::Inactive);
+        assert_eq!(t.observe_ask(3, 50.0, false), PersistVerdict::Inactive);
     }
 }

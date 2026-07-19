@@ -105,25 +105,9 @@ pub fn evaluate_arbitrage(
     trade_tx: mpsc::Sender<TradeCommand>,
     persist: &mut QuotePersistTracker,
 ) {
-    let x_pair_preview = match pair_data_vec.get(idx) {
-        Some(p) => p,
-        None => return,
-    };
-    let bid_v = persist.observe_bid(idx, x_pair_preview.bid_price, bbo_change.bid_improved);
-    let ask_v = persist.observe_ask(idx, x_pair_preview.ask_price, bbo_change.ask_improved);
-
-    let consider_bid = match bid_v {
-        PersistVerdict::Awaiting | PersistVerdict::Ready | PersistVerdict::Failed => true,
-        PersistVerdict::Inactive => bbo_change.bid_improved,
-    };
-    let consider_ask = match ask_v {
-        PersistVerdict::Awaiting | PersistVerdict::Ready | PersistVerdict::Failed => true,
-        PersistVerdict::Inactive => bbo_change.ask_improved,
-    };
-    if !consider_bid && !consider_ask {
-        return;
-    }
-
+    // Readiness / status / price gates must run before observe_*: Ready and Failed
+    // clear pending, so aging on a tick that cannot evaluate would drop a confirmation
+    // (or skip persist_failed logging) with no send opportunity.
     let x_idx = idx;
     let y_idx = sibling_pair_idx(idx);
 
@@ -167,6 +151,21 @@ pub fn evaluate_arbitrage(
         || eur_stable_pair.bid_price == 0.0
         || eur_stable_pair.ask_price == 0.0
     {
+        return;
+    }
+
+    let bid_v = persist.observe_bid(idx, x_pair.bid_price, bbo_change.bid_improved);
+    let ask_v = persist.observe_ask(idx, x_pair.ask_price, bbo_change.ask_improved);
+
+    let consider_bid = match bid_v {
+        PersistVerdict::Awaiting | PersistVerdict::Ready | PersistVerdict::Failed => true,
+        PersistVerdict::Inactive => bbo_change.bid_improved,
+    };
+    let consider_ask = match ask_v {
+        PersistVerdict::Awaiting | PersistVerdict::Ready | PersistVerdict::Failed => true,
+        PersistVerdict::Inactive => bbo_change.ask_improved,
+    };
+    if !consider_bid && !consider_ask {
         return;
     }
 

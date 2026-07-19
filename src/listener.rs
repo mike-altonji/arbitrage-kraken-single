@@ -49,6 +49,8 @@ pub async fn run_listening_thread(
         let pairs: Vec<String> = asset_index.keys().map(|s| s.to_string()).collect();
 
         reset_order_books(order_book_vec);
+        // Pending confirms must not span a disconnect / book rebuild.
+        persist.clear();
 
         // Try to set up websocket connection, retry on failure. Panic after 3 failures.
         let (_write, mut read) = loop {
