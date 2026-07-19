@@ -3,12 +3,15 @@ use crate::influx::{
     log_arbitrage_evaluation_speed, log_kraken_ingestion_latency, log_listener_loop_speed,
 };
 use crate::orderbook::{BboChange, OrderBookVec};
+use crate::quote_persist::QuotePersistTracker;
 use crate::structs::TradeCommand;
 use crate::structs::PairDataVec;
 use crate::utils::send_telegram_message;
+use crate::PERSIST_UPDATES;
 use evaluate_arbitrage::evaluate_arbitrage;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
@@ -38,6 +41,8 @@ pub async fn run_listening_thread(
     const MAX_SETUP_ATTEMPTS: u32 = 3;
     let mut loop_counter: usize = 0;
     let mut arbitrage_counter: usize = 0;
+    let required = PERSIST_UPDATES.load(Ordering::Relaxed).max(0) as u16;
+    let mut persist = QuotePersistTracker::new(pair_data_vec.len(), required);
 
     loop {
         let mut setup_attempts = 0;
@@ -109,6 +114,7 @@ pub async fn run_listening_thread(
                                     bbo_change,
                                     pair_names,
                                     trade_tx.clone(),
+                                    &mut persist,
                                 );
                                 let arbitrage_ts_end = SystemTime::now()
                                     .duration_since(UNIX_EPOCH)

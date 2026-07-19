@@ -12,6 +12,7 @@ mod kraken_rest;
 mod listener;
 mod momentum;
 mod orderbook;
+mod quote_persist;
 mod structs;
 mod threads;
 mod trade;
@@ -33,6 +34,9 @@ pub static ROI_BUFFER_BPS: AtomicI16 = AtomicI16::new(2); // Marginal ROI must e
 
 // Momentum trade mode: same-pair round trip triggered by the sibling pair jumping
 pub static MOMENTUM_ENABLED: AtomicBool = AtomicBool::new(false);
+
+// Quote persistence: improved BBO must survive N further BBO updates before send (0 = off)
+pub static PERSIST_UPDATES: AtomicI16 = AtomicI16::new(0);
 
 /// Application configuration parsed from command-line arguments
 struct Config {
@@ -73,12 +77,16 @@ impl Config {
         if args.contains(&"--momentum".to_string()) {
             MOMENTUM_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
         }
+        if let Some(v) = parse_arg_value(&args, "--persist-updates") {
+            PERSIST_UPDATES.store(v.max(0), std::sync::atomic::Ordering::Relaxed);
+        }
         log::info!(
-            "Risk knobs: max_walk_depth={}, depth_haircut_pct={}, roi_buffer_bps={}, momentum={}",
+            "Risk knobs: max_walk_depth={}, depth_haircut_pct={}, roi_buffer_bps={}, momentum={}, persist_updates={}",
             MAX_WALK_DEPTH.load(std::sync::atomic::Ordering::Relaxed),
             DEPTH_HAIRCUT_PCT.load(std::sync::atomic::Ordering::Relaxed),
             ROI_BUFFER_BPS.load(std::sync::atomic::Ordering::Relaxed),
             MOMENTUM_ENABLED.load(std::sync::atomic::Ordering::Relaxed),
+            PERSIST_UPDATES.load(std::sync::atomic::Ordering::Relaxed),
         );
         let (public_ws_url, private_ws_url) = if use_colocated {
             (

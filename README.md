@@ -127,6 +127,7 @@ cargo build --release
 - `--depth-haircut N`: Percent of displayed volume planned at levels beyond the top (default 70)
 - `--roi-buffer-bps N`: Marginal ROI must exceed 1 plus this buffer to keep walking (default 2)
 - `--momentum`: Enable the experimental momentum trade mode (takes priority over arbitrage)
+- `--persist-updates N`: Require an improved bid/ask to survive N further BBO updates before sending an arb trade (default 0 = off). Logs `awaiting_persist` / `persist_failed` for forensics.
 
 ## Trading Strategy
 

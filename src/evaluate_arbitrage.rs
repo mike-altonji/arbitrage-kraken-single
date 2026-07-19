@@ -4,6 +4,7 @@ use crate::arb_forensics::{
 use crate::influx::log_arbitrage_opportunity;
 use crate::momentum::maybe_momentum_order;
 use crate::orderbook::{BboChange, OrderBook, OrderBookVec, BOOK_DEPTH};
+use crate::quote_persist::{PersistVerdict, QuotePersistTracker};
 use crate::structs::{OrderInfo, PairData, PairDataVec, TradeCommand};
 use crate::{
     DEPTH_HAIRCUT_PCT, EUR_BALANCE, FEE_SPOT, FEE_STABLECOIN, MAX_WALK_DEPTH, MOMENTUM_ENABLED,
@@ -102,8 +103,24 @@ pub fn evaluate_arbitrage(
     bbo_change: BboChange,
     pair_names: &[&'static str],
     trade_tx: mpsc::Sender<TradeCommand>,
+    persist: &mut QuotePersistTracker,
 ) {
-    if !bbo_change.bid_improved && !bbo_change.ask_improved {
+    let x_pair_preview = match pair_data_vec.get(idx) {
+        Some(p) => p,
+        None => return,
+    };
+    let bid_v = persist.observe_bid(idx, x_pair_preview.bid_price, bbo_change.bid_improved);
+    let ask_v = persist.observe_ask(idx, x_pair_preview.ask_price, bbo_change.ask_improved);
+
+    let consider_bid = match bid_v {
+        PersistVerdict::Awaiting | PersistVerdict::Ready | PersistVerdict::Failed => true,
+        PersistVerdict::Inactive => bbo_change.bid_improved,
+    };
+    let consider_ask = match ask_v {
+        PersistVerdict::Awaiting | PersistVerdict::Ready | PersistVerdict::Failed => true,
+        PersistVerdict::Inactive => bbo_change.ask_improved,
+    };
+    if !consider_bid && !consider_ask {
         return;
     }
 
@@ -174,87 +191,176 @@ pub fn evaluate_arbitrage(
         }
     };
 
-    // X's bid improved: X is the sell leg. Momentum (when enabled) gets first
-    // claim on the event; if its gate produces an order, arb is skipped.
-    if bbo_change.bid_improved {
-        let mut momentum_consumed = false;
-        if MOMENTUM_ENABLED.load(Ordering::Relaxed) {
-            let x_name = pair_names.get(x_idx).copied().unwrap_or("");
-            let y_name = pair_names.get(y_idx).copied().unwrap_or("");
-            if !x_name.is_empty() && !y_name.is_empty() {
-                if let Some(order) = maybe_momentum_order(
-                    x_pair,
-                    y_pair,
-                    stable_for(x_idx),
-                    stable_for(y_idx),
-                    x_name,
-                    y_name,
-                    balance_for(y_idx),
-                    fee_spot,
-                ) {
-                    send_trade_command(TradeCommand::Momentum(order), y_name, &trade_tx);
-                    momentum_consumed = true;
+    // X's bid improved (or persist Ready/Failed for that side): X is the sell leg.
+    // Momentum (when enabled) gets first claim on a fresh bid_improved; if its gate
+    // produces an order, arb is skipped.
+    if consider_bid {
+        if bid_v == PersistVerdict::Failed {
+            log_persist_failed(
+                Trigger::BidImproved,
+                pair_names,
+                x_idx,
+                y_idx,
+                x_pair,
+                y_pair,
+            );
+        } else {
+            let mut momentum_consumed = false;
+            if bbo_change.bid_improved && MOMENTUM_ENABLED.load(Ordering::Relaxed) {
+                let x_name = pair_names.get(x_idx).copied().unwrap_or("");
+                let y_name = pair_names.get(y_idx).copied().unwrap_or("");
+                if !x_name.is_empty() && !y_name.is_empty() {
+                    if let Some(order) = maybe_momentum_order(
+                        x_pair,
+                        y_pair,
+                        stable_for(x_idx),
+                        stable_for(y_idx),
+                        x_name,
+                        y_name,
+                        balance_for(y_idx),
+                        fee_spot,
+                    ) {
+                        send_trade_command(TradeCommand::Momentum(order), y_name, &trade_tx);
+                        momentum_consumed = true;
+                    }
+                }
+            }
+
+            if !momentum_consumed {
+                let roi = compute_roi(y_pair, x_pair, stable_for(y_idx), stable_for(x_idx), arb_fee);
+                if roi > knobs.roi_floor {
+                    let persist_hold = persist_hold_label(bid_v);
+                    process_arbitrage_opportunity(
+                        roi,
+                        y_pair,
+                        x_pair,
+                        y_book,
+                        x_book,
+                        stable_for(y_idx),
+                        stable_for(x_idx),
+                        balance_for(y_idx),
+                        y_idx,
+                        x_idx,
+                        y_idx % 2,
+                        x_idx % 2,
+                        fee_spot,
+                        fee_stablecoin,
+                        arb_fee,
+                        knobs,
+                        Trigger::BidImproved,
+                        pair_names,
+                        trade_tx.clone(),
+                        idx,
+                        persist_hold,
+                    );
                 }
             }
         }
+    }
 
-        if !momentum_consumed {
-            let roi = compute_roi(y_pair, x_pair, stable_for(y_idx), stable_for(x_idx), arb_fee);
+    // X's ask improved (or persist Ready/Failed): X is the buy leg.
+    if consider_ask {
+        if ask_v == PersistVerdict::Failed {
+            log_persist_failed(
+                Trigger::AskImproved,
+                pair_names,
+                x_idx,
+                y_idx,
+                x_pair,
+                y_pair,
+            );
+        } else {
+            let roi = compute_roi(x_pair, y_pair, stable_for(x_idx), stable_for(y_idx), arb_fee);
             if roi > knobs.roi_floor {
+                let persist_hold = persist_hold_label(ask_v);
                 process_arbitrage_opportunity(
                     roi,
-                    y_pair,
                     x_pair,
-                    y_book,
+                    y_pair,
                     x_book,
-                    stable_for(y_idx),
+                    y_book,
                     stable_for(x_idx),
-                    balance_for(y_idx),
-                    y_idx,
+                    stable_for(y_idx),
+                    balance_for(x_idx),
                     x_idx,
-                    y_idx % 2,
+                    y_idx,
                     x_idx % 2,
+                    y_idx % 2,
                     fee_spot,
                     fee_stablecoin,
                     arb_fee,
                     knobs,
-                    Trigger::BidImproved,
+                    Trigger::AskImproved,
                     pair_names,
                     trade_tx.clone(),
                     idx,
+                    persist_hold,
                 );
             }
         }
     }
+}
 
-    // X's ask improved: X is the buy leg.
-    if bbo_change.ask_improved {
-        let roi = compute_roi(x_pair, y_pair, stable_for(x_idx), stable_for(y_idx), arb_fee);
-        if roi > knobs.roi_floor {
-            process_arbitrage_opportunity(
-                roi,
-                x_pair,
-                y_pair,
-                x_book,
-                y_book,
-                stable_for(x_idx),
-                stable_for(y_idx),
-                balance_for(x_idx),
-                x_idx,
-                y_idx,
-                x_idx % 2,
-                y_idx % 2,
-                fee_spot,
-                fee_stablecoin,
-                arb_fee,
-                knobs,
-                Trigger::AskImproved,
-                pair_names,
-                trade_tx.clone(),
-                idx,
-            );
-        }
+fn persist_hold_label(v: PersistVerdict) -> Option<&'static str> {
+    match v {
+        PersistVerdict::Awaiting => Some("awaiting_persist"),
+        PersistVerdict::Failed => Some("persist_failed"),
+        PersistVerdict::Inactive | PersistVerdict::Ready => None,
     }
+}
+
+fn log_persist_failed(
+    trigger: Trigger,
+    pair_names: &[&'static str],
+    x_idx: usize,
+    y_idx: usize,
+    x_pair: &PairData,
+    y_pair: &PairData,
+) {
+    let (pair1, pair2, kraken_ts) = match trigger {
+        Trigger::BidImproved => (
+            pair_names.get(y_idx).copied().unwrap_or(""),
+            pair_names.get(x_idx).copied().unwrap_or(""),
+            x_pair.kraken_ts,
+        ),
+        Trigger::AskImproved => (
+            pair_names.get(x_idx).copied().unwrap_or(""),
+            pair_names.get(y_idx).copied().unwrap_or(""),
+            x_pair.kraken_ts,
+        ),
+    };
+    if pair1.is_empty() || pair2.is_empty() {
+        return;
+    }
+    let eval_ts_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    try_log(ForensicsEvent::ArbOpportunity(ArbOpportunityEvent {
+        event: "arb_opportunity",
+        opportunity_id: next_opportunity_id(),
+        trigger: trigger.as_str(),
+        pair1,
+        pair2,
+        bbo_roi: 0.0,
+        blended_roi: 0.0,
+        depth_volume: 0.0,
+        l1_limiting_volume: x_pair.ask_volume.min(y_pair.bid_volume),
+        depth_multiplier: 0.0,
+        vwap_ask: 0.0,
+        vwap_bid: 0.0,
+        limit_buy_price: 0.0,
+        expected_cost: 0.0,
+        expected_proceeds: 0.0,
+        expected_pnl: 0.0,
+        expected_pnl_bps: 0.0,
+        stop_reason: "persist_failed",
+        balance_limited: false,
+        decision: "persist_failed",
+        kraken_ts,
+        eval_ts_ns,
+        slices: Vec::new(),
+    }));
 }
 
 fn roi_at_prices(
@@ -575,6 +681,7 @@ fn process_arbitrage_opportunity(
     pair_names: &[&'static str],
     trade_tx: mpsc::Sender<TradeCommand>,
     updated_pair_idx: usize,
+    persist_hold: Option<&'static str>,
 ) {
     let pair1_name = pair_names.get(pair1_idx).copied();
     let pair2_name = pair_names.get(pair2_idx).copied();
@@ -679,7 +786,9 @@ fn process_arbitrage_opportunity(
         pair1.kraken_ts
     };
 
-    let decision = if let Some(reason) =
+    let decision = if let Some(hold) = persist_hold {
+        hold
+    } else if let Some(reason) =
         guardrail_failure_reason(depth.volume, depth.vwap_ask, depth.vwap_bid, pair1, pair2)
     {
         reason
@@ -1070,5 +1179,19 @@ mod tests {
         assert!((fill.expected_cost - expected_cost).abs() < 1e-9);
         assert!((fill.expected_proceeds - expected_proceeds).abs() < 1e-9);
         assert!((fill.expected_pnl - (expected_proceeds - expected_cost)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn persist_hold_label_maps_verdicts() {
+        assert_eq!(
+            persist_hold_label(PersistVerdict::Awaiting),
+            Some("awaiting_persist")
+        );
+        assert_eq!(
+            persist_hold_label(PersistVerdict::Failed),
+            Some("persist_failed")
+        );
+        assert_eq!(persist_hold_label(PersistVerdict::Ready), None);
+        assert_eq!(persist_hold_label(PersistVerdict::Inactive), None);
     }
 }
