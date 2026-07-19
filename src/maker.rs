@@ -176,6 +176,17 @@ pub fn session_realized_pnl() -> f64 {
     REALIZED_PNL_CENTS.load(Ordering::Relaxed) as f64 / 100.0
 }
 
+/// Fair mid from the most recent desire published for `pair` (0.0 if none).
+/// Used to stamp fills with the fair value they executed against.
+pub fn last_fair_mid(pair: &str) -> f64 {
+    desired_map()
+        .lock()
+        .unwrap()
+        .get(pair)
+        .map(|d| d.fair_mid)
+        .unwrap_or(0.0)
+}
+
 /// Total cost basis of held maker inventory across all pairs, in dollars.
 pub fn global_inventory_basis() -> f64 {
     let map = positions_map().lock().unwrap();

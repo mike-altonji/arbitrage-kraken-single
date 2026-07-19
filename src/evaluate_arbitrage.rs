@@ -351,6 +351,8 @@ fn maker_desire_event(d: &DesiredQuote) -> MakerEvent {
         volume: 0.0,
         userref: 0,
         inventory_coin: d.inventory_coin,
+        fee: 0.0,
+        realized_pnl: 0.0,
         session_pnl: crate::maker::session_realized_pnl(),
         reason: d.reason.to_string(),
         event_ts_ns: d.eval_ts_ns,

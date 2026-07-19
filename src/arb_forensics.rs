@@ -170,6 +170,10 @@ pub struct MakerEvent {
     pub volume: f64,
     pub userref: i32,
     pub inventory_coin: f64,
+    /// Fill-only: exchange fee paid ($) and realized PnL of this fill
+    /// (average-cost, fees included; 0.0 for buys — PnL realizes on sells).
+    pub fee: f64,
+    pub realized_pnl: f64,
     /// Session realized maker PnL after this event ($, fees included).
     pub session_pnl: f64,
     pub reason: String,

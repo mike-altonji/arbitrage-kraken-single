@@ -4,8 +4,9 @@ use crate::arb_forensics::{
 use crate::influx::{log_momentum_execution, log_trade_message_receive_speed};
 use crate::maker::{
     blacklist_pair, drain_changed, global_inventory_basis, halt_maker, inventory_coin,
-    invalidate_pair, is_blacklisted, maker_halted, maker_wake, record_fill, session_realized_pnl,
-    set_live_ask, set_live_bid, volume_drifted, DesiredQuote, POST_FRESHNESS_MS,
+    invalidate_pair, is_blacklisted, last_fair_mid, maker_halted, maker_wake, record_fill,
+    session_realized_pnl, set_live_ask, set_live_bid, volume_drifted, DesiredQuote,
+    POST_FRESHNESS_MS,
 };
 use crate::structs::{MomentumOrder, OrderInfo, TradeCommand};
 use crate::utils::{send_telegram_message, wait_approx_ms};
@@ -410,6 +411,8 @@ fn maker_event_base(pair: String, event: &'static str) -> MakerEvent {
         volume: 0.0,
         userref: 0,
         inventory_coin: 0.0,
+        fee: 0.0,
+        realized_pnl: 0.0,
         session_pnl: session_realized_pnl(),
         reason: String::new(),
         event_ts_ns: now_ns(),
@@ -419,7 +422,7 @@ fn maker_event_base(pair: String, event: &'static str) -> MakerEvent {
 /// Apply an ownTrades fill: position/PnL first (unconditionally — a fill that
 /// raced our cancel still changes our position), then resting-quote state.
 fn apply_maker_fill(fill: &OwnTradeFill, maker_state: &mut FxHashMap<&'static str, MakerPairState>) {
-    record_fill(
+    let realized_pnl = record_fill(
         &fill.pair,
         fill.side == "buy",
         fill.price,
@@ -459,10 +462,15 @@ fn apply_maker_fill(fill: &OwnTradeFill, maker_state: &mut FxHashMap<&'static st
     let inv = inventory_coin(&fill.pair);
     let mut fill_event = maker_event_base(fill.pair.clone(), "maker_fill");
     fill_event.side = fill.side;
+    // Fair mid from the most recent desire: lets offline analysis measure
+    // adverse selection (fill price vs fair at fill time) per pair.
+    fill_event.fair_mid = last_fair_mid(&fill.pair);
     fill_event.price = fill.price;
     fill_event.volume = fill.volume;
     fill_event.userref = fill.userref;
     fill_event.inventory_coin = inv;
+    fill_event.fee = fill.fee;
+    fill_event.realized_pnl = realized_pnl;
     fill_event.reason = "own_trades".to_string();
     try_log(ForensicsEvent::Maker(fill_event));
 
