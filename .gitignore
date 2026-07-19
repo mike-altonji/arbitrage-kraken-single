@@ -3,6 +3,7 @@
 *.log
 .DS_Store
 Cargo.lock
+.worktrees/
 eda/
 logs/
 scripts/.log_winnings_env/
