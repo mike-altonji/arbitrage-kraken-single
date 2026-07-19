@@ -144,20 +144,32 @@ pub struct MomentumExecutionEvent {
     pub channel_delay_ms: f64,
 }
 
-/// Maker quote / cancel / fill / inventory telemetry.
+/// Maker telemetry. `event` is one of:
+/// - `maker_desire`: evaluator published a new desired quote set (no order sent)
+/// - `maker_quote`: post-only order sent (`side`, `price`, `volume` are the order)
+/// - `maker_cancel`: cancel sent for a resting order
+/// - `maker_reject`: Kraken rejected an addOrder (e.g. post-only would cross)
+/// - `maker_fill`: ownTrades fill applied to inventory
+/// - `maker_inventory`: inventory snapshot after a fill
 #[derive(Clone, Debug, Serialize)]
 pub struct MakerEvent {
     pub event: &'static str,
     pub opportunity_id: u64,
-    pub pair: &'static str,
+    pub pair: String,
     pub sibling: &'static str,
     pub side: &'static str,
     pub fair_mid: f64,
+    /// Desired two-sided state (0.0 when a side is absent / not applicable).
+    pub bid_price: f64,
+    pub bid_volume: f64,
+    pub ask_price: f64,
+    pub ask_volume: f64,
+    /// Per-order fields for quote/cancel/reject/fill events.
     pub price: f64,
     pub volume: f64,
     pub userref: i32,
     pub inventory_coin: f64,
-    pub reason: &'static str,
+    pub reason: String,
     pub event_ts_ns: u128,
 }
 

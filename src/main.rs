@@ -1,7 +1,7 @@
 use crate::structs::TradeCommand;
 use dotenv::dotenv;
 use std::env;
-use std::sync::atomic::{AtomicBool, AtomicI16, AtomicI64};
+use std::sync::atomic::{AtomicBool, AtomicI16};
 use tokio::sync::mpsc;
 
 mod arb_forensics;
@@ -37,12 +37,14 @@ pub static MOMENTUM_ENABLED: AtomicBool = AtomicBool::new(false);
 
 // Maker mode: resting post-only quotes from sibling fair value (disables arb + momentum)
 pub static MAKER_ENABLED: AtomicBool = AtomicBool::new(false);
-pub static MAKER_NOTIONAL: AtomicI16 = AtomicI16::new(10); // quote-currency $ cap
+pub static MAKER_NOTIONAL: AtomicI16 = AtomicI16::new(10); // quote-currency $ cap per pair
 pub static MAKER_OFFSET_BPS: AtomicI16 = AtomicI16::new(5); // lean from fair mid
-/// Assumed Kraken mid-tier maker fee (bps). Not fetched from TradeVolume in MVP.
-pub const FEE_MAKER_BPS: i16 = 16;
-/// Maker inventory in coin units × 1e8 (updated by trade thread on fills).
-pub static MAKER_INV_COIN_E8: AtomicI64 = AtomicI64::new(0);
+/// Kraken maker fee in bps. Conservative default; refreshed from TradeVolume.
+pub static FEE_MAKER: AtomicI16 = AtomicI16::new(25);
+/// Minimum edge over the round-trip maker fee, in bps. The effective quote
+/// offset is floored at `FEE_MAKER + MAKER_MIN_EDGE_BPS` so a round trip can
+/// never be negative-EV by construction.
+pub const MAKER_MIN_EDGE_BPS: i16 = 2;
 
 /// Application configuration parsed from command-line arguments
 struct Config {
@@ -100,11 +102,12 @@ impl Config {
             MOMENTUM_ENABLED.load(std::sync::atomic::Ordering::Relaxed),
         );
         log::info!(
-            "Maker: enabled={}, notional={}, offset_bps={}, fee_maker_bps={} (arb+momentum disabled when maker on)",
+            "Maker: enabled={}, notional={}, offset_bps={} (floored at maker fee {} + {} bps edge; arb+momentum disabled when maker on)",
             MAKER_ENABLED.load(std::sync::atomic::Ordering::Relaxed),
             MAKER_NOTIONAL.load(std::sync::atomic::Ordering::Relaxed),
             MAKER_OFFSET_BPS.load(std::sync::atomic::Ordering::Relaxed),
-            FEE_MAKER_BPS,
+            FEE_MAKER.load(std::sync::atomic::Ordering::Relaxed),
+            MAKER_MIN_EDGE_BPS,
         );
         let (public_ws_url, private_ws_url) = if use_colocated {
             (
@@ -157,13 +160,9 @@ async fn main() {
     // Initialize application
     let config = initialize_app().await;
 
-    // Maker needs a slightly deeper buffer for cancel/replace; arb stays at 1.
-    let channel_cap = if MAKER_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
-        8
-    } else {
-        1
-    };
-    let (trade_tx, trade_rx) = mpsc::channel::<TradeCommand>(channel_cap);
+    // Maker mode bypasses this channel (it uses the shared desired-quote
+    // registry in maker.rs), so arb/momentum keep the single-slot buffer.
+    let (trade_tx, trade_rx) = mpsc::channel::<TradeCommand>(1);
 
     // Get available cores for pinning
     let cores = core_affinity::get_core_ids().expect("Could not get core IDs");

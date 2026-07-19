@@ -2,11 +2,14 @@ use crate::evaluate_arbitrage;
 use crate::influx::{
     log_arbitrage_evaluation_speed, log_kraken_ingestion_latency, log_listener_loop_speed,
 };
+use crate::maker::publish_cancel_all;
 use crate::orderbook::{BboChange, OrderBookVec};
 use crate::structs::TradeCommand;
 use crate::structs::PairDataVec;
 use crate::utils::send_telegram_message;
-use evaluate_arbitrage::evaluate_arbitrage;
+use crate::MAKER_ENABLED;
+use evaluate_arbitrage::{evaluate_arbitrage, maker_reprice_all};
+use std::sync::atomic::Ordering;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use std::time::Duration;
@@ -44,6 +47,11 @@ pub async fn run_listening_thread(
         let pairs: Vec<String> = asset_index.keys().map(|s| s.to_string()).collect();
 
         reset_order_books(order_book_vec);
+        // Books are unusable until fresh snapshots arrive: pull our quotes
+        // rather than let them rest against data we can no longer trust.
+        if MAKER_ENABLED.load(Ordering::Relaxed) {
+            publish_cancel_all(pair_names, "listener_reconnect");
+        }
 
         // Try to set up websocket connection, retry on failure. Panic after 3 failures.
         let (_write, mut read) = loop {
@@ -86,6 +94,12 @@ pub async fn run_listening_thread(
                     );
                     match result {
                         BookHandleResult::BboChanged(idx, bbo_change) => {
+                            // Stablecoin (FX) ticks feed every pair's fair
+                            // value in maker mode: reprice everything.
+                            if idx <= 1 && MAKER_ENABLED.load(Ordering::Relaxed) && *public_online
+                            {
+                                maker_reprice_all(pair_data_vec, order_book_vec, pair_names);
+                            }
                             if idx > 1
                                 && *public_online
                                 && order_book_vec.get(idx).map(|b| b.ready).unwrap_or(false)

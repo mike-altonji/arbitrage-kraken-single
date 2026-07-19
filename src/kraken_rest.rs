@@ -100,13 +100,19 @@ async fn update_balances(
 
 /// Fetch trading fees from Kraken API every 5 minutes
 /// fee: atomic i16 representing basis points (e.g., 40 = 0.40%)
-pub async fn fetch_trading_fees(fee_spot: &AtomicI16, fee_stablecoin: &AtomicI16) {
+pub async fn fetch_trading_fees(
+    fee_spot: &AtomicI16,
+    fee_stablecoin: &AtomicI16,
+    fee_maker: &AtomicI16,
+) {
     dotenv().ok();
     let api_key = env::var("KRAKEN_KEY").expect("KRAKEN_KEY must be set");
     let api_secret = env::var("KRAKEN_SECRET").expect("KRAKEN_SECRET must be set");
 
     loop {
-        if let Err(e) = update_fees(&api_key, &api_secret, fee_spot, fee_stablecoin).await {
+        if let Err(e) =
+            update_fees(&api_key, &api_secret, fee_spot, fee_stablecoin, fee_maker).await
+        {
             log::error!("Error fetching fees: {}", e);
         }
         sleep(Duration::from_secs(300)).await; // 5 minutes
@@ -120,6 +126,7 @@ async fn update_fees(
     api_secret: &str,
     fee_spot: &AtomicI16,
     fee_stablecoin: &AtomicI16,
+    fee_maker: &AtomicI16,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let api_path = "/0/private/TradeVolume";
     let (post, headers) =
@@ -182,6 +189,19 @@ async fn update_fees(
         log::debug!("Stablecoin fee: {} bps", fee_basis_points);
     } else {
         log::warn!("Stablecoin fee not found in API response");
+    }
+
+    // Extract maker fee (separate schedule from the taker "fees" object)
+    if let Some(fees_maker) = result.get("fees_maker").and_then(|f| f.as_object()) {
+        if let Some(fee_f64) = extract_fee_from_pair(fees_maker, "XXBTZUSD") {
+            let fee_basis_points = (fee_f64 * 100.0).round() as i16;
+            fee_maker.store(fee_basis_points, Ordering::Relaxed);
+            log::debug!("Maker fee: {} bps", fee_basis_points);
+        } else {
+            log::warn!("Maker fee not found in fees_maker response");
+        }
+    } else {
+        log::warn!("fees_maker not found in TradeVolume response; keeping conservative default");
     }
 
     Ok(())

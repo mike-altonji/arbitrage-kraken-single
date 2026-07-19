@@ -128,8 +128,8 @@ cargo build --release
 - `--roi-buffer-bps N`: Marginal ROI must exceed 1 plus this buffer to keep walking (default 2)
 - `--momentum`: Enable the experimental momentum trade mode (takes priority over arbitrage)
 - `--maker`: Enable maker mode (resting post-only quotes from sibling FX fair value). **When set, arbitrage and momentum are disabled.** Live posts still require `--trade`.
-- `--maker-notional N`: Max quote/inventory notional in quote-currency dollars (default 10)
-- `--maker-offset-bps N`: Offset from sibling fair mid when placing quotes (default 5)
+- `--maker-notional N`: Max quote/inventory notional per pair, in quote-currency dollars (default 10)
+- `--maker-offset-bps N`: Offset from sibling fair mid when placing quotes (default 5). Floored at the fetched maker fee + 2 bps so a filled round trip is positive-EV by construction.
 
 ## Trading Strategy
 
@@ -152,22 +152,32 @@ When the sibling pair's bid improves and its fx-converted price sits far enough 
 
 ### Maker mode (`--maker`, MVP)
 
-Posts resting **post-only** GTC limit quotes on the updated pair, sized from the sibling pair's FX-converted fair mid (same stable-leg math shape as arb ROI). Quotes lean `--maker-offset-bps` from fair and improve one tick inside the book when there is room; cancels/replaces when fair moves. Exit is cancel + opposite maker (or inventory hold) — **not** market sells.
+Posts resting **post-only** GTC limit quotes, priced from the sibling pair's FX-converted fair mid (same stable-leg math shape as arb ROI). Quotes lean `--maker-offset-bps` from fair (floored at maker fee + 2 bps) and improve one tick inside the book when there is room. Exit is cancel + opposite maker (or inventory hold) — **not** market sells.
+
+Architecture: listener threads publish the latest *desired* quotes per pair into a shared registry (`maker.rs`); the trade thread owns the *live* order state and converges live → desired. A tick on either pair of a couple reprices **both** pairs (each one's fair value comes from the other), and a stablecoin (FX) tick reprices every pair. Identical desires are coalesced at the source, and resting orders are only replaced when price moves at least half a tick or size drifts >20% — protecting queue position and Kraken rate-limit points.
 
 ```bash
-# Dry-run: decisions → logs/arb_events_*.jsonl (event=maker_quote), no orders
+# Dry-run: desired quotes → logs/arb_events_*.jsonl (event=maker_desire), no orders
 cargo build --release
-./target/release/arbitrage --maker --maker-notional 10 --maker-offset-bps 5
+./target/release/arbitrage --maker --maker-notional 10 --maker-offset-bps 30
 
-# Live quotes (inventory risk up to ~notional)
-./target/release/arbitrage --trade --maker --maker-notional 10 --maker-offset-bps 5 --colocated
+# Live quotes (inventory risk up to ~notional per pair)
+./target/release/arbitrage --trade --maker --maker-notional 10 --maker-offset-bps 30 --colocated
 ```
 
 **Interaction:** `--maker` disables arb and momentum for the process. `--trade` is still required to post; without it, maker only logs desires.
 
-**Risks:** inventory can strand up to ~`--maker-notional` dollars of base; cancel latency is the edge (colo recommended); maker fee is assumed **16 bps** (`FEE_MAKER_BPS`, not fetched from TradeVolume yet) — set offset above that for expected EV. This is not a full MM platform (no ladder, no skew optimizer).
+**Safety rails:**
 
-Forensics events: `maker_quote`, `maker_cancel`, `maker_fill`, `maker_inventory` in the same JSONL stream.
+- **Dead-man's switch**: `cancelAllOrdersAfter` (15 s) is armed before the first post and re-armed every 5 s — any crash, hang, or disconnect flattens the book server-side. Startup also sends `cancelAll` to clear leftovers from a previous run.
+- **Order-state truth**: `addOrderStatus` rejections (post-only would cross, insufficient funds) clear the optimistic resting-quote state (`maker_reject` events); inventory is updated from *every* ownTrades fill, including fills that raced a cancel.
+- **Per-pair inventory caps**: the bid shrinks as inventory approaches `--maker-notional` and disappears at the cap; the ask is sized to held (maker-accumulated) inventory only — it never sells base the strategy didn't buy.
+- **Self-exclusion**: our own resting orders are subtracted from the book before computing the BBO, so the quoter never one-ups itself.
+- **Bad data pulls quotes**: pair offline, book not ready, missing fair value, or a listener reconnect all publish cancel-desires instead of leaving quotes resting.
+
+**Remaining risks:** inventory can strand up to ~`--maker-notional` dollars of base per pair (exit is a resting ask, not a forced market sell); cancel latency is the edge (colo recommended); inventory tracking resets on restart (positions accumulated in previous runs are not re-synced from Balance yet).
+
+Forensics events: `maker_desire`, `maker_quote`, `maker_cancel`, `maker_reject`, `maker_fill`, `maker_inventory` in the same JSONL stream.
 
 ## Monitoring and Logging
 

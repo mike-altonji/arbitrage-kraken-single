@@ -5,7 +5,7 @@ use crate::orderbook::init_order_book_vec;
 use crate::structs::TradeCommand;
 use crate::trade;
 use crate::utils::{build_pair_names_vec, initialize_pair_data};
-use crate::{EUR_BALANCE, FEE_SPOT, FEE_STABLECOIN, USD_BALANCE};
+use crate::{EUR_BALANCE, FEE_MAKER, FEE_SPOT, FEE_STABLECOIN, USD_BALANCE};
 use std::thread;
 use tokio::sync::mpsc;
 
@@ -122,7 +122,7 @@ pub fn spawn_balance_fetcher_thread(cores: &[core_affinity::CoreId]) -> thread::
 /// Creates the fee fetcher
 pub fn spawn_fee_fetcher_thread(cores: &[core_affinity::CoreId]) -> thread::JoinHandle<()> {
     spawn_pinned_thread(cores, 3, "Fee Fetcher".to_string(), || async move {
-        kraken_rest::fetch_trading_fees(&FEE_SPOT, &FEE_STABLECOIN).await;
+        kraken_rest::fetch_trading_fees(&FEE_SPOT, &FEE_STABLECOIN, &FEE_MAKER).await;
     })
 }
 

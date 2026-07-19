@@ -2,7 +2,7 @@ use crate::arb_forensics::{
     next_opportunity_id, try_log, ArbOpportunityEvent, ForensicsEvent, MakerEvent, PlannedSlice,
 };
 use crate::influx::log_arbitrage_opportunity;
-use crate::maker::maybe_maker_action;
+use crate::maker::{build_desired, publish_desired, DesiredQuote};
 use crate::momentum::maybe_momentum_order;
 use crate::orderbook::{BboChange, OrderBook, OrderBookVec, BOOK_DEPTH};
 use crate::structs::{OrderInfo, PairData, PairDataVec, TradeCommand};
@@ -104,7 +104,11 @@ pub fn evaluate_arbitrage(
     pair_names: &[&'static str],
     trade_tx: mpsc::Sender<TradeCommand>,
 ) {
-    if !bbo_change.bid_improved && !bbo_change.ask_improved {
+    // Arb/momentum only react to improvements; maker must react to ANY BBO
+    // change (a worsening bid still moves the fair value we quote around),
+    // so this gate is applied after the maker branch below.
+    let maker_on = MAKER_ENABLED.load(Ordering::Relaxed);
+    if !maker_on && !bbo_change.bid_improved && !bbo_change.ask_improved {
         return;
     }
 
@@ -123,6 +127,45 @@ pub fn evaluate_arbitrage(
                 return;
             }
         };
+
+    // Maker mode takes exclusive control: skip arb and momentum entirely.
+    // Runs before the readiness/price gates below so that bad data publishes
+    // cancel-desires instead of leaving quotes resting. A tick on either pair
+    // of the couple reprices BOTH pairs — each one's fair value comes from
+    // the other, so the sibling's move is exactly when our quote goes stale.
+    if maker_on {
+        let x_name = pair_names.get(x_idx).copied().unwrap_or("");
+        let y_name = pair_names.get(y_idx).copied().unwrap_or("");
+        if x_name.is_empty() || y_name.is_empty() {
+            return;
+        }
+        let stable_idx = |pair_idx: usize| -> &PairData {
+            if pair_idx.is_multiple_of(2) {
+                usd_stable_pair
+            } else {
+                eur_stable_pair
+            }
+        };
+        maker_publish_pair(
+            x_pair,
+            y_pair,
+            stable_idx(x_idx),
+            stable_idx(y_idx),
+            x_name,
+            y_name,
+            order_book_vec.get(x_idx),
+        );
+        maker_publish_pair(
+            y_pair,
+            x_pair,
+            stable_idx(y_idx),
+            stable_idx(x_idx),
+            y_name,
+            x_name,
+            order_book_vec.get(y_idx),
+        );
+        return;
+    }
 
     let x_book = order_book_vec.get(x_idx);
     let y_book = order_book_vec.get(y_idx);
@@ -162,50 +205,6 @@ pub fn evaluate_arbitrage(
             eur_stable_pair
         }
     };
-
-    // Maker mode takes exclusive control: skip arb and momentum entirely.
-    if MAKER_ENABLED.load(Ordering::Relaxed) {
-        let x_name = pair_names.get(x_idx).copied().unwrap_or("");
-        let y_name = pair_names.get(y_idx).copied().unwrap_or("");
-        if x_name.is_empty() || y_name.is_empty() {
-            return;
-        }
-        if let Some(action) = maybe_maker_action(
-            x_pair,
-            y_pair,
-            stable_for(x_idx),
-            stable_for(y_idx),
-            x_name,
-            y_name,
-        ) {
-            let side = match (action.bid_price.is_some(), action.ask_price.is_some()) {
-                (true, true) => "both",
-                (true, false) => "buy",
-                (false, true) => "sell",
-                (false, false) => "none",
-            };
-            let event_ts_ns = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos();
-            try_log(ForensicsEvent::Maker(MakerEvent {
-                event: "maker_quote",
-                opportunity_id: action.opportunity_id,
-                pair: action.pair_name,
-                sibling: action.sibling_name,
-                side,
-                fair_mid: action.fair_mid,
-                price: action.bid_price.or(action.ask_price).unwrap_or(0.0),
-                volume: action.volume_coin,
-                userref: 0,
-                inventory_coin: action.inventory_coin,
-                reason: action.reason,
-                event_ts_ns,
-            }));
-            let _ = send_trade_command(TradeCommand::Maker(action), x_name, &trade_tx);
-        }
-        return;
-    }
 
     let fee_spot = FEE_SPOT.load(Ordering::Relaxed) as f64 / 10_000.0;
     let fee_stablecoin = FEE_STABLECOIN.load(Ordering::Relaxed) as f64 / 10_000.0;
@@ -300,6 +299,106 @@ pub fn evaluate_arbitrage(
                 idx,
             );
         }
+    }
+}
+
+/// Build and publish the desired maker quotes for one pair; log a
+/// `maker_desire` forensics event when the desire materially changed.
+#[allow(clippy::too_many_arguments)]
+fn maker_publish_pair(
+    target: &PairData,
+    sibling: &PairData,
+    target_stable: &PairData,
+    sibling_stable: &PairData,
+    target_name: &'static str,
+    sibling_name: &'static str,
+    target_book: Option<&OrderBook>,
+) {
+    let desire = build_desired(
+        target,
+        sibling,
+        target_stable,
+        sibling_stable,
+        target_name,
+        sibling_name,
+        target_book,
+    );
+    let event = maker_desire_event(&desire);
+    if publish_desired(desire) {
+        try_log(ForensicsEvent::Maker(event));
+    }
+}
+
+fn maker_desire_event(d: &DesiredQuote) -> MakerEvent {
+    let side = match (d.bid.is_some(), d.ask.is_some()) {
+        (true, true) => "both",
+        (true, false) => "buy",
+        (false, true) => "sell",
+        (false, false) => "none",
+    };
+    MakerEvent {
+        event: "maker_desire",
+        opportunity_id: d.opportunity_id,
+        pair: d.pair_name.to_string(),
+        sibling: d.sibling_name,
+        side,
+        fair_mid: d.fair_mid,
+        bid_price: d.bid.map(|q| q.price).unwrap_or(0.0),
+        bid_volume: d.bid.map(|q| q.volume).unwrap_or(0.0),
+        ask_price: d.ask.map(|q| q.price).unwrap_or(0.0),
+        ask_volume: d.ask.map(|q| q.volume).unwrap_or(0.0),
+        price: 0.0,
+        volume: 0.0,
+        userref: 0,
+        inventory_coin: d.inventory_coin,
+        reason: d.reason.to_string(),
+        event_ts_ns: d.eval_ts_ns,
+    }
+}
+
+/// Reprice every crypto pair on this listener. Called when a stablecoin (FX)
+/// pair ticks: the FX legs feed every pair's fair value, so all quotes are
+/// potentially stale. The publish path coalesces unchanged desires, so this
+/// is cheap when quotes are already correct.
+pub fn maker_reprice_all(
+    pair_data_vec: &PairDataVec,
+    order_book_vec: &OrderBookVec,
+    pair_names: &[&'static str],
+) {
+    let (Some(usd_stable_pair), Some(eur_stable_pair)) =
+        (pair_data_vec.first(), pair_data_vec.get(1))
+    else {
+        return;
+    };
+    for target_idx in 2..pair_data_vec.len() {
+        let sibling_idx = sibling_pair_idx(target_idx);
+        let (Some(target), Some(sibling)) =
+            (pair_data_vec.get(target_idx), pair_data_vec.get(sibling_idx))
+        else {
+            continue;
+        };
+        let (Some(target_name), Some(sibling_name)) = (
+            pair_names.get(target_idx).copied(),
+            pair_names.get(sibling_idx).copied(),
+        ) else {
+            continue;
+        };
+        let stable = |pair_idx: usize| -> &PairData {
+            if pair_idx.is_multiple_of(2) {
+                usd_stable_pair
+            } else {
+                eur_stable_pair
+            }
+        };
+        maker_publish_pair(
+            target,
+            sibling,
+            stable(target_idx),
+            stable(sibling_idx),
+            target_name,
+            sibling_name,
+            order_book_vec.get(target_idx),
+        );
     }
 }
 
