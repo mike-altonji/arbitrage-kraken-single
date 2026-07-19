@@ -1,13 +1,14 @@
 use crate::arb_forensics::{
-    next_opportunity_id, try_log, ArbOpportunityEvent, ForensicsEvent, PlannedSlice,
+    next_opportunity_id, try_log, ArbOpportunityEvent, ForensicsEvent, MakerEvent, PlannedSlice,
 };
 use crate::influx::log_arbitrage_opportunity;
+use crate::maker::maybe_maker_action;
 use crate::momentum::maybe_momentum_order;
 use crate::orderbook::{BboChange, OrderBook, OrderBookVec, BOOK_DEPTH};
 use crate::structs::{OrderInfo, PairData, PairDataVec, TradeCommand};
 use crate::{
-    DEPTH_HAIRCUT_PCT, EUR_BALANCE, FEE_SPOT, FEE_STABLECOIN, MAX_WALK_DEPTH, MOMENTUM_ENABLED,
-    ROI_BUFFER_BPS, TRADER_BUSY, USD_BALANCE,
+    DEPTH_HAIRCUT_PCT, EUR_BALANCE, FEE_SPOT, FEE_STABLECOIN, MAKER_ENABLED, MAX_WALK_DEPTH,
+    MOMENTUM_ENABLED, ROI_BUFFER_BPS, TRADER_BUSY, USD_BALANCE,
 };
 use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -153,11 +154,6 @@ pub fn evaluate_arbitrage(
         return;
     }
 
-    let fee_spot = FEE_SPOT.load(Ordering::Relaxed) as f64 / 10_000.0;
-    let fee_stablecoin = FEE_STABLECOIN.load(Ordering::Relaxed) as f64 / 10_000.0;
-    let arb_fee = (1.0 - fee_spot) / (1.0 + fee_spot);
-    let knobs = load_walk_knobs();
-
     // Even idx → USD-quoted pair (stable idx 0), odd → EUR-quoted (stable idx 1).
     let stable_for = |pair_idx: usize| -> &PairData {
         if pair_idx.is_multiple_of(2) {
@@ -166,6 +162,56 @@ pub fn evaluate_arbitrage(
             eur_stable_pair
         }
     };
+
+    // Maker mode takes exclusive control: skip arb and momentum entirely.
+    if MAKER_ENABLED.load(Ordering::Relaxed) {
+        let x_name = pair_names.get(x_idx).copied().unwrap_or("");
+        let y_name = pair_names.get(y_idx).copied().unwrap_or("");
+        if x_name.is_empty() || y_name.is_empty() {
+            return;
+        }
+        if let Some(action) = maybe_maker_action(
+            x_pair,
+            y_pair,
+            stable_for(x_idx),
+            stable_for(y_idx),
+            x_name,
+            y_name,
+        ) {
+            let side = match (action.bid_price.is_some(), action.ask_price.is_some()) {
+                (true, true) => "both",
+                (true, false) => "buy",
+                (false, true) => "sell",
+                (false, false) => "none",
+            };
+            let event_ts_ns = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            try_log(ForensicsEvent::Maker(MakerEvent {
+                event: "maker_quote",
+                opportunity_id: action.opportunity_id,
+                pair: action.pair_name,
+                sibling: action.sibling_name,
+                side,
+                fair_mid: action.fair_mid,
+                price: action.bid_price.or(action.ask_price).unwrap_or(0.0),
+                volume: action.volume_coin,
+                userref: 0,
+                inventory_coin: action.inventory_coin,
+                reason: action.reason,
+                event_ts_ns,
+            }));
+            let _ = send_trade_command(TradeCommand::Maker(action), x_name, &trade_tx);
+        }
+        return;
+    }
+
+    let fee_spot = FEE_SPOT.load(Ordering::Relaxed) as f64 / 10_000.0;
+    let fee_stablecoin = FEE_STABLECOIN.load(Ordering::Relaxed) as f64 / 10_000.0;
+    let arb_fee = (1.0 - fee_spot) / (1.0 + fee_spot);
+    let knobs = load_walk_knobs();
+
     let balance_for = |pair_idx: usize| -> f64 {
         if pair_idx.is_multiple_of(2) {
             USD_BALANCE.load(Ordering::Relaxed) as f64

@@ -1,7 +1,7 @@
 use crate::structs::TradeCommand;
 use dotenv::dotenv;
 use std::env;
-use std::sync::atomic::{AtomicBool, AtomicI16};
+use std::sync::atomic::{AtomicBool, AtomicI16, AtomicI64};
 use tokio::sync::mpsc;
 
 mod arb_forensics;
@@ -10,6 +10,7 @@ mod evaluate_arbitrage;
 mod influx;
 mod kraken_rest;
 mod listener;
+mod maker;
 mod momentum;
 mod orderbook;
 mod structs;
@@ -33,6 +34,15 @@ pub static ROI_BUFFER_BPS: AtomicI16 = AtomicI16::new(2); // Marginal ROI must e
 
 // Momentum trade mode: same-pair round trip triggered by the sibling pair jumping
 pub static MOMENTUM_ENABLED: AtomicBool = AtomicBool::new(false);
+
+// Maker mode: resting post-only quotes from sibling fair value (disables arb + momentum)
+pub static MAKER_ENABLED: AtomicBool = AtomicBool::new(false);
+pub static MAKER_NOTIONAL: AtomicI16 = AtomicI16::new(10); // quote-currency $ cap
+pub static MAKER_OFFSET_BPS: AtomicI16 = AtomicI16::new(5); // lean from fair mid
+/// Assumed Kraken mid-tier maker fee (bps). Not fetched from TradeVolume in MVP.
+pub const FEE_MAKER_BPS: i16 = 16;
+/// Maker inventory in coin units × 1e8 (updated by trade thread on fills).
+pub static MAKER_INV_COIN_E8: AtomicI64 = AtomicI64::new(0);
 
 /// Application configuration parsed from command-line arguments
 struct Config {
@@ -73,12 +83,28 @@ impl Config {
         if args.contains(&"--momentum".to_string()) {
             MOMENTUM_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
         }
+        if args.contains(&"--maker".to_string()) {
+            MAKER_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(v) = parse_arg_value(&args, "--maker-notional") {
+            MAKER_NOTIONAL.store(v.max(1), std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(v) = parse_arg_value(&args, "--maker-offset-bps") {
+            MAKER_OFFSET_BPS.store(v.max(0), std::sync::atomic::Ordering::Relaxed);
+        }
         log::info!(
             "Risk knobs: max_walk_depth={}, depth_haircut_pct={}, roi_buffer_bps={}, momentum={}",
             MAX_WALK_DEPTH.load(std::sync::atomic::Ordering::Relaxed),
             DEPTH_HAIRCUT_PCT.load(std::sync::atomic::Ordering::Relaxed),
             ROI_BUFFER_BPS.load(std::sync::atomic::Ordering::Relaxed),
             MOMENTUM_ENABLED.load(std::sync::atomic::Ordering::Relaxed),
+        );
+        log::info!(
+            "Maker: enabled={}, notional={}, offset_bps={}, fee_maker_bps={} (arb+momentum disabled when maker on)",
+            MAKER_ENABLED.load(std::sync::atomic::Ordering::Relaxed),
+            MAKER_NOTIONAL.load(std::sync::atomic::Ordering::Relaxed),
+            MAKER_OFFSET_BPS.load(std::sync::atomic::Ordering::Relaxed),
+            FEE_MAKER_BPS,
         );
         let (public_ws_url, private_ws_url) = if use_colocated {
             (
@@ -111,7 +137,12 @@ async fn initialize_app() -> Config {
     utils::init_logging(config.debug_mode);
     arb_forensics::init();
 
-    let mode_message = if config.allow_trades {
+    let maker_on = MAKER_ENABLED.load(std::sync::atomic::Ordering::Relaxed);
+    let mode_message = if maker_on && config.allow_trades {
+        "📌 Launching Kraken maker mode: live quotes"
+    } else if maker_on {
+        "📌 Launching Kraken maker mode: evaluation-only (no posts)"
+    } else if config.allow_trades {
         "💰 Launching Kraken arbitrage: Trade mode"
     } else {
         "🚀 Launching Kraken arbitrage: Evaluation-only mode"
@@ -126,8 +157,13 @@ async fn main() {
     // Initialize application
     let config = initialize_app().await;
 
-    // Create bounded channel for sending trade commands to trading thread
-    let (trade_tx, trade_rx) = mpsc::channel::<TradeCommand>(1);
+    // Maker needs a slightly deeper buffer for cancel/replace; arb stays at 1.
+    let channel_cap = if MAKER_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
+        8
+    } else {
+        1
+    };
+    let (trade_tx, trade_rx) = mpsc::channel::<TradeCommand>(channel_cap);
 
     // Get available cores for pinning
     let cores = core_affinity::get_core_ids().expect("Could not get core IDs");

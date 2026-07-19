@@ -44,6 +44,7 @@ pub enum ForensicsEvent {
     ArbOpportunity(ArbOpportunityEvent),
     ArbExecution(ArbExecutionEvent),
     MomentumExecution(MomentumExecutionEvent),
+    Maker(MakerEvent),
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -143,6 +144,23 @@ pub struct MomentumExecutionEvent {
     pub channel_delay_ms: f64,
 }
 
+/// Maker quote / cancel / fill / inventory telemetry.
+#[derive(Clone, Debug, Serialize)]
+pub struct MakerEvent {
+    pub event: &'static str,
+    pub opportunity_id: u64,
+    pub pair: &'static str,
+    pub sibling: &'static str,
+    pub side: &'static str,
+    pub fair_mid: f64,
+    pub price: f64,
+    pub volume: f64,
+    pub userref: i32,
+    pub inventory_coin: f64,
+    pub reason: &'static str,
+    pub event_ts_ns: u128,
+}
+
 /// Start the forensics writer. Safe to call once at process startup.
 pub fn init() {
     let _ = SENDER.get_or_init(|| {
@@ -200,6 +218,7 @@ fn writer_loop(rx: std::sync::mpsc::Receiver<ForensicsEvent>, path: PathBuf) {
             ForensicsEvent::ArbOpportunity(e) => serde_json::to_string(e),
             ForensicsEvent::ArbExecution(e) => serde_json::to_string(e),
             ForensicsEvent::MomentumExecution(e) => serde_json::to_string(e),
+            ForensicsEvent::Maker(e) => serde_json::to_string(e),
         };
         match json_result {
             Ok(line) => {

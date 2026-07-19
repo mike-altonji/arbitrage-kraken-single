@@ -1,12 +1,14 @@
 use crate::arb_forensics::{
-    try_log, ArbExecutionEvent, FillRecord, ForensicsEvent, MomentumExecutionEvent,
+    try_log, ArbExecutionEvent, FillRecord, ForensicsEvent, MakerEvent, MomentumExecutionEvent,
 };
 use crate::influx::{log_momentum_execution, log_trade_message_receive_speed};
-use crate::structs::{MomentumOrder, OrderInfo, TradeCommand};
+use crate::maker::{apply_inventory_delta, inventory_coin};
+use crate::structs::{MakerAction, MomentumOrder, OrderInfo, TradeCommand};
 use crate::utils::wait_approx_ms;
 use crate::TRADER_BUSY;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
+use rustc_hash::FxHashMap;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
@@ -24,6 +26,19 @@ struct OwnTradeFill {
     cost: f64,
     side: &'static str,
     time: f64,
+}
+
+#[derive(Clone, Debug)]
+struct RestingQuote {
+    userref: i32,
+    price: f64,
+    volume: f64,
+}
+
+#[derive(Default)]
+struct MakerPairState {
+    bid: Option<RestingQuote>,
+    ask: Option<RestingQuote>,
 }
 
 /// Latency context captured once when the trade thread receives a command.
@@ -115,12 +130,15 @@ pub async fn run_trading_thread(
         (None, None)
     };
 
+    let mut maker_state: FxHashMap<&'static str, MakerPairState> = FxHashMap::default();
+
     while let Some(command) = trade_rx.recv().await {
         TRADER_BUSY.store(true, Ordering::Relaxed);
 
         let (send_timestamp, updated_pair_kraken_ts) = match &command {
             TradeCommand::Arb(order) => (order.send_timestamp, order.updated_pair_kraken_ts),
             TradeCommand::Momentum(order) => (order.send_timestamp, order.updated_pair_kraken_ts),
+            TradeCommand::Maker(action) => (action.send_timestamp, action.updated_pair_kraken_ts),
         };
         let receive_timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -131,6 +149,9 @@ pub async fn run_trading_thread(
         if let (Some(ref mut write), Some(ref mut filled_volume_rx)) =
             (&mut write, &mut filled_volume_rx)
         {
+            // Drain any maker fills that arrived while idle (inventory updates).
+            drain_maker_fills(filled_volume_rx, &mut maker_state);
+
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -201,12 +222,316 @@ pub async fn run_trading_thread(
                         log_momentum_outcome(&order, 0, &[], &[], "stale_skip", timing);
                     }
                 }
+                TradeCommand::Maker(action) => {
+                    // Always cancel when desired side is None; only post when fresh.
+                    reconcile_maker_quotes(
+                        write,
+                        &token,
+                        &action,
+                        &mut maker_state,
+                        fresh,
+                        timing.event_ts_ns,
+                    )
+                    .await;
+                }
             }
+        } else if let TradeCommand::Maker(action) = command {
+            // Eval-only: desires already logged in evaluate_arbitrage.
+            log::debug!(
+                "Maker dry-run {} fair={:.4} bid={:?} ask={:?} ({})",
+                action.pair_name,
+                action.fair_mid,
+                action.bid_price,
+                action.ask_price,
+                action.reason
+            );
         }
 
         TRADER_BUSY.store(false, Ordering::Relaxed);
     }
     log::info!("Trading channel closed, exiting trading thread");
+}
+
+fn price_changed(a: f64, b: f64, decimals: usize) -> bool {
+    let tick = 10f64.powi(-(decimals as i32));
+    (a - b).abs() >= tick * 0.5
+}
+
+fn drain_maker_fills(
+    filled_volume_rx: &mut mpsc::UnboundedReceiver<OwnTradeFill>,
+    maker_state: &mut FxHashMap<&'static str, MakerPairState>,
+) {
+    while let Ok(fill) = filled_volume_rx.try_recv() {
+        apply_maker_fill(&fill, maker_state);
+    }
+}
+
+fn apply_maker_fill(
+    fill: &OwnTradeFill,
+    maker_state: &mut FxHashMap<&'static str, MakerPairState>,
+) {
+    for (pair, state) in maker_state.iter_mut() {
+        let mut matched = false;
+        if let Some(ref q) = state.bid {
+            if q.userref == fill.userref && fill.side == "buy" {
+                apply_inventory_delta(fill.volume);
+                matched = true;
+                let remaining = q.volume - fill.volume;
+                if remaining <= 1e-12 {
+                    state.bid = None;
+                } else {
+                    state.bid = Some(RestingQuote {
+                        userref: q.userref,
+                        price: q.price,
+                        volume: remaining,
+                    });
+                }
+            }
+        }
+        if let Some(ref q) = state.ask {
+            if q.userref == fill.userref && fill.side == "sell" {
+                apply_inventory_delta(-fill.volume);
+                matched = true;
+                let remaining = q.volume - fill.volume;
+                if remaining <= 1e-12 {
+                    state.ask = None;
+                } else {
+                    state.ask = Some(RestingQuote {
+                        userref: q.userref,
+                        price: q.price,
+                        volume: remaining,
+                    });
+                }
+            }
+        }
+        if matched {
+            let inv = inventory_coin();
+            let event_ts_ns = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            try_log(ForensicsEvent::Maker(MakerEvent {
+                event: "maker_fill",
+                opportunity_id: 0,
+                pair,
+                sibling: "",
+                side: fill.side,
+                fair_mid: 0.0,
+                price: fill.price,
+                volume: fill.volume,
+                userref: fill.userref,
+                inventory_coin: inv,
+                reason: "own_trades",
+                event_ts_ns,
+            }));
+            try_log(ForensicsEvent::Maker(MakerEvent {
+                event: "maker_inventory",
+                opportunity_id: 0,
+                pair,
+                sibling: "",
+                side: "none",
+                fair_mid: 0.0,
+                price: 0.0,
+                volume: inv,
+                userref: 0,
+                inventory_coin: inv,
+                reason: "post_fill",
+                event_ts_ns,
+            }));
+            return;
+        }
+    }
+}
+
+async fn cancel_userref(
+    write: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+    token: &str,
+    userref: i32,
+) {
+    let msg = serde_json::json!({
+        "event": "cancelOrder",
+        "token": token,
+        "txid": [userref.to_string()],
+    })
+    .to_string();
+    if let Err(e) = write.send(Message::Text(msg)).await {
+        log::error!("Failed to cancel userref {}: {:?}", userref, e);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn post_maker_limit(
+    write: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+    token: &str,
+    pair: &str,
+    side: &str,
+    price: f64,
+    volume: f64,
+    price_decimals: usize,
+    volume_decimals: usize,
+) -> Option<i32> {
+    let userref = rand::random::<u32>() as i32;
+    let msg = serde_json::json!({
+        "event": "addOrder",
+        "token": token,
+        "type": side,
+        "ordertype": "limit",
+        "price": format!("{:.*}", price_decimals, price),
+        "volume": format!("{:.*}", volume_decimals, volume),
+        "pair": pair,
+        "userref": userref.to_string(),
+        "oflags": "post",
+    })
+    .to_string();
+    if let Err(e) = write.send(Message::Text(msg)).await {
+        log::error!("Failed to post maker {} on {}: {:?}", side, pair, e);
+        return None;
+    }
+    Some(userref)
+}
+
+async fn reconcile_maker_quotes(
+    write: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+    token: &str,
+    action: &MakerAction,
+    maker_state: &mut FxHashMap<&'static str, MakerPairState>,
+    fresh: bool,
+    event_ts_ns: u128,
+) {
+    let state = maker_state.entry(action.pair_name).or_default();
+    let tick_decimals = action.price_decimals;
+
+    // --- Bid side ---
+    let need_cancel_bid = match (&state.bid, action.bid_price) {
+        (Some(_), None) => true,
+        (Some(q), Some(p)) => {
+            price_changed(q.price, p, tick_decimals)
+                || (q.volume - action.volume_coin).abs() > 1e-12
+        }
+        _ => false,
+    };
+    if need_cancel_bid {
+        if let Some(q) = state.bid.take() {
+            cancel_userref(write, token, q.userref).await;
+            try_log(ForensicsEvent::Maker(MakerEvent {
+                event: "maker_cancel",
+                opportunity_id: action.opportunity_id,
+                pair: action.pair_name,
+                sibling: action.sibling_name,
+                side: "buy",
+                fair_mid: action.fair_mid,
+                price: q.price,
+                volume: q.volume,
+                userref: q.userref,
+                inventory_coin: action.inventory_coin,
+                reason: "reconcile",
+                event_ts_ns,
+            }));
+        }
+    }
+
+    if let Some(bid) = action.bid_price {
+        if state.bid.is_none() && fresh && action.volume_coin > 0.0 {
+            if let Some(userref) = post_maker_limit(
+                write,
+                token,
+                action.pair_name,
+                "buy",
+                bid,
+                action.volume_coin,
+                action.price_decimals,
+                action.volume_decimals,
+            )
+            .await
+            {
+                state.bid = Some(RestingQuote {
+                    userref,
+                    price: bid,
+                    volume: action.volume_coin,
+                });
+                try_log(ForensicsEvent::Maker(MakerEvent {
+                    event: "maker_quote",
+                    opportunity_id: action.opportunity_id,
+                    pair: action.pair_name,
+                    sibling: action.sibling_name,
+                    side: "buy",
+                    fair_mid: action.fair_mid,
+                    price: bid,
+                    volume: action.volume_coin,
+                    userref,
+                    inventory_coin: action.inventory_coin,
+                    reason: "posted",
+                    event_ts_ns,
+                }));
+            }
+        }
+    }
+
+    // --- Ask side ---
+    let need_cancel_ask = match (&state.ask, action.ask_price) {
+        (Some(_), None) => true,
+        (Some(q), Some(p)) => {
+            price_changed(q.price, p, tick_decimals)
+                || (q.volume - action.volume_coin).abs() > 1e-12
+        }
+        _ => false,
+    };
+    if need_cancel_ask {
+        if let Some(q) = state.ask.take() {
+            cancel_userref(write, token, q.userref).await;
+            try_log(ForensicsEvent::Maker(MakerEvent {
+                event: "maker_cancel",
+                opportunity_id: action.opportunity_id,
+                pair: action.pair_name,
+                sibling: action.sibling_name,
+                side: "sell",
+                fair_mid: action.fair_mid,
+                price: q.price,
+                volume: q.volume,
+                userref: q.userref,
+                inventory_coin: action.inventory_coin,
+                reason: "reconcile",
+                event_ts_ns,
+            }));
+        }
+    }
+
+    if let Some(ask) = action.ask_price {
+        if state.ask.is_none() && fresh && action.volume_coin > 0.0 {
+            if let Some(userref) = post_maker_limit(
+                write,
+                token,
+                action.pair_name,
+                "sell",
+                ask,
+                action.volume_coin,
+                action.price_decimals,
+                action.volume_decimals,
+            )
+            .await
+            {
+                state.ask = Some(RestingQuote {
+                    userref,
+                    price: ask,
+                    volume: action.volume_coin,
+                });
+                try_log(ForensicsEvent::Maker(MakerEvent {
+                    event: "maker_quote",
+                    opportunity_id: action.opportunity_id,
+                    pair: action.pair_name,
+                    sibling: action.sibling_name,
+                    side: "sell",
+                    fair_mid: action.fair_mid,
+                    price: ask,
+                    volume: action.volume_coin,
+                    userref,
+                    inventory_coin: action.inventory_coin,
+                    reason: "posted",
+                    event_ts_ns,
+                }));
+            }
+        }
+    }
 }
 
 async fn listen_to_own_trades(

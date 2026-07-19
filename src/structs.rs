@@ -13,12 +13,31 @@ pub struct PairData {
 }
 pub type PairDataVec = Vec<PairData>;
 
-/// Payload of the trading channel: either a two-pair arbitrage or a
-/// same-pair momentum round trip.
+/// Payload of the trading channel: arb, momentum, or maker quote reconcile.
 #[derive(Clone)]
 pub enum TradeCommand {
     Arb(OrderInfo),
     Momentum(MomentumOrder),
+    Maker(MakerAction),
+}
+
+/// Desired resting quotes for one pair (post-only GTC), from sibling fair value.
+#[derive(Clone)]
+pub struct MakerAction {
+    pub pair_name: &'static str,
+    pub sibling_name: &'static str,
+    pub fair_mid: f64,
+    /// `None` means cancel / do not quote that side.
+    pub bid_price: Option<f64>,
+    pub ask_price: Option<f64>,
+    pub volume_coin: f64,
+    pub price_decimals: usize,
+    pub volume_decimals: usize,
+    pub inventory_coin: f64,
+    pub send_timestamp: u128,
+    pub updated_pair_kraken_ts: f64,
+    pub opportunity_id: u64,
+    pub reason: &'static str,
 }
 
 /// Same-pair round trip: limit IOC buy at `limit_buy_price`, hold `hold_ms`,

@@ -127,6 +127,9 @@ cargo build --release
 - `--depth-haircut N`: Percent of displayed volume planned at levels beyond the top (default 70)
 - `--roi-buffer-bps N`: Marginal ROI must exceed 1 plus this buffer to keep walking (default 2)
 - `--momentum`: Enable the experimental momentum trade mode (takes priority over arbitrage)
+- `--maker`: Enable maker mode (resting post-only quotes from sibling FX fair value). **When set, arbitrage and momentum are disabled.** Live posts still require `--trade`.
+- `--maker-notional N`: Max quote/inventory notional in quote-currency dollars (default 10)
+- `--maker-offset-bps N`: Offset from sibling fair mid when placing quotes (default 5)
 
 ## Trading Strategy
 
@@ -146,6 +149,25 @@ The system implements cross-currency arbitrage:
 ### Momentum mode (`--momentum`, experimental)
 
 When the sibling pair's bid improves and its fx-converted price sits far enough above the target pair's ask that halfway convergence would cover both spot fees, the system buys the target pair with a LIMIT IOC at its current ask, holds for a log-uniformly sampled 1–1000 ms, then market sells on the same pair. Hold times are logged (`hold_ms`) so PnL can be regressed against them. Momentum takes priority over arbitrage on the events it claims. This is a directional bet with inventory risk — no ROI guarantee at entry.
+
+### Maker mode (`--maker`, MVP)
+
+Posts resting **post-only** GTC limit quotes on the updated pair, sized from the sibling pair's FX-converted fair mid (same stable-leg math shape as arb ROI). Quotes lean `--maker-offset-bps` from fair and improve one tick inside the book when there is room; cancels/replaces when fair moves. Exit is cancel + opposite maker (or inventory hold) — **not** market sells.
+
+```bash
+# Dry-run: decisions → logs/arb_events_*.jsonl (event=maker_quote), no orders
+cargo build --release
+./target/release/arbitrage --maker --maker-notional 10 --maker-offset-bps 5
+
+# Live quotes (inventory risk up to ~notional)
+./target/release/arbitrage --trade --maker --maker-notional 10 --maker-offset-bps 5 --colocated
+```
+
+**Interaction:** `--maker` disables arb and momentum for the process. `--trade` is still required to post; without it, maker only logs desires.
+
+**Risks:** inventory can strand up to ~`--maker-notional` dollars of base; cancel latency is the edge (colo recommended); maker fee is assumed **16 bps** (`FEE_MAKER_BPS`, not fetched from TradeVolume yet) — set offset above that for expected EV. This is not a full MM platform (no ladder, no skew optimizer).
+
+Forensics events: `maker_quote`, `maker_cancel`, `maker_fill`, `maker_inventory` in the same JSONL stream.
 
 ## Monitoring and Logging
 
