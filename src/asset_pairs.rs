@@ -1021,3 +1021,21 @@ pub static ASSET_INDEX_5: phf::Map<&'static str, usize> = phf_map! {
     "DOLO/USD" => 168,
     "DOLO/EUR" => 169,
 };
+
+/// Every listener pair map, in listener order.
+pub static ALL_ASSET_INDICES: [&phf::Map<&'static str, usize>; 6] = [
+    &ASSET_INDEX_0,
+    &ASSET_INDEX_1,
+    &ASSET_INDEX_2,
+    &ASSET_INDEX_3,
+    &ASSET_INDEX_4,
+    &ASSET_INDEX_5,
+];
+
+/// Look up a wsname (e.g. "PHA/USD") across every listener map, returning
+/// the canonical `&'static str` key if any listener quotes it.
+pub fn find_pair(wsname: &str) -> Option<&'static str> {
+    ALL_ASSET_INDICES
+        .iter()
+        .find_map(|m| m.get_entry(wsname).map(|(k, _)| *k))
+}

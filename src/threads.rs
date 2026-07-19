@@ -5,7 +5,8 @@ use crate::orderbook::init_order_book_vec;
 use crate::structs::TradeCommand;
 use crate::trade;
 use crate::utils::{build_pair_names_vec, initialize_pair_data};
-use crate::{EUR_BALANCE, FEE_MAKER, FEE_SPOT, FEE_STABLECOIN, USD_BALANCE};
+use crate::{EUR_BALANCE, FEE_MAKER, FEE_SPOT, FEE_STABLECOIN, MAKER_ENABLED, USD_BALANCE};
+use std::sync::atomic::Ordering;
 use std::thread;
 use tokio::sync::mpsc;
 
@@ -115,6 +116,11 @@ pub fn spawn_listener_threads(
 /// Creates the balance fetcher
 pub fn spawn_balance_fetcher_thread(cores: &[core_affinity::CoreId]) -> thread::JoinHandle<()> {
     spawn_pinned_thread(cores, 3, "Balance Fetcher".to_string(), || async move {
+        // Maker mode: pick up coins held from previous runs before the
+        // periodic fiat loop, so every holding gets a resting ask.
+        if MAKER_ENABLED.load(Ordering::Relaxed) {
+            kraken_rest::seed_maker_inventory_from_balances().await;
+        }
         kraken_rest::fetch_asset_balances(&USD_BALANCE, &EUR_BALANCE).await;
     })
 }

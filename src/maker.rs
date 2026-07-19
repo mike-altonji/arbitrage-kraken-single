@@ -171,6 +171,23 @@ pub fn record_fill(pair: &str, is_buy: bool, price: f64, volume: f64, fee: f64) 
     realized_cents as f64 / 100.0
 }
 
+/// Seed a position from account balances at startup so pre-existing holdings
+/// (from earlier runs) always carry a resting ask. Basis is marked at the
+/// caller-supplied dollar value (current market mid), so realized PnL on
+/// these coins measures post-restart edge, not the forgotten entry price.
+/// No-op when the pair already has tracked inventory — live fill accounting
+/// is never clobbered.
+pub fn seed_position(pair: &str, qty_coin: f64, basis_dollars: f64) -> bool {
+    let mut map = positions_map().lock().unwrap();
+    let pos = map.entry(pair.to_string()).or_default();
+    if pos.inv_e8 > 0 {
+        return false;
+    }
+    pos.inv_e8 = (qty_coin * INV_SCALE).round() as i64;
+    pos.basis_cents = (basis_dollars * 100.0).round() as i64;
+    true
+}
+
 /// Session realized maker PnL in dollars (fees included, unrealized excluded).
 pub fn session_realized_pnl() -> f64 {
     REALIZED_PNL_CENTS.load(Ordering::Relaxed) as f64 / 100.0
@@ -873,5 +890,22 @@ mod tests {
         assert!((global_inventory_basis() - start - 15.0).abs() < 1e-6);
         record_fill("TEST_BASIS_A/USD", false, 100.0, 0.1, 0.0);
         assert!((global_inventory_basis() - start - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn seed_position_sets_inventory_but_never_clobbers_fills() {
+        let _guard = POSITION_TEST_LOCK.lock().unwrap();
+        assert!(seed_position("TEST_SEED/USD", 470.0, 11.43));
+        assert!((inventory_coin("TEST_SEED/USD") - 470.0).abs() < 1e-9);
+
+        // Fills already tracked → seeding is a no-op.
+        record_fill("TEST_SEED_LIVE/USD", true, 2.0, 5.0, 0.0);
+        assert!(!seed_position("TEST_SEED_LIVE/USD", 100.0, 200.0));
+        assert!((inventory_coin("TEST_SEED_LIVE/USD") - 5.0).abs() < 1e-9);
+
+        // Selling seeded inventory realizes PnL against the seeded mark.
+        let pnl = record_fill("TEST_SEED/USD", false, 0.03, 470.0, 0.03);
+        let expected = (0.03 * 470.0 - 0.03) - 11.43;
+        assert!((pnl - expected).abs() < 0.011, "pnl={pnl} expected={expected}");
     }
 }

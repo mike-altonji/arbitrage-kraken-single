@@ -179,8 +179,9 @@ cargo build --release
 - **Session kill switch**: realized PnL is tracked per fill (average-cost, fees included, visible as `session_pnl` on every maker event); below `−--maker-max-loss` dollars the trade thread latches a halt, cancels everything, and alerts via Telegram. The halt is permanent for the process — arb does not re-enable.
 - **Self-exclusion**: our own resting orders are subtracted from the book before computing the BBO, so the quoter never one-ups itself.
 - **Bad data pulls quotes**: pair offline, book not ready, missing fair value, or a listener reconnect all publish cancel-desires instead of leaving quotes resting.
+- **Startup inventory seeding**: coins already in the account (from previous runs) are picked up from the Balance endpoint at startup, marked at the current market mid, and quoted with resting asks — held inventory is never left sitting without an exit order. Seeded basis counts against `--maker-global-notional`.
 
-**Remaining risks:** stranded inventory is bounded by `--maker-global-notional` in aggregate (exit is a resting ask, not a forced market sell); cancel latency is the edge (colo recommended); position/PnL tracking resets on restart (positions accumulated in previous runs are not re-synced from Balance yet); the kill switch tracks *realized* PnL only — held inventory marked against the market is not counted until it is sold.
+**Remaining risks:** stranded inventory is bounded by `--maker-global-notional` in aggregate (exit is a resting ask, not a forced market sell); cancel latency is the edge (colo recommended); average-cost basis resets to the market mid on restart (per-fill entry prices are not persisted), so realized PnL measures per-session edge; the kill switch tracks *realized* PnL only — held inventory marked against the market is not counted until it is sold.
 
 Forensics events: `maker_desire`, `maker_quote`, `maker_cancel`, `maker_reject`, `maker_fill`, `maker_inventory`, `maker_halt` in the same JSONL stream.
 
